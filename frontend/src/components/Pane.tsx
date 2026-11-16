@@ -7,8 +7,10 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 
 export const RAIL_WIDTH = 36
 
-export function PaneHeader({ children }: { children: ReactNode }) {
-  return <div className="flex h-9 shrink-0 items-center gap-2 border-b px-2">{children}</div>
+export const HEADER_HEIGHT = 36
+
+export function PaneHeader({ children, className = '' }: { children: ReactNode; className?: string }) {
+  return <div className={`flex h-9 shrink-0 items-center gap-2 border-b px-2 ${className}`}>{children}</div>
 }
 
 export function PaneTitle({ children }: { children: ReactNode }) {

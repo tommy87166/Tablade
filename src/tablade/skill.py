@@ -206,7 +206,7 @@ Tablade 是本機執行的資料清洗工具。使用者描述要怎麼整理資
    （`reader` 是 `csv` 時加上 `--data <資料檔>`，會用資料的標題列檢查欄位）。
    有問題就依 `path`、`error`、`hint` 修正，直到 `"ok": true`。
 5. **交給使用者。** 輸出檔名為 `<名稱>.recipe.json` 的 recipe，並提醒使用者：
-   把 recipe 放在資料檔旁邊（或依 `inputs[0].pattern` 的相對路徑），用 Tablade「開啟 recipe」。
+   把 recipe 放在資料檔旁邊（或依 `inputs[0].files` 的相對路徑），用 Tablade「開啟 recipe」後按「載入資料」。
    Tablade 會用真實資料試跑；有問題時按「複製錯誤報告」貼回來，你再依報告修正。
 
 ## recipe 格式
@@ -215,7 +215,7 @@ Tablade 是本機執行的資料清洗工具。使用者描述要怎麼整理資
 {{
   "tablade_recipe": "{RECIPE_VERSION}",
   "name": "名稱",
-  "inputs": [{{ "id": "src", "pattern": "明細_*.csv", "reader": "text_lines", "encoding": "auto" }}],
+  "inputs": [{{ "id": "src", "files": ["明細_*.csv"], "reader": "text_lines", "encoding": "auto" }}],
   "steps": [
     {{ "id": "s1", "type": "remove_top_rows", "n": 2 }}
   ],
@@ -224,8 +224,8 @@ Tablade 是本機執行的資料清洗工具。使用者描述要怎麼整理資
 ```
 
 - `tablade_recipe` 一定要是 `"{RECIPE_VERSION}"`。
-- `pattern` 是**相對於 recipe 檔所在的資料夾**，可用 glob 一次讀多個檔案。
-- recipe 不記輸出位置：使用者在 Tablade 按「執行」時才選存檔位置（`output` 裡沒有 `path`）。
+- `files` 是檔案清單：每一項是**相對於 recipe 檔所在資料夾**的路徑（或絕對路徑），可用 `*` 一次讀多個檔案；依清單順序讀取。
+- recipe 不記輸出位置：使用者在 Tablade 按「處理並匯出資料」時才選存檔位置（`output` 裡沒有 `path`）。
 - 目前一個 recipe 只能有一個 input。
 - 每一列都帶系統欄位 `__source_file`（來源檔）與 `__line_no`（原始行號），可以在條件裡引用。
 - 「前 N 列」「後 N 列」「向下填滿」「提升標題列」都是**每個來源檔各自計算**。

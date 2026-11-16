@@ -31,6 +31,7 @@ def main() -> int:
             ROOT / "examples" / "sales_detail.recipe.json", work / "sales_detail.recipe.json"
         )
         api._session.load_recipe(work / "sales_detail.recipe.json")
+        api._session.load_data()
         ready = api.ready()
         states, rows = {}, {}
         count = len(api._session.steps)

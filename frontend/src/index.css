@@ -132,3 +132,19 @@
     @apply font-sans;
     }
 }
+
+/* 警告面板：收合到只剩標題列時，右邊的按鈕從「收合」換成「展開」 */
+.warn-pane {
+  container-type: size;
+}
+.warn-pane .warn-expand {
+  display: none;
+}
+@container (max-height: 40px) {
+  .warn-pane .warn-expand {
+    display: block;
+  }
+  .warn-pane .warn-collapse {
+    display: none;
+  }
+}

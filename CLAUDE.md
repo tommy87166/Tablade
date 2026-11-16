@@ -26,7 +26,7 @@ Tablade：本機執行、Power Query 式的資料清洗工具（Python + Polars 
   - 每個來源檔已依 `__line_no` 排好，步驟**不要 sort**。
   - 不用 window 函式（`.over()`）、`replace_strict`、`map_batches` 呼叫 Python：串流引擎不支援，會把整份資料放進記憶體。
   - 改了步驟後，用 `tests/test_large.py` 的 stream ＝ eager 測試確認結果一致；大改時用幾 GB 的假資料量一次記憶體。
-- 不使用 `eval` / `exec`；不加入任何網路連線程式碼（`scripts/check_code_policy.py` 會檢查 `src/`）。
+- 不使用 `eval` / `exec`；不加入任何網路連線程式碼（`scripts/check_code_policy.py` 會檢查 `src/`）。唯一例外是 `src/tablade/update.py`：啟動時向 GitHub 查最新版號，只讀版號，不送出資料、不下載、不自動更新（`TABLADE_NO_UPDATE_CHECK=1` 可關閉）。
 - 依賴版本固定在 `pyproject.toml` 與 `uv.lock`，不要擅自升級。
 - `api.py`（JS bridge）只做參數轉換與錯誤包裝，邏輯放在引擎。
 - pywebview 視窗不開 HTTP server：前端 build 成單一 HTML（`frontend/dist/index.html`），以字串載入（見 `app.py`）。不要改成用網址或相對路徑載入；整份 HTML 必須小於 2 MB。

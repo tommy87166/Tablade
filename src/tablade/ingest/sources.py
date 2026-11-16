@@ -90,28 +90,51 @@ def clear_staging() -> None:
             _staging = None
 
 
-def resolve(pattern: str, base_dir: Path) -> list[Path]:
-    """依 glob 找出檔案（相對於 base_dir），依路徑排序。"""
-    full = pattern if Path(pattern).is_absolute() else str(base_dir / pattern)
-    matches = sorted(Path(p) for p in glob.glob(full, recursive=True) if Path(p).is_file())
-    if not matches:
-        raise InputError(f"找不到符合「{pattern}」的檔案（相對於 {base_dir}）")
-    # 符號連結可能讓同一個檔出現兩次；每個實際的檔只留一次
+def is_glob(entry: str) -> bool:
+    return any(c in entry for c in "*?[")
+
+
+def expand(entry: str, base_dir: Path) -> list[Path]:
+    """檔案清單的一項找到的檔：相對路徑以 recipe 資料夾為基準；有 * 才當成 glob（依路徑排序）。"""
+    full = Path(entry) if Path(entry).is_absolute() else base_dir / entry
+    if is_glob(entry):
+        return sorted(Path(p) for p in glob.glob(str(full), recursive=True) if Path(p).is_file())
+    return [full] if full.is_file() else []
+
+
+def check_entries(entries: list[str], base_dir: Path) -> list[dict[str, Any]]:
+    """每一項找到幾個檔（給畫面顯示，不讀內容）。"""
+    return [{"path": entry, "found": len(expand(entry, base_dir))} for entry in entries]
+
+
+def resolve(entries: str | list[str], base_dir: Path) -> list[Path]:
+    """依檔案清單找出所有檔：依清單順序，同一項裡依路徑排序，同一個實際的檔只留一次。"""
+    if isinstance(entries, str):
+        entries = [entries]
+    if not entries:
+        raise InputError("還沒有加入資料檔")
     seen: set[Path] = set()
-    unique = []
-    for path in matches:
-        real = path.resolve()
-        if real not in seen:
-            seen.add(real)
-            unique.append(path)
-    return unique
+    found = []
+    for entry in entries:
+        matches = expand(entry, base_dir)
+        if not matches:
+            what = f"符合「{entry}」的檔案" if is_glob(entry) else f"檔案「{entry}」"
+            raise InputError(f"找不到{what}（相對於 {base_dir}）")
+        for path in matches:
+            real = path.resolve()  # 符號連結可能讓同一個檔出現兩次
+            if real not in seen:
+                seen.add(real)
+                found.append(path)
+    return found
 
 
 def display_name(path: Path, base_dir: Path) -> str:
+    """來源檔的名稱：recipe 資料夾裡的檔用相對路徑，其他用整理過的絕對路徑。"""
+    real = path.resolve()
     try:
-        return path.resolve().relative_to(base_dir.resolve()).as_posix()
+        return real.relative_to(base_dir.resolve()).as_posix()
     except ValueError:
-        return path.as_posix()
+        return real.as_posix()
 
 
 def _report(progress: Progress, stage: str, name: str, done: int, total: int) -> None:
@@ -323,11 +346,15 @@ def _align(parts: list[Part]) -> list[Part]:
 
 
 def scan_parts(
-    pattern: str, reader: str, encoding: str, base_dir: Path, progress: Progress = None
+    entries: str | list[str],
+    reader: str,
+    encoding: str,
+    base_dir: Path,
+    progress: Progress = None,
 ) -> tuple[list[Part], list[SourceFile]]:
-    """每個來源檔一個 LazyFrame（依路徑排序），欄位對齊成同一組。"""
+    """每個來源檔一個 LazyFrame（依檔案清單的順序），欄位對齊成同一組。"""
     parts, files = [], []
-    for path in resolve(pattern, base_dir):
+    for path in resolve(entries, base_dir):
         name = display_name(path, base_dir)
         prepared = prepare(path, encoding, progress)
         lf, rows = _scan_one(prepared, reader, name)
@@ -358,18 +385,26 @@ def concat(parts: list[Part]) -> pl.LazyFrame:
 
 
 def scan(
-    pattern: str, reader: str, encoding: str, base_dir: Path, progress: Progress = None
+    entries: str | list[str],
+    reader: str,
+    encoding: str,
+    base_dir: Path,
+    progress: Progress = None,
 ) -> tuple[pl.LazyFrame, list[SourceFile]]:
     """所有來源檔接成一個 LazyFrame（測試與小工具用；引擎用 ``scan_parts``）。"""
-    parts, files = scan_parts(pattern, reader, encoding, base_dir, progress)
+    parts, files = scan_parts(entries, reader, encoding, base_dir, progress)
     return concat(parts), files
 
 
 def load(
-    pattern: str, reader: str, encoding: str, base_dir: Path, progress: Progress = None
+    entries: str | list[str],
+    reader: str,
+    encoding: str,
+    base_dir: Path,
+    progress: Progress = None,
 ) -> tuple[pl.DataFrame, list[SourceFile]]:
     """把整份資料讀進記憶體（只適合小檔；大檔請用 ``scan`` ＋ ``sample``）。"""
-    lf, files = scan(pattern, reader, encoding, base_dir, progress)
+    lf, files = scan(entries, reader, encoding, base_dir, progress)
     return lf.collect(engine="streaming"), files
 
 
@@ -388,9 +423,11 @@ def sample(
     return concat(kept).collect(engine="streaming")
 
 
-def peek_columns(pattern: str, reader: str, encoding: str, base_dir: Path) -> list[str] | None:
+def peek_columns(
+    entries: str | list[str], reader: str, encoding: str, base_dir: Path
+) -> list[str] | None:
     """不讀整個檔案，只取得 input 的資料欄位（給驗證器檢查欄位引用）。"""
-    first = resolve(pattern, base_dir)[0]  # 找不到檔案時丟出 InputError
+    first = resolve(entries, base_dir)[0]  # 找不到檔案時丟出 InputError
     if reader == "text_lines":
         return ["line"]
     head = first.read_bytes()[: 1 << 16].split(b"\n", 1)[0].rstrip(b"\r")

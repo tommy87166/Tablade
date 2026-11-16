@@ -63,6 +63,10 @@ export interface SelftestCheck {
   name: string
   ok: boolean
   detail: string
+  /** 這一項確認的是什麼 */
+  purpose?: string
+  /** false：前面的檢查失敗，這一項沒有執行 */
+  ran?: boolean
 }
 
 export interface SelftestResult {
@@ -80,7 +84,7 @@ export interface StepState {
   label: string
   category: string
   enabled: boolean
-  status: 'ok' | 'error' | 'pending' | 'disabled'
+  status: 'ok' | 'error' | 'pending' | 'disabled' | 'waiting'
   describe: string | null
   rows: number | null
   delta: number | null
@@ -112,10 +116,27 @@ export interface SourceFile {
 
 export interface ViewState {
   version: { tablade: string; recipe: string }
-  recipe: { path: string | null; name: string; description: string; dirty: boolean; base_dir: string | null }
+  recipe: {
+    path: string | null
+    name: string
+    description: string
+    dirty: boolean
+    base_dir: string | null
+    /** false：還沒有新增或開啟 Recipe（顯示起始頁） */
+    open: boolean
+  }
   input: {
     id: string
-    pattern: string
+    /** 檔案清單：相對於 Recipe 資料夾的路徑或絕對路徑，可含 * */
+    files: string[]
+    /** 檔案清單每一項找到幾個檔 */
+    entries: { path: string; found: number }[]
+    /** 清單不是空的，而且每一項都找得到 */
+    can_load: boolean
+    /** 已按「載入資料」 */
+    loaded: boolean
+    /** 載入之後設定或檔案變了，要重新載入 */
+    stale: boolean
     reader: 'text_lines' | 'csv'
     encoding: string
     error: string | null
@@ -127,7 +148,8 @@ export interface ViewState {
     sampled: boolean
     sample: { head: number; tail: number }
     columns: string[] | null
-    files: SourceFile[]
+    /** 載入後實際讀到的每個檔 */
+    sources: SourceFile[]
   }
   output: { format: string; keep_system_columns: boolean }
   steps: StepState[]
@@ -144,6 +166,15 @@ export interface ViewState {
   can_undo: boolean
   can_redo: boolean
   issues: Issue[]
+}
+
+/** 啟動時向 GitHub 查的最新版號（只讀版號，不下載） */
+export interface UpdateInfo {
+  current: string
+  latest: string | null
+  newer: boolean
+  url: string
+  error: string | null
 }
 
 export type Cell = string | number | boolean | null
@@ -170,15 +201,19 @@ export interface TabladeApi {
   ready(): Promise<Result<ReadyInfo>>
   selftest(): Promise<Result<{ result: SelftestResult }>>
   smoke_done(passed: boolean): Promise<Result<object>>
+  check_update(): Promise<Result<{ update: UpdateInfo | null }>>
   smoke_example(): Promise<WithState<{ issues: Issue[] }>>
   state(): Promise<WithState>
   rows(step: number, offset: number, limit: number): Promise<Result<RowsPage>>
   find_row(step: number, source_file: string, line_no: number): Promise<Result<{ row: number | null }>>
-  new_recipe(): Promise<WithState>
+  new_recipe(): Promise<Dialog<{ path: string }>>
   open_recipe(): Promise<Dialog<{ issues: Issue[] }>>
   save_recipe(): Promise<Dialog<{ path: string }>>
   save_recipe_as(): Promise<Dialog<{ path: string }>>
-  open_data(): Promise<Dialog>
+  add_files(): Promise<Dialog>
+  add_file_entry(text: string): Promise<WithState>
+  remove_file(index: number): Promise<WithState>
+  load_data(): Promise<WithState>
   set_input(values: Partial<ViewState['input']>): Promise<WithState>
   set_output(values: Partial<ViewState['output']>): Promise<WithState>
   set_meta(values: { name?: string; description?: string }): Promise<WithState>

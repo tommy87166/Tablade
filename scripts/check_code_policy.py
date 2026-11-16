@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """檢查 src/ 是否違反程式規則（DESIGN.md §4、§11）。
 
-- 禁止任何網路相關模組（不做遙測、不自動更新、不下載擴充）
+- 禁止任何網路相關模組（不做遙測、不自動更新、不下載擴充）。
+  唯一例外：``tablade/update.py`` 可以用 ``urllib.request`` 向 GitHub 查最新版號（不下載）
 - 禁止 eval / exec / compile / __import__ / importlib.import_module
 
 用 AST 分析，只用標準函式庫。
@@ -38,6 +39,9 @@ FORBIDDEN_MODULES = (
     "webbrowser",
     "bottle",
 )
+ALLOWED_NETWORK = {"tablade/update.py": {"urllib.request", "urllib.error"}}
+"""只有這些檔案可以 import 這幾個網路模組。"""
+
 FORBIDDEN_CALLS = {"eval", "exec", "compile", "__import__"}
 FORBIDDEN_ATTR_CALLS = {("importlib", "import_module")}
 
@@ -46,16 +50,20 @@ def _forbidden(module: str) -> bool:
     return any(module == m or module.startswith(m + ".") for m in FORBIDDEN_MODULES)
 
 
+def _allowed(path: str, module: str) -> bool:
+    return any(path.endswith(f) and module in mods for f, mods in ALLOWED_NETWORK.items())
+
+
 def check_source(path: str, source: str) -> list[str]:
     problems = []
     tree = ast.parse(source, filename=path)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if _forbidden(alias.name):
+                if _forbidden(alias.name) and not _allowed(path, alias.name):
                     problems.append(f"{path}:{node.lineno}: 禁止 import 網路相關模組 {alias.name}")
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            if _forbidden(node.module):
+            if _forbidden(node.module) and not _allowed(path, node.module):
                 problems.append(f"{path}:{node.lineno}: 禁止 import 網路相關模組 {node.module}")
         elif isinstance(node, ast.Call):
             func = node.func

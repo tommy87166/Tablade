@@ -1,5 +1,5 @@
 /** 左側：讀取資料 → 步驟清單（點選、拖曳排序、停用、刪除）→ 輸出資料，以及新增步驟選單。 */
-import { AlertTriangle, ArrowDown, ArrowUp, CircleX, Eye, EyeOff, FileInput, FileOutput, GripVertical, Plus, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowDown, ArrowUp, CircleX, FileInput, FileOutput, GripVertical, Pause, Play, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
@@ -29,10 +29,8 @@ interface Props {
   onCollapse: () => void
 }
 
-function rowsText(rows: number | null, delta: number | null) {
-  if (rows === null) return null
-  const change = delta === null || delta === 0 ? '' : ` (${delta > 0 ? '+' : ''}${delta.toLocaleString()})`
-  return `${rows.toLocaleString()} 列${change}`
+function rowsText(rows: number | null) {
+  return rows === null ? null : `${rows.toLocaleString()} 列`
 }
 
 export function AddStepMenu({ catalog, onAdd, disabled }: { catalog: CatalogItem[]; onAdd: (type: string) => void; disabled?: boolean }) {
@@ -74,6 +72,17 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
   const [dragging, setDragging] = useState<number | null>(null)
   const [over, setOver] = useState<number | null>(null)
   const input = state.input
+  const missing = input.entries.filter((e) => !e.found).length
+  const sourceText = !input.files.length
+    ? '尚未加入檔案'
+    : missing
+      ? `有 ${missing} 個找不到的檔`
+      : input.loaded
+        ? `${input.sources.length} 個檔案・已載入`
+        : input.stale
+          ? '設定已變更・請重新載入'
+          : `${input.files.length} 個項目・尚未載入`
+  const sourceTone = missing ? 'text-destructive' : input.stale ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'
   const last = state.steps.length - 1
 
   return (
@@ -96,18 +105,16 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
             <FileInput className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
             <span className="min-w-0 flex-1">
               <span className="block font-medium">讀取資料</span>
-              <span className="block truncate text-xs text-muted-foreground">
-                {input.error ?? `${input.pattern}（${input.files.length} 個檔案）`}
-              </span>
+              <span className={`block truncate text-xs ${sourceTone}`}>{sourceText}</span>
             </span>
-            {input.total_rows !== null ? (
+            {input.loaded && input.total_rows !== null ? (
               <span className="text-xs text-muted-foreground tabular-nums">{input.total_rows.toLocaleString()} 行</span>
             ) : null}
           </button>
         </li>
         {state.steps.map((step) => {
           const selected = state.selected === step.index
-          const rows = rowsText(step.rows, step.delta)
+          const rows = rowsText(step.rows)
           return (
             <ContextMenu key={step.id + step.index}>
               <ContextMenuTrigger asChild>
@@ -182,7 +189,7 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
                           onToggle(step.index)
                         }}
                       >
-                        {step.enabled ? <Eye /> : <EyeOff />}
+                        {step.enabled ? <Pause /> : <Play />}
                       </Button>
                       <Button
                         variant="ghost"
@@ -207,7 +214,7 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
                   <ArrowDown /> 下移
                 </ContextMenuItem>
                 <ContextMenuItem onSelect={() => onToggle(step.index)}>
-                  {step.enabled ? <EyeOff /> : <Eye />} {step.enabled ? '停用' : '啟用'}
+                  {step.enabled ? <Pause /> : <Play />} {step.enabled ? '停用' : '啟用'}
                 </ContextMenuItem>
                 <ContextMenuSeparator />
                 <ContextMenuItem variant="destructive" onSelect={() => onDelete(step.index)}>
@@ -226,7 +233,6 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
             <FileOutput className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
             <span className="min-w-0 flex-1">
               <span className="block font-medium">輸出資料</span>
-              <span className="block truncate text-xs text-muted-foreground">Parquet・執行時選擇位置</span>
             </span>
           </button>
         </li>

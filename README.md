@@ -34,7 +34,8 @@
 down, parse numbers and dates — preview the result after every step, and export clean
 **Parquet** with a manifest that records exactly where every row came from. The steps are
 saved as a **recipe JSON**, so the same cleanup can be re-run on next month's files.
-**Every file stays on your machine**: there is no server, no upload, and no network code.
+**Every file stays on your machine**: there is no server and no upload. The only network call is a
+version check against GitHub at start-up (nothing is sent, nothing is downloaded).
 
 > [!IMPORTANT]
 > **This repository does not, and must not, contain any real data.**
@@ -93,8 +94,11 @@ Five needs drove this tool:
 | `excel` | XLSX / XLS, one sheet | `__source_file`, `__sheet`, `__line_no`, columns | M4 |
 
 - Columns starting with `__` are system columns: hidden in the UI by default, optional on export.
-- Multiple files (glob) each get their own pipeline and are joined in file-name order at a
-  "merge source files" step or before writing — mismatched columns become null.
+- A recipe keeps a **file list**: files inside the recipe's folder are stored as relative paths,
+  others as absolute paths, and you can type a path with `*` by hand. Data is read only when you
+  press "Load data", and only once every entry in the list is found.
+- Multiple files each get their own pipeline and are joined in list order at a "merge source files"
+  step or before writing — mismatched columns become null.
 - Each file's row order is fixed at read time (`__line_no`) and every step keeps it, so steps never
   sort; per-file steps (fill down, remove top/bottom rows) work file by file without window
   functions, which keeps memory flat on multi-GB inputs.
@@ -119,9 +123,14 @@ cli.py — `tablade run recipe.json` runs the same engine without the UI
 
 ### 🔒 Security — no egress
 
-- **No network code.** `scripts/check_code_policy.py` parses every file in `src/` and rejects
-  imports of `socket`, `http`, `urllib`, `requests`, `httpx`, `aiohttp`, `ssl` and friends,
-  plus `eval` / `exec` / `compile` / `__import__`. It runs in pre-commit and CI.
+- **One network call, for the version only.** At start-up `src/tablade/update.py` sends one GET
+  to the GitHub API to read the latest release's version number. If there is a newer version,
+  the start page shows the download link. Nothing about you or your data is sent, nothing is
+  downloaded, and nothing updates itself. Set `TABLADE_NO_UPDATE_CHECK=1` to turn it off.
+- **No other network code.** `scripts/check_code_policy.py` parses every file in `src/` and rejects
+  imports of `socket`, `http`, `urllib`, `requests`, `httpx`, `aiohttp`, `ssl` and friends (only
+  `update.py` may use `urllib.request`), plus `eval` / `exec` / `compile` / `__import__`. It runs
+  in pre-commit and CI.
 - **No local server.** The page is loaded as an HTML string, so pywebview never starts its
   built-in HTTP server and no port is opened.
 - **Content-Security-Policy `default-src 'none'`** (injected at build time). The page cannot fetch, connect, frame or
@@ -182,9 +191,9 @@ The skill's version is the recipe format version, so a skill always writes recip
 
 | Check | Result |
 |---|---|
-| Unit tests (`pytest`) | 185 passed (every step's documented examples run as tests; the UI's session is driven step by step like a user) |
+| Unit tests (`pytest`) | 244 passed (every step's documented examples run as tests; the UI's session is driven step by step like a user) |
 | Example recipe (`examples/sales_detail.recipe.json`, 2 cp950 files, 94 lines → 70 rows) | ✅ output matches the expected rows; every row's `__line_no` points to its physical line |
-| Self-test inside the packaged app (generated cp950 CSV → Parquet → read back → lazy query → Excel engine) | ✅ onefile and onedir on Windows x64 (CI) and macOS arm64 |
+| Self-test inside the packaged app (generated cp950 CSV → Parquet → read back → lazy query → Excel engine → full run of the example recipe: transcode, per-file processing, merge source files, streaming export) | ✅ onefile and onedir on Windows x64 (CI) and macOS arm64 (the full example-recipe check: verified on macOS, Windows pending CI) |
 | Window smoke test (open window, self-test, load the example through the JS bridge, wait for the grid to render 70 rows, close) | ✅ onefile and onedir on macOS arm64; Windows runs in CI |
 | AI skill from the packaged app (`tablade skill`) | ✅ onefile and onedir |
 

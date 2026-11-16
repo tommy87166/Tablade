@@ -44,7 +44,7 @@ def recipe_of(pattern: str, reader: str, steps: list[dict]):
     return parse_recipe(
         {
             "tablade_recipe": RECIPE_VERSION,
-            "inputs": [{"id": "src", "pattern": pattern, "reader": reader, "encoding": "auto"}],
+            "inputs": [{"id": "src", "files": [pattern], "reader": reader, "encoding": "auto"}],
             "steps": steps,
             "output": {"format": "parquet", "keep_system_columns": True},
         }

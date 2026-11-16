@@ -1,6 +1,6 @@
 /**
  * 標題列上的 recipe 名稱：直接點了就能改（Enter 或離開輸入框時送出，Esc 取消）。
- * Python 回傳的值如果就是自己剛送出的，不覆蓋草稿；其他來源的變更（undo、開啟 recipe）才更新。
+ * 游標在輸入框裡時不讓 Python 的值蓋掉正在打的字；其他時候一律以 Python 的值為準（新增、開啟、undo）。
  */
 import { useState } from 'react'
 
@@ -16,26 +16,23 @@ function textWidth(text: string): number {
 interface Props {
   name: string
   path: string | null
-  dirty: boolean
   onCommit: (name: string) => void
 }
 
-export function RecipeTitle({ name, path, dirty, onCommit }: Props) {
+export function RecipeTitle({ name, path, onCommit }: Props) {
   const [draft, setDraft] = useState(name)
   const [seen, setSeen] = useState(name)
-  const [committed, setCommitted] = useState(name)
+  const [editing, setEditing] = useState(false)
   if (name !== seen) {
     setSeen(name)
-    if (name !== committed) setDraft(name)
+    if (!editing) setDraft(name)
   }
 
   const commit = () => {
+    setEditing(false)
     const next = draft.trim()
     setDraft(next)
-    if (next !== committed) {
-      setCommitted(next)
-      onCommit(next)
-    }
+    if (next !== name) onCommit(next)
   }
 
   const placeholder = '未命名 Recipe'
@@ -53,11 +50,12 @@ export function RecipeTitle({ name, path, dirty, onCommit }: Props) {
             style={{ width }}
             className="h-8 min-w-0 rounded-md border border-transparent bg-transparent px-2 text-[15px] font-semibold outline-none transition-colors placeholder:font-normal placeholder:text-muted-foreground hover:border-border focus:border-ring focus:bg-background"
             onChange={(e) => setDraft(e.target.value)}
+            onFocus={() => setEditing(true)}
             onBlur={commit}
             onKeyDown={(e) => {
               if (e.key === 'Enter') e.currentTarget.blur()
               if (e.key === 'Escape') {
-                setDraft(committed)
+                setDraft(name)
                 window.setTimeout(() => (e.target as HTMLInputElement).blur())
               }
             }}
@@ -65,11 +63,6 @@ export function RecipeTitle({ name, path, dirty, onCommit }: Props) {
         </TooltipTrigger>
         <TooltipContent>{path ?? '尚未存檔'}</TooltipContent>
       </Tooltip>
-      {dirty ? (
-        <span className="ml-0.5 text-muted-foreground" title="有尚未儲存的修改">
-          •
-        </span>
-      ) : null}
     </div>
   )
 }

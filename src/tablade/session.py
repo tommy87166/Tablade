@@ -13,10 +13,8 @@
 from __future__ import annotations
 
 import copy
-import glob
 import hashlib
 import json
-import os
 import re
 import threading
 from dataclasses import dataclass, field
@@ -38,13 +36,22 @@ from .engine.run import (
     execute,
 )
 from .ingest.encoding import DecodeError
-from .ingest.sources import InputError, Progress, SourceFile, concat, sample, scan_parts
+from .ingest.sources import (
+    InputError,
+    Progress,
+    SourceFile,
+    check_entries,
+    concat,
+    expand,
+    sample,
+    scan_parts,
+)
 from .recipe.schema import RECIPE_VERSION, RecipeError, load_json, parse_recipe, pydantic_issues
 from .steps import all_steps, get
 from .steps.base import SOURCE_FILE, SYSTEM_PREFIX, Step
 
 MAX_UNDO = 100
-DEFAULT_INPUT = {"id": "src", "pattern": "", "reader": "text_lines", "encoding": "auto"}
+DEFAULT_INPUT = {"id": "src", "files": [], "reader": "text_lines", "encoding": "auto"}
 DEFAULT_OUTPUT = {"format": "parquet", "keep_system_columns": True}
 INVALID_FILENAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
@@ -69,6 +76,16 @@ def _digest(value: Any) -> str:
     ).hexdigest()
 
 
+def _entry_path(entry: str, base_dir: Path) -> Path:
+    return Path(entry) if Path(entry).is_absolute() else base_dir / entry
+
+
+def _entry_for(path: Path, base_dir: Path) -> str:
+    """檔案清單裡怎麼寫這個檔：在 base_dir 裡（含子資料夾）用相對路徑，否則用絕對路徑。"""
+    real, base = path.resolve(), base_dir.resolve()
+    return real.relative_to(base).as_posix() if real.is_relative_to(base) else real.as_posix()
+
+
 def _data_columns(frame: pl.DataFrame) -> list[str]:
     return [c for c in frame.columns if not c.startswith(SYSTEM_PREFIX)]
 
@@ -90,25 +107,13 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
-def common_pattern(paths: list[Path]) -> str:
-    """多個檔案 → 一個 glob（例如 明細_01.csv、明細_02.csv → 明細_*.csv）。"""
-    names = [p.name for p in paths]
-    if len(names) == 1:
-        return names[0]
-    prefix = os.path.commonprefix(names)  # noqa: RUF071  檔名要逐字比對
-    suffix = os.path.commonprefix([n[::-1] for n in names])[::-1]  # noqa: RUF071
-    if len(prefix) + len(suffix) > min(len(n) for n in names):
-        suffix = suffix[len(prefix) + len(suffix) - min(len(n) for n in names) :]
-    return f"{prefix}*{suffix}"
-
-
 class Session:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self.recipe_path: Path | None = None
         self.base_dir: Path | None = None
         self.meta: dict[str, str] = {"name": "", "description": ""}
-        self.input: dict[str, Any] = dict(DEFAULT_INPUT)
+        self.input: dict[str, Any] = copy.deepcopy(DEFAULT_INPUT)
         self.output: dict[str, Any] = dict(DEFAULT_OUTPUT)
         self.steps: list[dict[str, Any]] = []
         self.selected = -1
@@ -117,11 +122,14 @@ class Session:
         self._undo: list[dict[str, Any]] = []
         self._redo: list[dict[str, Any]] = []
         self._source: tuple[str, pl.DataFrame | None, list[SourceFile], str | None] | None = None
+        """按「載入資料」讀進來的資料（設定指紋、資料、來源檔、錯誤）；不會自動讀檔。"""
+        self._stale = False
+        """載入之後檔案清單、讀取方式、編碼或檔案內容變了：要重新按「載入資料」。"""
         self.progress: Progress = None
         """讀檔、轉碼、匯出時的進度回報（api.py 會把它推給前端）。"""
         self._computed: list[_Computed] = []
         self.last_export: Path | None = None
-        """上次「執行」存的位置：下次存檔對話框的預設值。"""
+        """上次「處理並匯出資料」存的位置：下次存檔對話框的預設值。"""
 
     # ── 快照與 undo / redo ─────────────────────────────────────
 
@@ -180,7 +188,17 @@ class Session:
         self.__init__()
         self.progress = progress
 
-    def new(self) -> None:
+    def new(self, path: Path) -> Path:
+        """新增 Recipe：先決定存放位置（檔名就是名稱），立刻寫出空的 Recipe 檔。"""
+        with self._lock:
+            self._reset()
+            target = path.resolve()
+            self.recipe_path, self.base_dir = target, target.parent
+            self.meta["name"] = target.name.removesuffix(".json").removesuffix(".recipe")
+            return self.save_recipe(target)
+
+    def close(self) -> None:
+        """回到沒有開著 Recipe 的狀態。"""
         with self._lock:
             self._reset()
 
@@ -200,9 +218,12 @@ class Session:
                 "description": str(data.get("description", "")),
             }
             self.input = {
-                **DEFAULT_INPUT,
-                **(inputs[0] if inputs and isinstance(inputs[0], dict) else {}),
+                **copy.deepcopy(DEFAULT_INPUT),
+                **(copy.deepcopy(inputs[0]) if inputs and isinstance(inputs[0], dict) else {}),
             }
+            if not isinstance(self.input.get("files"), list):
+                self.input["files"] = []
+            self.input["files"] = [f for f in self.input["files"] if isinstance(f, str) and f]
             self.output = {
                 **DEFAULT_OUTPUT,
                 **(data.get("output") if isinstance(data.get("output"), dict) else {}),
@@ -217,14 +238,17 @@ class Session:
             return result.issues
 
     def save_recipe(self, path: Path | None = None) -> Path:
-        """存成 recipe 檔；換位置時，input 的 pattern 會改成相對於新位置。"""
+        """存成 recipe 檔；換位置時，檔案清單依新位置重新決定存相對或絕對路徑。"""
         with self._lock:
             target = path or self.recipe_path
             if target is None:
                 raise SessionError("還沒有指定 Recipe 檔的位置")
             target = target.resolve()
-            if self.base_dir and self.input.get("pattern") and target.parent != self.base_dir:
-                self.input["pattern"] = self._relocate(self.input["pattern"], target.parent)
+            if self.base_dir and target.parent != self.base_dir:
+                self.input["files"] = [
+                    _entry_for(_entry_path(e, self.base_dir), target.parent)
+                    for e in self.input["files"]
+                ]
             self.base_dir = target.parent
             target.write_text(
                 json.dumps(self.recipe_dict(), ensure_ascii=False, indent=2) + "\n",
@@ -234,38 +258,47 @@ class Session:
             self.dirty = False
             return target
 
-    def _relocate(self, pattern: str, new_dir: Path) -> str:
-        absolute = (
-            pattern if Path(pattern).is_absolute() else str((self.base_dir or new_dir) / pattern)
-        )
-        return Path(os.path.relpath(absolute, new_dir)).as_posix()
-
     # ── 編輯操作 ──────────────────────────────────────────────
 
-    def open_data(self, paths: list[Path]) -> None:
-        """選了資料檔：換掉 input（保留現有步驟，等於把 recipe 套到新資料上）。"""
-        if not paths:
-            return
+    def _require_recipe(self) -> Path:
+        if self.base_dir is None:
+            raise SessionError("先新增或開啟 Recipe")
+        return self.base_dir
+
+    def add_files(self, paths: list[Path]) -> None:
+        """「瀏覽檔案」選的檔加進檔案清單：Recipe 資料夾裡（含子資料夾）存相對路徑，其他存絕對路徑。"""
         with self._lock:
-            paths = [p.resolve() for p in paths]
-            folder = paths[0].parent
-            if any(p.parent != folder for p in paths):
-                raise SessionError("一次只能選同一個資料夾裡的檔案")
+            base = self._require_recipe()
+            entries = [_entry_for(p, base) for p in paths]
+            new = [e for e in dict.fromkeys(entries) if e not in self.input["files"]]
+            if not new:
+                return
             self._change()
-            pattern = common_pattern(paths)
-            if self.base_dir is None:
-                self.base_dir = folder
-            self.input["pattern"] = Path(
-                os.path.relpath(folder / pattern, self.base_dir)
-            ).as_posix()
-            if not self.meta.get("name"):
-                self.meta["name"] = paths[0].stem
-            self.selected = min(self.selected, len(self.steps))
+            self.input["files"] += new
+
+    def add_file_entry(self, text: str) -> None:
+        """手動輸入的路徑（相對於 Recipe 資料夾或絕對路徑，可含 *）。"""
+        with self._lock:
+            self._require_recipe()
+            entry = text.strip().replace("\\", "/")
+            if not entry:
+                raise SessionError("請輸入檔案路徑")
+            if entry in self.input["files"]:
+                return
+            self._change()
+            self.input["files"].append(entry)
+
+    def remove_file(self, index: int) -> None:
+        with self._lock:
+            if not 0 <= index < len(self.input["files"]):
+                raise SessionError(f"檔案清單沒有第 {index + 1} 項")
+            self._change()
+            del self.input["files"][index]
 
     def set_input(self, values: dict[str, Any]) -> None:
         with self._lock:
             self._change()
-            for key in ("pattern", "reader", "encoding"):
+            for key in ("reader", "encoding"):
                 if key in values:
                     self.input[key] = values[key]
 
@@ -371,35 +404,42 @@ class Session:
     # ── 計算 ─────────────────────────────────────────────────
 
     def _source_key(self) -> str:
-        files = []
-        if self.base_dir and self.input.get("pattern"):
-            full = (
-                self.input["pattern"]
-                if Path(self.input["pattern"]).is_absolute()
-                else str(self.base_dir / self.input["pattern"])
-            )
-            for p in sorted(glob.glob(full, recursive=True)):
-                try:
-                    st = os.stat(p)
-                    files.append((p, st.st_size, st.st_mtime_ns))
-                except OSError:
-                    continue
-        return _digest({"input": self.input, "base": str(self.base_dir), "files": files})
+        """目前設定的指紋：讀取方式、編碼，加上實際讀到的每個檔（位置、大小、修改時間）。
 
-    def _load_source(self) -> tuple[pl.DataFrame | None, list[SourceFile], str | None]:
-        key = self._source_key()
-        if self._source and self._source[0] == key:
-            return self._source[1], self._source[2], self._source[3]
-        frame, files, error = None, [], None
-        if not self.input.get("pattern") or self.base_dir is None:
-            error = "還沒有開啟資料"
-        else:
+        用實際位置而不是清單上的寫法：另存到別的資料夾只改寫法，不需要重新載入。
+        """
+        files = []
+        if self.base_dir:
+            for entry in self.input["files"]:
+                for p in expand(entry, self.base_dir):
+                    try:
+                        st = p.stat()
+                        files.append((str(p.resolve()), st.st_size, st.st_mtime_ns))
+                    except OSError:
+                        continue
+        reading = {k: self.input.get(k) for k in ("reader", "encoding")}
+        return _digest({"reading": reading, "files": files})
+
+    def load_data(self) -> None:
+        """「載入資料」：檔案清單裡的檔都找得到才讀（資料大時讀樣本）。"""
+        with self._lock:
+            base = self._require_recipe()
+            missing = [
+                e["path"] for e in check_entries(self.input["files"], base) if not e["found"]
+            ]
+            if not self.input["files"]:
+                raise SessionError("還沒有加入資料檔")
+            if missing:
+                raise SessionError(f"找不到：{'、'.join(missing)}（請先從檔案清單移除）")
+            self._source, self._computed, self._stale = None, [], False
+            key = self._source_key()
+            frame, files, error = None, [], None
             try:
                 parts, files = scan_parts(
-                    self.input["pattern"],
+                    self.input["files"],
                     self.input["reader"],
                     self.input["encoding"],
-                    self.base_dir,
+                    base,
                     self.progress,
                 )
                 if sum(f.rows for f in files) <= SAMPLE_THRESHOLD:
@@ -409,9 +449,18 @@ class Session:
                     frame = sample(parts, files, self.input["reader"], SAMPLE_HEAD, SAMPLE_TAIL)
             except (InputError, DecodeError, LookupError, pl.exceptions.PolarsError) as err:
                 error = str(err)
-        self._source = (key, frame, files, error)
-        self._computed = []
-        return frame, files, error
+            if error:
+                raise SessionError(error)
+            self._source = (key, frame, files, None)
+
+    def _load_source(self) -> tuple[pl.DataFrame | None, list[SourceFile], str | None]:
+        """已載入的資料；設定或檔案變了就放掉（要重新按「載入資料」），不會自動讀檔。"""
+        if self._source is None:
+            return None, [], None
+        if self._source[0] != self._source_key():
+            self._source, self._computed, self._stale = None, [], True
+            return None, [], None
+        return self._source[1], self._source[2], self._source[3]
 
     def _report(self, stage: str) -> None:
         if self.progress is not None:
@@ -485,6 +534,7 @@ class Session:
     def state(self) -> dict[str, Any]:
         with self._lock:
             source, files, source_error = self._load_source()
+            entries = check_entries(self.input["files"], self.base_dir) if self.base_dir else []
             computed = self._compute()
             steps, previous = [], source
             for i, (raw, item) in enumerate(zip(self.steps, computed, strict=True)):
@@ -496,7 +546,11 @@ class Session:
                     else (
                         "disabled"
                         if not enabled
-                        else ("ok" if item.frame is not None else "pending")
+                        else (
+                            "ok"
+                            if item.frame is not None
+                            else ("waiting" if source is None else "pending")
+                        )
                     )
                 )
                 describe = None
@@ -553,16 +607,21 @@ class Session:
                     "description": self.meta.get("description", ""),
                     "dirty": self.dirty,
                     "base_dir": str(self.base_dir) if self.base_dir else None,
+                    "open": self.recipe_path is not None,
                 },
                 "input": {
                     **self.input,
+                    "entries": entries,
+                    "can_load": bool(entries) and all(e["found"] for e in entries),
+                    "loaded": source is not None,
+                    "stale": self._stale,
                     "error": source_error,
                     "total_rows": sum(f.rows for f in files) if files else None,
                     "sampled": bool(files) and sum(f.rows for f in files) > SAMPLE_THRESHOLD,
                     "sample": {"head": SAMPLE_HEAD, "tail": SAMPLE_TAIL},
                     "rows": source.height if source is not None else None,
                     "columns": _data_columns(source) if source is not None else None,
-                    "files": [f.__dict__ for f in files],
+                    "sources": [f.__dict__ for f in files],
                 },
                 "output": self.output,
                 "steps": steps,
@@ -613,7 +672,7 @@ class Session:
     # ── 匯出與報告 ────────────────────────────────────────────
 
     def export_suggestion(self) -> tuple[Path, str]:
-        """按「執行」時存檔對話框的預設資料夾與檔名。
+        """按「處理並匯出資料」時存檔對話框的預設資料夾與檔名。
 
         上次存的位置優先；否則存在 Recipe（或資料）的資料夾，檔名用 Recipe 檔名或名稱。
         """
@@ -629,13 +688,20 @@ class Session:
             stem = INVALID_FILENAME.sub("_", stem).strip(" .") or "result"
             return base, f"{stem}.parquet"
 
-    def export(self, target: Path) -> dict[str, Any]:
-        """處理全部資料，存成 target（輸出位置不記在 recipe 裡，每次執行時決定）。"""
+    def require_loaded(self) -> Path:
+        """「處理並匯出資料」前的檢查：要先按「載入資料」，而且載入後設定與檔案都沒變。"""
         with self._lock:
-            if self.base_dir is None:
-                raise SessionError("還沒有開啟資料")
+            base = self._require_recipe()
+            if self._load_source()[0] is None:
+                raise SessionError("請先在「讀取資料」按「載入資料」")
+            return base
+
+    def export(self, target: Path) -> dict[str, Any]:
+        """處理全部資料，存成 target（只在已載入資料時；不會自己讀檔處理）。"""
+        with self._lock:
+            base = self.require_loaded()
             recipe = parse_recipe(self.recipe_dict())
-            _, report = execute(recipe, self.base_dir, output=target, progress=self.progress)
+            _, report = execute(recipe, base, output=target, progress=self.progress)
             self.last_export = target
             return {
                 "path": str(target),

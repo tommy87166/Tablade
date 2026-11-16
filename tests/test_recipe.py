@@ -98,21 +98,19 @@ def test_structural_messages_are_actionable():
     )
 
 
-def test_old_minor_is_upgraded():
-    """1.0 的 output.path 拿掉了：舊 recipe 照樣通過（自動忽略），新版本寫了就是錯。"""
-    old = example()
-    old["tablade_recipe"] = "1.0"
-    old["output"]["path"] = "output/明細.parquet"
-    assert check(old) == []
-    upgraded = validator.upgrade(old)
-    assert "path" not in upgraded["output"] and "path" in old["output"]  # 不改動傳進來的物件
-    assert parse_recipe(upgraded).tablade_recipe == "1.0"
-
-    new = example()
-    new["output"]["path"] = "x.parquet"
-    assert paths(check(new)) == ["output.path"]
+def test_output_path_and_pattern_are_not_allowed():
+    """輸出位置在執行時才決定（沒有 output.path）；讀取資料用檔案清單 files（沒有 pattern）。"""
+    data = example()
+    data["output"]["path"] = "x.parquet"
+    assert paths(check(data)) == ["output.path"]
     with pytest.raises(RecipeError):
-        parse_recipe(new)
+        parse_recipe(data)
+    data = example()
+    data["inputs"][0]["pattern"] = "x.csv"
+    assert "inputs[0].pattern" in paths(check(data))
+    empty = example()
+    empty["inputs"][0]["files"] = []  # 剛新增的 Recipe：清單可以是空的
+    assert check(empty) == []
 
 
 def test_version_rules():

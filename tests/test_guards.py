@@ -165,5 +165,13 @@ def test_code_policy_allows(check_code_policy, source):
     assert check_code_policy.check_source("x.py", source) == []
 
 
+def test_only_update_module_may_use_urllib(check_code_policy):
+    source = "import urllib.request\nimport urllib.error"
+    assert check_code_policy.check_source("src/tablade/update.py", source) == []
+    assert check_code_policy.check_source("src/tablade/session.py", source)
+    assert check_code_policy.check_source("src/tablade/update.py", "import socket")
+    assert check_code_policy.check_source("src/tablade/update.py", "import http.client")
+
+
 def test_src_follows_code_policy(check_code_policy):
     assert check_code_policy.main(["src"]) == 0

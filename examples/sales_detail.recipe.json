@@ -1,9 +1,9 @@
 {
-  "tablade_recipe": "1.1",
+  "tablade_recipe": "1.0",
   "name": "門市銷售明細整理",
   "description": "範例：先執行 uv run python scripts/gen_fixtures.py examples/data 產生假資料",
   "inputs": [
-    { "id": "src", "pattern": "data/明細_*.csv", "reader": "text_lines", "encoding": "auto" }
+    { "id": "src", "files": ["data/明細_*.csv"], "reader": "text_lines", "encoding": "auto" }
   ],
   "steps": [
     { "id": "s1", "type": "remove_top_rows", "n": 2 },

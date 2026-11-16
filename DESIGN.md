@@ -31,7 +31,7 @@
 | 限制 | 對設計的影響 |
 |---|---|
 | 公司配發的電腦權限受管控、不可自行安裝套件 | 必須打包成單一執行檔（或解壓即用的資料夾） |
-| 資料不可上雲 | 全部本機運算，不開對外網路連線，不依賴執行時下載任何擴充 |
+| 資料不可上雲 | 全部本機運算，不依賴執行時下載任何擴充；唯一的對外連線是啟動時向 GitHub 查最新版號（不送出資料、不下載） |
 | 處理的資料可能含敏感資訊 | repo 內**永遠不得出現真實資料**（見 §11） |
 | repo 從第一天就公開 | 程式碼、文件、commit 訊息、issue 都不得含真實資料或可識別的組織資訊（見 §11） |
 | 目標電腦可執行 Electron 程式 | 未簽章程式至少不會全面被擋，但單一執行檔需實測（見 §10） |
@@ -115,9 +115,10 @@
 
 ### 5.3 多檔
 
-- `inputs[].pattern` 支援 glob（例如 `明細_*.csv`）。
+- `inputs[].files` 是**檔案清單**：每一項是相對於 recipe 資料夾的路徑或絕對路徑，一律用 `/`，可以含 `*`（glob）。依清單順序讀取，同一項裡依檔名排序，同一個實際的檔只讀一次。
+- UI 的「瀏覽檔案」：recipe 資料夾裡（含子資料夾）的檔存相對路徑，其他位置存絕對路徑（用 `is_relative_to` 判斷，Windows 跨磁碟也不會出錯）。程式不會自己產生 `*`；需要時手動輸入路徑加入清單。另存到別的資料夾時，每一項依新位置重新決定相對或絕對。
 - 每個來源檔各自掃描成一個 LazyFrame（`scan_parts()`），欄位對齊成同一組：欄位不一致時缺的欄補 null（效果同 `diagonal_relaxed`）。
-- 每一列都帶 `__source_file`。各檔分開跑步驟，到「合併來源檔」或寫出前才依檔名順序接起來（§8）。
+- 每一列都帶 `__source_file`（recipe 資料夾裡的檔是相對路徑，其他是整理過的絕對路徑）。各檔分開跑步驟，到「合併來源檔」或寫出前才依清單順序接起來（§8）。
 
 ---
 
@@ -125,12 +126,12 @@
 
 ```json
 {
-  "tablade_recipe": "1.1",
+  "tablade_recipe": "1.0",
   "name": "明細整理範例",
   "inputs": [
     {
       "id": "src",
-      "pattern": "data/明細_*.csv",
+      "files": ["data/明細_*.csv"],
       "reader": "text_lines",
       "encoding": "auto"
     }
@@ -154,7 +155,7 @@
 
 - `tablade_recipe` 是 recipe 格式的版本號（`MAJOR.MINOR`，規則見 §17.6），AI skill 共用同一個版本號。
 - 每個步驟都有唯一的 `id`，並可加上 `"enabled": false` 暫時停用。
-- recipe **不記輸出位置**：視窗裡按「執行」時才用存檔對話框選位置；命令列 `tablade run` 用 `-o` 指定，預設是 recipe 旁邊同名的 `.parquet`。（1.1 起；1.0 的 `output.path` 開啟時自動忽略）
+- recipe **不記輸出位置**：視窗裡按「處理並匯出資料」時才用存檔對話框選位置；命令列 `tablade run` 用 `-o` 指定，預設是 recipe 旁邊同名的 `.parquet`。
 - **依資料決定結構的步驟**（提升標題列、拆成幾欄、樞紐），在**建立步驟的當下**先掃一次資料，把欄名和欄數寫死在 recipe 裡。之後套用到新資料時，若出現更多段數或新的欄位，產生**警告**，不默默增減欄位。
 - recipe 本身可能含有敏感資訊（例如篩選條件裡的人名或公司名稱），所以**真實 recipe 也不得 commit**，repo 只放範例 recipe。
 
@@ -164,7 +165,7 @@
 
 ### 7.1 MVP（第一版）
 
-M1 已完成：`remove_top_rows`、`remove_bottom_rows`、`remove_blank_rows`、`promote_headers`、`split_delimited`、`split_column`、`fill_down`、`filter`；recipe 1.1 加上 `merge_files`。
+M1 已完成：`remove_top_rows`、`remove_bottom_rows`、`remove_blank_rows`、`promote_headers`、`split_delimited`、`split_column`、`fill_down`、`filter`、`merge_files`。
 
 | 類型 | 說明 | Polars 實作方向 |
 |---|---|---|
@@ -289,7 +290,7 @@ M1 已完成：`remove_top_rows`、`remove_bottom_rows`、`remove_blank_rows`、
    - 疑似身分證字號（`[A-Z][12]\d{8}` 且通過檢查碼驗證）、疑似統一編號（8 碼數字並出現在「統編」附近）的內容
    - 本機私有封鎖清單 `.tablade-denylist`（不進版控）裡列出的字詞，例如人名、公司名稱、專案代號
 3. **測試資料一律由程式產生**：`scripts/gen_fixtures.py` 在測試時產生假資料，產生出來的檔案不 commit。
-4. **程式不得有任何對外連線**（不做遙測、不自動更新、不下載擴充）。CI 加一道檢查（`scripts/check_code_policy.py`），禁止 import `requests`、`urllib.request`、`httpx` 等網路套件，也禁止 `eval` / `exec`。
+4. **程式不得有其他對外連線**（不做遙測、不自動更新、不下載擴充）。唯一例外是 `src/tablade/update.py`：啟動時對 GitHub API 發一個 GET，只讀最新 release 的版號；有新版時在起始頁顯示下載網址，不下載、不自動更新，不送出任何使用者資料；設定 `TABLADE_NO_UPDATE_CHECK=1` 就完全不連線。CI 加一道檢查（`scripts/check_code_policy.py`），除了這個檔案以外禁止 import `requests`、`urllib.request`、`httpx` 等網路套件，也禁止 `eval` / `exec`。
 5. README 明確寫出：「本 repo 不含、也不得含任何真實資料」。
 6. issue、PR、commit 訊息同樣不得貼上真實資料或真實檔名；回報問題時用 `gen_fixtures.py` 產生的假資料重現。
 
@@ -399,7 +400,7 @@ tablade/
 - 新增步驟時，必須同時完成 §7.3 的五件事（參數 model、apply、describe、infer_schema 視需要、測試）。
 - 步驟 `apply()` 必須是純函式：不讀寫檔案、不 print、不碰 UI。
 - 依賴列順序的操作，一律先依 `__source_file, __line_no` 排序。
-- 不使用 `eval` / `exec`；不加入任何網路連線程式碼。
+- 不使用 `eval` / `exec`；除了 `update.py` 查版號以外，不加入任何網路連線程式碼。
 - 依賴版本固定在 `pyproject.toml`，不要擅自升級。
 - 每次修改都要跑 `pytest` 和 `scripts/check_no_data.py`。
 
@@ -453,7 +454,8 @@ tablade/
   - 步驟以原始 dict 保存，參數還不合法的步驟也能留在清單裡；計算到第一個錯誤的步驟為止，預覽顯示它之前最後一個算得出來的結果（`preview.step` ≠ `preview.requested`）。
   - 每一步的結果依「input ＋ 到這一步為止的步驟」的雜湊快取；改第 k 步時，前面的步驟直接沿用。
   - 新增步驟時，各步驟的 `suggest(frame, context)` 依目前的資料給建議參數：判斷分隔符號（會處理引號）、從第一列抓欄名、帶入右鍵點選的欄位或值。
-  - 存檔時去掉跟預設值相同的參數；另存到別的資料夾時，input 的 pattern 會改成相對於新位置。
+  - 存檔時去掉跟預設值相同的參數；另存到別的資料夾時，檔案清單依新位置重新決定相對或絕對路徑。
+  - **開檔流程**：程式一開沒有 recipe，只能「新增 Recipe」（先跳存檔視窗命名，立刻寫出空的 recipe 檔）或「開啟 Recipe」。在「讀取資料」用「瀏覽檔案」或手動輸入路徑建立檔案清單；清單每一項都找得到檔時，才能按「讀取資料」設定裡的「載入資料」（載入後隱藏，設定變了才再出現）。資料**不會自動讀**：改了檔案清單、讀取方式、編碼，或檔案在磁碟上被改過，預覽就清空，要再按一次「載入資料」。工具列的主要按鈕是「▶ 處理並匯出資料」。
   - 點警告時用 `find_row` 找到那一列在預覽中的位置並捲過去。
 - **前端開發**：`scripts/gen_frontend_dev_data.py` 用假資料跑一次範例 recipe，產生 `frontend/src/dev/sample.json`（不進版控）；在一般瀏覽器開 dev server 時，`mock.ts` 用它模擬 API。
 

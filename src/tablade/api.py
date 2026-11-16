@@ -112,6 +112,15 @@ class Api:
         return {"result": run_selftest()}
 
     @_wrap
+    def check_update(self) -> dict[str, Any]:
+        """啟動時查 GitHub 上的最新版號（只讀版號，不下載）；打包時的 smoke test 不連線。"""
+        if self._smoke:
+            return {"update": None}
+        from .update import check_latest
+
+        return {"update": check_latest()}
+
+    @_wrap
     def smoke_done(self, passed: bool) -> dict[str, Any]:
         """``--smoke`` 模式下由 JS 回報結果後關閉視窗。"""
         if self._smoke:
@@ -135,6 +144,7 @@ class Api:
         recipe = resource_dir() / "examples" / "sales_detail.recipe.json"
         shutil.copy(recipe, self._smoke_dir / recipe.name)
         issues = self._session.load_recipe(self._smoke_dir / recipe.name)
+        self._session.load_data()
         return self._state(issues=issues)
 
     # ── 畫面狀態 ───────────────────────────────────────────────
@@ -155,8 +165,15 @@ class Api:
 
     @_wrap
     def new_recipe(self) -> dict[str, Any]:
-        self._session.new()
-        return self._state()
+        """新增 Recipe：先跳存檔視窗命名，確定後立刻寫出空的 Recipe 檔。"""
+        picked = self._dialog("save", save_filename="未命名.recipe.json", file_types=RECIPE_TYPES)
+        if not picked:
+            return {"cancelled": True, **self._state()}
+        target = picked[0]
+        if not target.name.endswith(".json"):
+            target = target.with_name(target.name + ".recipe.json")
+        path = self._session.new(target)
+        return {"cancelled": False, "path": str(path), **self._state()}
 
     @_wrap
     def open_recipe(self) -> dict[str, Any]:
@@ -188,12 +205,29 @@ class Api:
     # ── 資料 ───────────────────────────────────────────────────
 
     @_wrap
-    def open_data(self) -> dict[str, Any]:
+    def add_files(self) -> dict[str, Any]:
+        """「瀏覽檔案」：選的檔加進檔案清單（不會自動讀檔）。"""
         picked = self._dialog("open", allow_multiple=True, file_types=DATA_TYPES)
         if not picked:
             return {"cancelled": True, **self._state()}
-        self._session.open_data(picked)
+        self._session.add_files(picked)
         return {"cancelled": False, **self._state()}
+
+    @_wrap
+    def add_file_entry(self, text: str) -> dict[str, Any]:
+        self._session.add_file_entry(str(text))
+        return self._state()
+
+    @_wrap
+    def remove_file(self, index: int) -> dict[str, Any]:
+        self._session.remove_file(int(index))
+        return self._state()
+
+    @_wrap
+    def load_data(self) -> dict[str, Any]:
+        """「載入資料」：讀檔案清單裡的檔，產生預覽。"""
+        self._session.load_data()
+        return self._state()
 
     @_wrap
     def set_input(self, values: dict[str, Any]) -> dict[str, Any]:
@@ -256,7 +290,8 @@ class Api:
 
     @_wrap
     def export_parquet(self) -> dict[str, Any]:
-        """「執行」：開存檔對話框選輸出位置，再處理全部資料。"""
+        """「處理並匯出資料」：已載入資料時才開存檔對話框選輸出位置，再處理全部資料。"""
+        self._session.require_loaded()
         folder, name = self._session.export_suggestion()
         picked = self._dialog(
             "save", directory=str(folder), save_filename=name, file_types=PARQUET_TYPES

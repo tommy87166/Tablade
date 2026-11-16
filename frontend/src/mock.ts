@@ -20,9 +20,22 @@ const missing = '找不到 src/dev/sample.json：請先執行 uv run python scri
 // 跟開啟 recipe 一樣，一開始選最後一步（最大的鍵是「輸出資料」）
 let selected = sample ? Math.max(...Object.keys(sample.states).map(Number)) - 1 : -1
 
+// 網址加 ?start 看起始頁（還沒開 Recipe），加 ?unloaded 看還沒載入資料的畫面
+let open = !location.search.includes('start')
+let loaded = !location.search.includes('unloaded')
+
 const delay = <T>(value: T, ms = 120) => new Promise<T>((r) => setTimeout(() => r(value), ms))
 // 每次回傳複本：React 才會察覺狀態變了
-const current = () => structuredClone(sample.states[String(selected)])
+const current = () => {
+  const state = structuredClone(sample.states[String(selected)])
+  state.recipe.open = open
+  if (!loaded) {
+    state.input = { ...state.input, loaded: false, sources: [], rows: null, total_rows: null, columns: null }
+    state.preview = { ...state.preview, rows: null, columns: [], warnings: [] }
+    state.steps = state.steps.map((s) => ({ ...s, status: 'waiting', rows: null, files: null }))
+  }
+  return state
+}
 const withState = <T extends object>(extra?: T) => delay({ ok: true as const, state: current(), ...(extra ?? ({} as T)) })
 const fail = () => delay({ ok: false as const, error: missing })
 
@@ -32,9 +45,42 @@ export const mockApi: TabladeApi = sample
       selftest: () =>
         delay({
           ok: true,
-          result: { ok: true, checks: [{ name: '假的自我檢測', ok: true, detail: '開發模式' }], versions: { mode: 'dev' } },
+          result: {
+            ok: true,
+            checks: [
+              ['產生假資料 CSV', '可以在暫存資料夾寫檔', '12,205 bytes（cp950）'],
+              ['讀取 CSV（自動偵測編碼）', '讀檔與 Big5（cp950）編碼偵測正常', '200 列 × 6 欄，編碼 cp950'],
+              ['寫出 Parquet', '可以輸出 Parquet 檔', '4,342 bytes'],
+              ['讀回 Parquet 並比對', '寫出的內容完全正確', '內容一致'],
+              ['Lazy 查詢', 'Polars 的查詢引擎正常', 'group_by 得到 3 組'],
+              ['Excel 引擎', '讀 Excel 的元件存在、能載入', 'fastexcel（開發用假資料）'],
+              [
+                '完整執行範例 Recipe',
+                '轉碼、各檔分開處理、8 個步驟、合併來源檔、串流匯出整條流程正常',
+                '2 個 cp950 檔 → 合併成 70 列，與預期一致',
+              ],
+            ].map(([name, purpose, detail]) => ({ name, purpose, detail, ok: true, ran: true })),
+            versions: { tablade: '0.1.0', python: '—', polars: '—', platform: 'Browser（開發用假資料）', frozen: 'False' },
+          },
         }),
       smoke_done: () => delay({ ok: true }),
+      // 網址加 ?update 看有新版時的提示
+      check_update: () =>
+        delay(
+          {
+            ok: true,
+            update: location.search.includes('update')
+              ? {
+                  current: '0.1.0',
+                  latest: '0.2.0',
+                  newer: true,
+                  url: 'https://github.com/（開發用假資料）/releases/tag/v0.2.0',
+                  error: null,
+                }
+              : { current: '0.1.0', latest: '0.1.0', newer: false, url: 'https://github.com/（開發用假資料）/releases', error: null },
+          },
+          600,
+        ),
       smoke_example: () => withState({ issues: [] }),
       state: () => withState(),
       rows: (step, offset, limit) => {
@@ -42,11 +88,25 @@ export const mockApi: TabladeApi = sample
         return delay({ ...page, offset, rows: page.rows.slice(offset, offset + limit) as Cell[][] })
       },
       find_row: () => delay({ ok: true, row: 0 }),
-      new_recipe: () => withState(),
-      open_recipe: () => withState({ cancelled: true }),
+      new_recipe: () => {
+        open = true
+        loaded = false
+        return withState({ cancelled: false, path: '（開發用假資料）/未命名.recipe.json' })
+      },
+      open_recipe: () => {
+        open = true
+        loaded = false
+        return withState({ cancelled: false, issues: [] })
+      },
       save_recipe: () => withState({ cancelled: true }),
       save_recipe_as: () => withState({ cancelled: true }),
-      open_data: () => withState({ cancelled: true }),
+      add_files: () => withState({ cancelled: true }),
+      add_file_entry: () => withState(),
+      remove_file: () => withState(),
+      load_data: () => {
+        loaded = true
+        return withState()
+      },
       set_input: () => withState(),
       set_output: () => withState(),
       set_meta: (values) => {

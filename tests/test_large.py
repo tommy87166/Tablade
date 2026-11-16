@@ -170,6 +170,7 @@ def test_session_previews_a_sample_and_exports_everything(workdir, monkeypatch, 
     s = Session()
     s.progress = seen.append
     s.load_recipe(workdir / EXAMPLE.name)
+    s.load_data()
     state = s.state()
     assert state["input"]["sampled"] is True
     assert state["input"]["total_rows"] == 94 and state["input"]["rows"] == 46

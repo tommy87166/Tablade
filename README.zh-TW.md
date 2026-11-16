@@ -33,7 +33,7 @@
 把清洗過程排成一條**線性步驟清單**——移除雜訊列、拆欄、向下填滿、轉換數字與日期——每一步都能
 預覽結果，最後輸出乾淨的 **Parquet**，並附上一份 manifest，記錄每一列資料來自哪個檔案的哪一行。
 步驟存成 **recipe JSON**，下個月拿到新檔案時可以原封不動重跑一次。
-**所有檔案都留在你的電腦上**：沒有伺服器、不上傳，程式裡也沒有任何網路連線。
+**所有檔案都留在你的電腦上**：沒有伺服器、不上傳。唯一的網路連線是啟動時向 GitHub 查最新版號（不送出資料、不下載）。
 
 > [!IMPORTANT]
 > **本 repo 不含、也不得含任何真實資料。**
@@ -88,7 +88,8 @@
 | `excel` | XLSX / XLS，指定工作表 | `__source_file`、`__sheet`、`__line_no`、各欄 | M4 |
 
 - `__` 開頭的是系統欄位：UI 預設隱藏，匯出時可選擇是否保留。
-- 多檔（glob）每個檔各自一條流水線，到「合併來源檔」或寫出前才依檔名順序接起來；欄位不一致時自動補 null。
+- Recipe 記一份**檔案清單**：Recipe 資料夾裡的檔存相對路徑，其他存絕對路徑，也可以手動輸入含 `*` 的路徑。清單裡的檔都找得到時，按「載入資料」才讀檔。
+- 多檔時每個檔各自一條流水線，到「合併來源檔」或寫出前才依清單順序接起來；欄位不一致時自動補 null。
 - 每個檔讀進來時就依 `__line_no` 排好，每個步驟都保持這個順序，所以步驟不排序；
   依檔案計算的步驟（向下填滿、移除前後 N 列）不用 window 函式，幾 GB 的檔案記憶體用量也固定。
 
@@ -112,9 +113,12 @@ cli.py — `tablade run recipe.json` 不開 UI，跑同一套引擎
 
 ### 🔒 安全性：不對外連線
 
-- **沒有網路程式碼。** `scripts/check_code_policy.py` 會解析 `src/` 底下每個檔案，禁止 import
-  `socket`、`http`、`urllib`、`requests`、`httpx`、`aiohttp`、`ssl` 等模組，也禁止
-  `eval` / `exec` / `compile` / `__import__`。pre-commit 與 CI 都會跑。
+- **只有一個網路連線，只查版號。** 啟動時 `src/tablade/update.py` 對 GitHub API 發一個 GET，
+  讀最新 release 的版號；有新版時起始頁會顯示下載網址。不送出任何你或資料的資訊、不下載、
+  不自動更新。設定 `TABLADE_NO_UPDATE_CHECK=1` 就完全不連線。
+- **沒有其他網路程式碼。** `scripts/check_code_policy.py` 會解析 `src/` 底下每個檔案，禁止 import
+  `socket`、`http`、`urllib`、`requests`、`httpx`、`aiohttp`、`ssl` 等模組（只有 `update.py`
+  可以用 `urllib.request`），也禁止 `eval` / `exec` / `compile` / `__import__`。pre-commit 與 CI 都會跑。
 - **沒有本機伺服器。** 頁面以 HTML 字串載入，pywebview 不會啟動內建的 HTTP server，也不開 port。
 - **Content-Security-Policy `default-src 'none'`**（build 時注入）。頁面無法連線、嵌入或載入任何外部資源。
   `'unsafe-eval'` 只是因為 pywebview 的 JS bridge 需要。
@@ -169,9 +173,9 @@ Tablade 會從步驟 registry 產生 [Agent Skills](https://learn.microsoft.com/
 
 | 項目 | 結果 |
 |---|---|
-| 單元測試（`pytest`） | 185 項通過（每種步驟文件裡的範例都當成測試跑；UI 背後的 session 照使用者的操作順序一步步測） |
+| 單元測試（`pytest`） | 244 項通過（每種步驟文件裡的範例都當成測試跑；UI 背後的 session 照使用者的操作順序一步步測） |
 | 範例 recipe（`examples/sales_detail.recipe.json`，2 個 cp950 檔、94 行 → 70 列） | ✅ 輸出與預期完全一致；每一列的 `__line_no` 都指回原始檔的那一行 |
-| 打包後的自我檢測（產生 cp950 CSV → Parquet → 讀回比對 → Lazy 查詢 → Excel 引擎） | ✅ Windows x64（CI）與 macOS arm64 的 onefile、onedir |
+| 打包後的自我檢測（產生 cp950 CSV → Parquet → 讀回比對 → Lazy 查詢 → Excel 引擎 → 完整執行範例 recipe：轉碼、各檔分開處理、合併來源檔、串流匯出） | ✅ Windows x64（CI）與 macOS arm64 的 onefile、onedir（「完整執行範例 recipe」這項：macOS 已驗證，Windows 待 CI） |
 | 視窗 smoke test（開視窗、自我檢測、透過 JS bridge 載入範例、等表格畫出 70 列、關閉） | ✅ macOS arm64 的 onefile、onedir；Windows 由 CI 跑 |
 | 打包後的 App 產生 AI skill（`tablade skill`） | ✅ onefile、onedir |
 

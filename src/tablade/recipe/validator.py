@@ -286,25 +286,6 @@ class _Schema:
         return refs
 
 
-# ── 舊版 recipe 自動升級（DESIGN.md §17.6）────────────────────────────
-
-
-def upgrade(recipe: Any) -> Any:
-    """把舊的次版本 recipe 換成目前的格式（不改動傳進來的物件）。
-
-    - 1.0 → 1.1：拿掉 ``output.path``（輸出位置改成執行時才決定）。
-    """
-    if not isinstance(recipe, dict):
-        return recipe
-    match = VERSION_RE.match(str(recipe.get("tablade_recipe", "")))
-    if not match or tuple(int(x) for x in match.groups()) != (1, 0):
-        return recipe
-    output = recipe.get("output")
-    if isinstance(output, dict) and "path" in output:
-        recipe = {**recipe, "output": {k: v for k, v in output.items() if k != "path"}}
-    return recipe
-
-
 # ── 驗證 ─────────────────────────────────────────────────────────
 
 
@@ -340,7 +321,6 @@ def validate(
     """
     if not isinstance(recipe, dict):
         return [_issue([], "Recipe 必須是 JSON 物件")]
-    recipe = upgrade(recipe)
     issues: list[Issue] = []
     version_issue = check_version(recipe.get("tablade_recipe"), spec["recipe_version"])
     if version_issue:

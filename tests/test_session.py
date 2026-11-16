@@ -9,7 +9,7 @@ import pytest
 from tablade.engine import run as engine_run
 from tablade.fixtures import messy_export, write_all
 from tablade.recipe.schema import RECIPE_VERSION, RecipeError
-from tablade.session import Session, SessionError, catalog, common_pattern
+from tablade.session import Session, SessionError, catalog
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "sales_detail.recipe.json"
@@ -26,25 +26,27 @@ def files(data: Path) -> list[Path]:
     return [data / "明細_01.csv", data / "明細_02.csv"]
 
 
+def opened(data: Path) -> Session:
+    """照使用者的流程：新增 Recipe（存在資料夾旁邊）→ 加入兩個檔 → 載入資料。"""
+    s = Session()
+    s.new(data.parent / "mine.recipe.json")
+    s.add_files(files(data))
+    s.load_data()
+    return s
+
+
 def last_rows(session: Session) -> list[dict]:
     frame = session.frame_at(len(session.steps) - 1)
     return frame.drop("__source_file", "__line_no").to_dicts()
 
 
-def test_common_pattern():
-    assert common_pattern([Path("明細_01.csv"), Path("明細_02.csv")]) == "明細_0*.csv"
-    assert common_pattern([Path("a.txt")]) == "a.txt"
-    assert common_pattern([Path("ab.csv"), Path("abc.csv")]) == "ab*.csv"
-
-
 def test_build_the_example_recipe_like_a_user(data):
     """開檔 → 依序新增步驟（用建議值＋少量修改）→ 結果和範例 recipe 一樣。"""
-    s = Session()
-    s.open_data(files(data))
+    s = opened(data)
     state = s.state()
-    assert state["input"]["pattern"] == "明細_0*.csv"
+    assert state["input"]["files"] == ["data/明細_01.csv", "data/明細_02.csv"]
     assert state["input"]["rows"] == 94 and state["input"]["columns"] == ["line"]
-    assert [f["encoding"] for f in state["input"]["files"]] == ["cp950", "cp950"]
+    assert [f["encoding"] for f in state["input"]["sources"]] == ["cp950", "cp950"]
 
     s.update_step(s.add_step("remove_top_rows"), {"n": 2})
     s.add_step("remove_bottom_rows")
@@ -88,12 +90,11 @@ def test_build_the_example_recipe_like_a_user(data):
         "type": "split_delimited",
         "columns": [f"欄{k}" for k in range(1, 7)],
     }
-    assert recipe["inputs"][0]["pattern"] == "data/明細_0*.csv"
+    assert recipe["inputs"][0]["files"] == ["data/明細_01.csv", "data/明細_02.csv"]
 
 
 def test_invalid_step_stops_the_pipeline_but_stays_in_the_list(data):
-    s = Session()
-    s.open_data(files(data))
+    s = opened(data)
     s.add_step("remove_top_rows")
     i = s.add_step("split_column", {"column": "line"})
     s.update_step(i, {**s.steps[i], "names": []})
@@ -113,8 +114,7 @@ def test_invalid_step_stops_the_pipeline_but_stays_in_the_list(data):
 
 
 def test_move_toggle_delete_select_and_undo(data):
-    s = Session()
-    s.open_data(files(data))
+    s = opened(data)
     s.add_step("remove_top_rows")
     s.add_step("remove_bottom_rows")
     s.add_step("remove_blank_rows")
@@ -151,8 +151,7 @@ def test_move_toggle_delete_select_and_undo(data):
 
 
 def test_rows_paging_and_preview_metadata(data):
-    s = Session()
-    s.open_data(files(data))
+    s = opened(data)
     page = s.rows(-1, 10, 5)
     assert page["total"] == 94 and page["offset"] == 10
     assert page["columns"] == ["__source_file", "__line_no", "line"]
@@ -163,19 +162,17 @@ def test_rows_paging_and_preview_metadata(data):
 
 
 def test_find_row_and_exclude_suggestion(data):
-    s = Session()
-    s.open_data(files(data))
+    s = opened(data)
     s.add_step("remove_top_rows")
-    assert s.find_row(0, "明細_01.csv", 2) == 0
-    assert s.find_row(0, "明細_02.csv", 2) == 56  # 第一個檔 57 行去掉 1 行
-    assert s.find_row(0, "明細_01.csv", 1) is None
+    assert s.find_row(0, "data/明細_01.csv", 2) == 0
+    assert s.find_row(0, "data/明細_02.csv", 2) == 56  # 第一個檔 57 行去掉 1 行
+    assert s.find_row(0, "data/明細_01.csv", 1) is None
     i = s.add_step("filter", {"column": "line", "value": "x", "exclude": True})
     assert s.steps[i]["keep"] == "non_matching"
 
 
 def test_cache_reuses_earlier_steps(data, monkeypatch):
-    s = Session()
-    s.open_data(files(data))
+    s = opened(data)
     s.add_step("remove_top_rows")
     s.add_step("remove_bottom_rows")
     s.state()
@@ -203,6 +200,8 @@ def test_load_recipe_with_problems_and_error_report(data):
     s = Session()
     issues = s.load_recipe(path)
     assert [i["path"] for i in issues] == ["steps[5].columns[0]"]
+    assert s.state()["steps"][5]["status"] == "waiting"  # 還沒載入資料
+    s.load_data()
     state = s.state()
     assert state["selected"] == 7 and state["issues"] == issues
     assert state["steps"][5]["status"] == "error"
@@ -226,18 +225,20 @@ def test_load_recipe_rejects_newer_version(data):
 
 
 def test_save_relocates_paths_and_export(data, tmp_path):
-    s = Session()
-    s.open_data(files(data))
+    s = opened(data)
     s.add_step("remove_top_rows")
     target = tmp_path / "recipes" / "x.recipe.json"
     target.parent.mkdir()
     s.save_recipe(target)
-    assert s.input["pattern"] == "../data/明細_0*.csv"
-    assert s.state()["input"]["rows"] == 94  # 換位置後仍找得到資料
+    # 資料不在新的 Recipe 資料夾底下：改存絕對路徑
+    assert s.input["files"] == [p.resolve().as_posix() for p in files(data)]
+    assert s.state()["input"]["rows"] == 94  # 只是寫法不同，不用重新載入
     assert not s.dirty
 
     loaded = Session()
     loaded.load_recipe(target)
+    assert loaded.state()["steps"][0]["status"] == "waiting"  # 開啟後要按「載入資料」
+    loaded.load_data()
     assert loaded.state()["steps"][0]["rows"] == 92
 
     assert loaded.export_suggestion() == (target.parent.resolve(), "x.parquet")
@@ -248,21 +249,24 @@ def test_save_relocates_paths_and_export(data, tmp_path):
     assert "path" not in json.loads(target.read_text(encoding="utf-8"))["output"]
 
 
-def test_export_suggestion_before_saving(data):
-    s = Session()
-    s.open_data(files(data))
-    assert s.export_suggestion() == (data.resolve(), "明細_01.parquet")  # 還沒存 Recipe：用名稱
-    s.set_meta({"name": 'a/b:c*"d'})
-    assert s.export_suggestion() == (data.resolve(), "a_b_c__d.parquet")
+def test_export_suggestion_uses_recipe_name(data):
+    s = opened(data)
+    assert s.export_suggestion() == (data.parent.resolve(), "mine.parquet")
+    blank = Session()  # 沒有 Recipe 檔時用名稱，去掉檔名不能用的字
+    blank.set_meta({"name": 'a/b:c*"d'})
+    assert blank.export_suggestion() == (Path.home(), "a_b_c__d.parquet")
 
 
-def test_no_data_yet():
+def test_no_recipe_and_no_data_yet(tmp_path):
     s = Session()
     state = s.state()
-    assert state["input"]["error"] == "還沒有開啟資料"
+    assert state["recipe"]["open"] is False and state["input"]["loaded"] is False
     assert state["preview"]["rows"] is None
+    with pytest.raises(SessionError, match="先新增或開啟 Recipe"):
+        s.add_files([tmp_path / "a.csv"])
+    s.new(tmp_path / "x.recipe.json")
     s.add_step("remove_top_rows")  # 沒有資料時也能先建步驟
-    assert s.state()["steps"][0]["status"] == "pending"
+    assert s.state()["steps"][0]["status"] == "waiting"
 
 
 def test_catalog_has_every_step_with_schema():
@@ -279,8 +283,7 @@ def test_catalog_has_every_step_with_schema():
 
 def test_select_input_and_output(data):
     """-1 是「讀取資料」，步驟數是「輸出資料」（預覽最後一步的結果）。"""
-    s = Session()
-    s.open_data(files(data))
+    s = opened(data)
     s.select(0)
     state = s.state()
     # 沒有步驟時，「輸出資料」就是讀取的資料
@@ -308,12 +311,96 @@ def test_select_input_and_output(data):
 
 
 def test_state_reports_source_files_per_step(data):
-    s = Session()
-    s.open_data(files(data))
+    s = opened(data)
     s.add_step("remove_top_rows")
     s.add_step("merge_files")
-    s.update_step(1, {"order": ["明細_02.csv"]})
+    s.update_step(1, {"order": ["data/明細_02.csv"]})
     steps = s.state()["steps"]
     assert [st["files"] for st in steps] == [2, 1]
-    assert steps[1]["input_files"] == ["明細_01.csv", "明細_02.csv"]  # 表單用：這一步之前的來源檔
+    assert steps[1]["input_files"] == ["data/明細_01.csv", "data/明細_02.csv"]  # 表單用
     assert s.rows(1, 0, 1)["rows"][0][:2] == ["合併", 1]  # 第二個檔排到最前面
+
+
+# ── 新增 Recipe、檔案清單、載入資料 ─────────────────────────────────
+
+
+def test_new_recipe_is_written_right_away(tmp_path):
+    s = Session()
+    path = s.new(tmp_path / "門市整理.recipe.json")
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["tablade_recipe"] == RECIPE_VERSION and saved["inputs"][0]["files"] == []
+    state = s.state()
+    assert state["recipe"]["open"] and state["recipe"]["name"] == "門市整理"
+    assert not state["recipe"]["dirty"] and not state["input"]["can_load"]
+
+
+def test_add_files_relative_inside_recipe_folder_absolute_outside(tmp_path):
+    project, other = tmp_path / "proj", tmp_path / "other"
+    for path in (project / "a.csv", project / "sub" / "b.csv", other / "c.csv"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x\n", encoding="utf-8")
+    s = Session()
+    s.new(project / "r.recipe.json")
+    s.add_files([project / "a.csv", project / "sub" / "b.csv", other / "c.csv", project / "a.csv"])
+    assert s.input["files"] == ["a.csv", "sub/b.csv", (other / "c.csv").resolve().as_posix()]
+    s.add_file_entry("  sub\\*.csv ")  # 手動輸入：可以用 *，\ 轉成 /
+    s.add_file_entry("sub/*.csv")  # 重複的不加
+    assert s.input["files"][-1] == "sub/*.csv" and len(s.input["files"]) == 4
+    entries = s.state()["input"]["entries"]
+    assert [e["found"] for e in entries] == [1, 1, 1, 1]
+    s.remove_file(3)
+    assert len(s.input["files"]) == 3
+    s.undo()
+    assert s.input["files"][-1] == "sub/*.csv"
+
+
+def test_missing_files_block_loading_until_removed(data):
+    s = Session()
+    s.new(data.parent / "mine.recipe.json")
+    s.add_files(files(data))
+    s.add_file_entry("data/不存在.csv")
+    state = s.state()
+    assert [e["found"] for e in state["input"]["entries"]] == [1, 1, 0]
+    assert not state["input"]["can_load"]
+    with pytest.raises(SessionError, match=r"找不到：data/不存在\.csv"):
+        s.load_data()
+    s.remove_file(2)
+    s.load_data()
+    assert s.state()["input"]["rows"] == 94
+
+
+def test_changes_need_another_load(data):
+    s = opened(data)
+    assert s.state()["input"]["loaded"]
+    s.set_input({"encoding": "utf-8"})
+    state = s.state()
+    assert not state["input"]["loaded"] and state["input"]["stale"]
+    assert state["preview"]["rows"] is None
+    s.set_input({"encoding": "auto"})
+    s.load_data()
+    assert s.state()["input"]["loaded"] and not s.state()["input"]["stale"]
+    with (data / "明細_02.csv").open("ab") as f:  # 檔案在磁碟上被改過
+        f.write(b"x\r\n")
+    assert s.state()["input"]["stale"]
+
+
+def test_empty_recipe_cannot_load_or_export(tmp_path):
+    s = Session()
+    s.new(tmp_path / "x.recipe.json")
+    with pytest.raises(SessionError, match="還沒有加入資料檔"):
+        s.load_data()
+    with pytest.raises(SessionError, match="請先在「讀取資料」按「載入資料」"):
+        s.export(tmp_path / "out.parquet")
+
+
+def test_export_needs_loaded_data(data, tmp_path):
+    s = Session()
+    s.new(data.parent / "mine.recipe.json")
+    s.add_files(files(data))
+    with pytest.raises(SessionError, match="載入資料"):  # 還沒載入：不會自己讀檔處理
+        s.export(tmp_path / "out.parquet")
+    s.load_data()
+    assert s.export(tmp_path / "out.parquet")["rows"] == 94
+    s.set_input({"encoding": "utf-8"})  # 設定變了：要重新載入才能匯出
+    with pytest.raises(SessionError, match="載入資料"):
+        s.export(tmp_path / "out.parquet")

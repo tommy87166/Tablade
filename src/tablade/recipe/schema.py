@@ -6,15 +6,22 @@ import json
 from pathlib import Path
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    ValidationError,
+    field_validator,
+)
 
 from tablade.ingest.encoding import SUPPORTED
 from tablade.steps import all_steps
 from tablade.steps.base import Step
 
-from .validator import check_version, upgrade
+from .validator import check_version
 
-RECIPE_VERSION = "1.1"
+RECIPE_VERSION = "1.0"
 """recipe 格式（也是 AI skill）的版本號：MAJOR.MINOR（DESIGN.md §17.6）。"""
 
 READERS: dict[str, dict[str, Any]] = {
@@ -25,16 +32,19 @@ READERS: dict[str, dict[str, Any]] = {
 AnyStep = Annotated[Union[tuple(all_steps())], Field(discriminator="type")]  # noqa: UP007
 
 
+NonEmptyPath = Annotated[str, StringConstraints(min_length=1)]
+
+
 class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class Input(_Model):
     id: str = Field(default="src", title="input id", min_length=1, pattern=r"^[A-Za-z0-9_-]+$")
-    pattern: str = Field(
-        title="檔案",
-        min_length=1,
-        description="相對於 Recipe 檔所在的資料夾，可用 glob，例如 data/明細_*.csv",
+    files: list[NonEmptyPath] = Field(
+        default_factory=list,
+        title="檔案清單",
+        description="相對於 Recipe 檔所在的資料夾（例如 data/明細_01.csv），或絕對路徑；可用 * 一次讀多個檔",
     )
     reader: Literal["text_lines", "csv"] = Field(
         default="text_lines",
@@ -132,4 +142,4 @@ def load_json(path: str | Path) -> dict[str, Any]:
         raise RecipeError(
             [{"path": "(Recipe)", "error": "Recipe 必須是 JSON 物件", "severity": "error"}]
         )
-    return upgrade(data)  # 舊的次版本先換成目前的格式
+    return data

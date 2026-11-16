@@ -41,19 +41,21 @@ def check_recipe(data: dict[str, Any], base_dir: Path, *, dry_run: bool = False)
         isinstance(inputs, list)
         and inputs
         and isinstance(inputs[0], dict)
-        and isinstance(inputs[0].get("pattern"), str)
+        and isinstance(inputs[0].get("files"), list)
+        and inputs[0]["files"]
+        and all(isinstance(f, str) and f for f in inputs[0]["files"])
     ):
         first = inputs[0]
         try:
             columns = peek_columns(
-                first["pattern"],
+                first["files"],
                 first.get("reader", "text_lines"),
                 first.get("encoding", "auto"),
                 base_dir,
             )
             input_columns = {first.get("id", "src"): columns}
         except (InputError, DecodeError, LookupError) as err:
-            extra.append(_issue("inputs[0].pattern", str(err), "error" if dry_run else "warning"))
+            extra.append(_issue("inputs[0].files", str(err), "error" if dry_run else "warning"))
 
     issues = validate(data, build_spec(), input_columns) + extra
     result = CheckResult(issues)

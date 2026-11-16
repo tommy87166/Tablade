@@ -1,4 +1,4 @@
-"""自我檢測：用假資料跑一次 CSV → Parquet，確認打包後的環境可以正常運作（M0）。"""
+"""自我檢測：用假資料跑一次 CSV → Parquet，再完整執行範例 recipe，確認打包後的環境可以正常運作。"""
 
 from __future__ import annotations
 
@@ -25,6 +25,10 @@ class Check:
     name: str
     ok: bool
     detail: str
+    purpose: str = ""
+    """這一項確認的是什麼（顯示在 UI）。"""
+    ran: bool = True
+    """False：前面的檢查失敗，這一項沒有執行。"""
 
 
 def versions() -> dict[str, str]:
@@ -45,12 +49,12 @@ def versions() -> dict[str, str]:
 def run_selftest() -> dict[str, Any]:
     checks: list[Check] = []
 
-    def check(name: str, fn: Callable[[], str]) -> bool:
+    def check(name: str, purpose: str, fn: Callable[[], str]) -> bool:
         try:
-            checks.append(Check(name, True, fn()))
+            checks.append(Check(name, True, fn(), purpose))
             return True
         except Exception as exc:
-            checks.append(Check(name, False, f"{type(exc).__name__}: {exc}"))
+            checks.append(Check(name, False, f"{type(exc).__name__}: {exc}", purpose))
             return False
 
     with tempfile.TemporaryDirectory(prefix="tablade-selftest-", ignore_cleanup_errors=True) as tmp:
@@ -88,29 +92,66 @@ def run_selftest() -> dict[str, Any]:
 
             return f"fastexcel {getattr(fastexcel, '__version__', '?')}"
 
+        def full_recipe() -> str:
+            # 跟按「處理並匯出資料」同一條路：轉碼成暫存檔、各檔分開處理、8 個步驟、串流匯出；
+            # 最後再臨時加上「合併來源檔」（02 排前面），連合併也一起檢查（範例 recipe 本身不動）
+            from .app import resource_dir  # 打包後也找得到範例 recipe（延後 import，避免循環）
+            from .engine.run import execute
+            from .fixtures import messy_export, write_messy_export
+            from .recipe.schema import load_json, parse_recipe
+
+            work = Path(tmp) / "recipe"
+            write_messy_export(work / "data" / "明細_01.csv", n=50, seed=0, encoding="cp950")
+            write_messy_export(work / "data" / "明細_02.csv", n=30, seed=1, encoding="cp950")
+            data = load_json(resource_dir() / "examples" / "sales_detail.recipe.json")
+            data["steps"].append(
+                {"id": "selftest_merge", "type": "merge_files", "order": ["data/明細_02.csv"]}
+            )
+            result = work / "result.parquet"
+            _, report = execute(parse_recipe(data), work, output=result, mode="stream")
+            out = pl.read_parquet(result)
+            expected = messy_export(30, 1)[1] + messy_export(50, 0)[1]
+            got = out.drop("__source_file", "__line_no").to_dicts()
+            assert got == expected, f"結果有 {len(got)} 列，和預期的 {len(expected)} 列不同"
+            assert set(out["__source_file"]) == {"合併"}, "合併後的來源檔名稱不對"
+            assert out["__line_no"].to_list() == list(range(1, out.height + 1)), (
+                "合併後的行號沒有從 1 重編"
+            )
+            return f"2 個 cp950 檔 → 合併成 {report.rows} 列，與預期一致"
+
         steps = [
-            ("產生假資料 CSV", make_fixture),
-            ("讀取 CSV（自動偵測編碼）", read),
-            ("寫出 Parquet", write),
-            ("讀回 Parquet 並比對", read_back),
-            ("Lazy 查詢", lazy),
-            ("Excel 引擎", excel_engine),
+            ("產生假資料 CSV", "可以在暫存資料夾寫檔", make_fixture),
+            ("讀取 CSV（自動偵測編碼）", "讀檔與 Big5（cp950）編碼偵測正常", read),
+            ("寫出 Parquet", "可以輸出 Parquet 檔", write),
+            ("讀回 Parquet 並比對", "寫出的內容完全正確", read_back),
+            ("Lazy 查詢", "Polars 的查詢引擎正常", lazy),
+            ("Excel 引擎", "讀 Excel 的元件存在、能載入", excel_engine),
+            (
+                "完整執行範例 Recipe",
+                "轉碼、各檔分開處理、8 個步驟、合併來源檔、串流匯出整條流程正常",
+                full_recipe,
+            ),
         ]
-        for name, fn in steps:
-            if not check(name, fn):
+        for i, (name, purpose, fn) in enumerate(steps):
+            if not check(name, purpose, fn):
+                checks += [
+                    Check(n, False, "前面的檢查失敗，沒有執行", p, ran=False)
+                    for n, p, _ in steps[i + 1 :]
+                ]
                 break
 
     try:
         info = versions()
     except Exception as exc:
         info = {"error": f"{type(exc).__name__}: {exc}"}
-    ok = len(checks) == len(steps) and all(c.ok for c in checks)
+    ok = all(c.ok for c in checks)
     return {"ok": ok, "checks": [asdict(c) for c in checks], "versions": info}
 
 
 def format_report(result: dict[str, Any]) -> str:
     lines = ["Tablade 自我檢測：" + ("通過" if result["ok"] else "失敗")]
     for c in result["checks"]:
-        lines.append(f"  [{'OK' if c['ok'] else 'NG'}] {c['name']}：{c['detail']}")
+        mark = "OK" if c["ok"] else ("NG" if c.get("ran", True) else "--")
+        lines.append(f"  [{mark}] {c['name']}：{c['detail']}")
     lines.append("  " + "，".join(f"{k} {v}" for k, v in result["versions"].items()))
     return "\n".join(lines)

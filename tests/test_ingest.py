@@ -77,7 +77,14 @@ def test_read_csv_keeps_all_columns_as_text(tmp_path, encoding):
 
 # ── text_lines 與多檔（M1）──────────────────────────────────────
 
-from tablade.ingest.sources import InputError, load, peek_columns, resolve  # noqa: E402
+from tablade.ingest.sources import (  # noqa: E402
+    InputError,
+    check_entries,
+    display_name,
+    load,
+    peek_columns,
+    resolve,
+)
 from tablade.ingest.text_lines import lines_frame, split_lines  # noqa: E402
 
 
@@ -117,6 +124,27 @@ def test_load_csv_with_different_columns_and_line_numbers(tmp_path):
     assert df.columns == ["__source_file", "__line_no", "a", "b", "c"]
     assert df["__line_no"].to_list() == [2, 3, 2]
     assert df["c"].to_list() == [None, None, "6"]
+
+
+def test_resolve_file_list_in_order(tmp_path):
+    for name in ("b.csv", "a1.csv", "a2.csv"):
+        (tmp_path / name).write_text("x\n", encoding="utf-8")
+    outside = tmp_path.parent / f"{tmp_path.name}-外部.csv"
+    outside.write_text("x\n", encoding="utf-8")
+    # 依清單順序；同一項裡依檔名；重複的檔只算一次
+    got = resolve(["b.csv", "a*.csv", "a1.csv", str(outside)], tmp_path)
+    assert [p.name for p in got] == ["b.csv", "a1.csv", "a2.csv", outside.name]
+    assert check_entries(["a*.csv", "nope.csv"], tmp_path) == [
+        {"path": "a*.csv", "found": 2},
+        {"path": "nope.csv", "found": 0},
+    ]
+    with pytest.raises(InputError, match=r"找不到檔案「nope\.csv」"):
+        resolve(["b.csv", "nope.csv"], tmp_path)
+    with pytest.raises(InputError, match="還沒有加入資料檔"):
+        resolve([], tmp_path)
+    # Recipe 資料夾外的檔：顯示整理過的絕對路徑，不會有 ..
+    assert display_name(tmp_path / ".." / outside.name, tmp_path) == outside.resolve().as_posix()
+    outside.unlink()
 
 
 def test_resolve_and_peek(tmp_path):

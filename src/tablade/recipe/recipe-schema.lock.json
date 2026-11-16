@@ -1,5 +1,5 @@
 {
-  "recipe_version": "1.1",
+  "recipe_version": "1.0",
   "spec": {
     "readers": {
       "csv": {
@@ -11,7 +11,7 @@
         ]
       }
     },
-    "recipe_version": "1.1",
+    "recipe_version": "1.0",
     "schema": {
       "$defs": {
         "EmptyCondition": {
@@ -169,14 +169,17 @@
               ],
               "type": "string"
             },
+            "files": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": "array"
+            },
             "id": {
               "default": "src",
               "minLength": 1,
               "pattern": "^[A-Za-z0-9_-]+$",
-              "type": "string"
-            },
-            "pattern": {
-              "minLength": 1,
               "type": "string"
             },
             "reader": {
@@ -188,9 +191,6 @@
               "type": "string"
             }
           },
-          "required": [
-            "pattern"
-          ],
           "type": "object"
         },
         "MergeFiles": {

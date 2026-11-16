@@ -1,7 +1,9 @@
 import {
   Bot,
+  ChevronDown,
+  ChevronUp,
   CircleCheck,
-  CircleX,
+  Columns3,
   Download,
   FilePlus2,
   FolderOpen,
@@ -19,7 +21,6 @@ import { usePanelRef } from 'react-resizable-panels'
 import iconUrl from '../../assets/icon.svg'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -39,15 +40,18 @@ import {
   type Result,
   type SelftestResult,
   type TabladeApi,
+  type UpdateInfo,
   type ViewState,
 } from './bridge'
 import { StepForm } from './components/form/StepForm'
 import { PreviewGrid, type AddStepRequest, type GridHandle } from './components/PreviewGrid'
-import { CollapseButton, CollapsiblePane, PaneHeader, PaneMeta, PaneTitle, RAIL_WIDTH } from './components/Pane'
+import { CollapseButton, CollapsiblePane, HEADER_HEIGHT, PaneHeader, PaneMeta, PaneTitle, RAIL_WIDTH } from './components/Pane'
 import { RecipeTitle } from './components/RecipeTitle'
+import { SelftestDialog } from './components/SelftestDialog'
 import { ReportDialog } from './components/ReportDialog'
 import { InputPanel, OutputPanel } from './components/SourcePanel'
 import { StepsPanel } from './components/StepsPanel'
+import { UpdateNotice } from './components/UpdateNotice'
 
 type Status = { text: string; error?: boolean }
 const SMOKE_TIMEOUT_MS = 30_000
@@ -117,9 +121,11 @@ export default function App() {
   const [report, setReport] = useState<{ open: boolean; issues: Issue[]; text: string }>({ open: false, issues: [], text: '' })
   const [selftest, setSelftest] = useState<SelftestResult | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
+  const [update, setUpdate] = useState<UpdateInfo | null | undefined>(undefined)
   const grid = useRef<GridHandle>(null)
   const leftPanel = usePanelRef()
   const rightPanel = usePanelRef()
+  const warnPanel = usePanelRef()
 
   const gridLoaded = useRef<((total: number) => void) | null>(null)
 
@@ -175,7 +181,9 @@ export default function App() {
       onProgress(setProgress)
       const first = await target.state()
       if (first.ok) setState(first.state)
-      setStatus({ text: '就緒。先在「讀取資料」選擇檔案，再按「新增步驟」或在欄名上按右鍵。' })
+      setStatus({ text: '就緒。先新增或開啟 Recipe。' })
+      // 啟動時查 GitHub 上的最新版號（背景進行，不擋畫面；不自動更新）
+      void target.check_update().then((res) => setUpdate(res.ok ? res.update : null))
       if (ready.smoke) await target.smoke_done(await runSmoke(target))
     })()
     return () => {
@@ -186,12 +194,21 @@ export default function App() {
   // ── 動作 ──────────────────────────────────────────────────
 
   const act = {
-    newRecipe: () => api && call('新增 Recipe', () => api.new_recipe()),
+    newRecipe: async () => {
+      if (!api) return
+      const res = await call('新增 Recipe', () => api.new_recipe())
+      if (res && !res.cancelled) setStatus({ text: `已建立 ${res.path}。接著在「讀取資料」加入檔案。` })
+    },
     openRecipe: async () => {
       if (!api) return
       const res = await call('開啟 Recipe', () => api.open_recipe())
       if (!res || res.cancelled) return
-      setStatus({ text: `已開啟 ${res.state.recipe.path}` })
+      const next = res.state.input.can_load
+        ? '按「載入資料」讀取檔案。'
+        : res.state.input.files.length
+          ? '檔案清單有找不到的檔，請先在「讀取資料」移除。'
+          : '接著在「讀取資料」加入檔案。'
+      setStatus({ text: `已開啟 ${res.state.recipe.path}。${next}` })
       if (res.issues?.length) await showReport(res.issues)
     },
     save: async (as: boolean) => {
@@ -199,18 +216,28 @@ export default function App() {
       const res = await call('儲存', () => (as ? api.save_recipe_as() : api.save_recipe()))
       if (res && !res.cancelled) setStatus({ text: `已儲存 ${res.path}` })
     },
-    openData: async () => {
+    addFiles: async () => {
       if (!api) return
-      const res = await call('開啟資料', () => api.open_data())
-      if (res && !res.cancelled) setStatus({ text: `已開啟 ${res.state.input.pattern}` })
+      const res = await call('加入檔案', () => api.add_files())
+      if (res && !res.cancelled) setStatus({ text: `檔案清單共 ${res.state.input.files.length} 項。按「載入資料」讀取。` })
+    },
+    loadData: async () => {
+      if (!api) return
+      const res = await call('載入資料', () => api.load_data())
+      if (res) {
+        const input = res.state.input
+        setStatus({
+          text: `已載入 ${input.sources.length} 個檔、${input.total_rows?.toLocaleString()} 行${input.sampled ? '（預覽用樣本）' : ''}`,
+        })
+      }
     },
     exportParquet: async () => {
       if (!api) return
-      const res = await call('執行', () => api.export_parquet())
+      const res = await call('處理並匯出資料', () => api.export_parquet())
       if (res && !res.cancelled) {
         const warn = res.warnings ? `，警告 ${res.warnings.toLocaleString()} 則` : ''
         const how = res.mode === 'stream' ? '（串流處理全部資料）' : ''
-        setStatus({ text: `已輸出 ${res.path}：${res.rows?.toLocaleString()} 列 × ${res.columns} 欄${warn}${how}` })
+        setStatus({ text: `已匯出 ${res.path}：${res.rows?.toLocaleString()} 列 × ${res.columns} 欄${warn}${how}` })
       }
     },
     downloadSkill: async () => {
@@ -246,13 +273,14 @@ export default function App() {
       const typing = (e.target as HTMLElement).closest('input, textarea, [contenteditable]')
       if (!mod || !api) return
       const key = e.key.toLowerCase()
-      if (key === 's') {
+      const open = state?.recipe.open ?? false
+      if (key === 's' && open) {
         e.preventDefault()
         void act.save(e.shiftKey)
       } else if (key === 'o') {
         e.preventDefault()
         void act.openRecipe()
-      } else if (key === 'z' && !typing) {
+      } else if (key === 'z' && !typing && open) {
         e.preventDefault()
         void (e.shiftKey ? act.redo() : act.undo())
       }
@@ -268,7 +296,15 @@ export default function App() {
   const previewKey = useMemo(() => {
     if (!state) return ''
     const upto = state.steps.slice(0, state.preview.step + 1).map((s) => s.params)
-    return JSON.stringify([state.preview.step, state.input.pattern, state.input.reader, state.input.encoding, upto, state.preview.rows])
+    return JSON.stringify([
+      state.preview.step,
+      state.input.files,
+      state.input.loaded,
+      state.input.reader,
+      state.input.encoding,
+      upto,
+      state.preview.rows,
+    ])
   }, [state])
 
   const onGridLoaded = useCallback((total: number) => {
@@ -280,7 +316,89 @@ export default function App() {
     return <div className="flex h-svh items-center justify-center text-sm text-muted-foreground">{status.text}</div>
   }
 
+  const footer = (
+    <footer className="flex items-center gap-3 border-t px-3 py-1 text-xs">
+      <span role="status" className={`min-w-0 flex-1 truncate ${status.error ? 'text-destructive' : 'text-muted-foreground'}`}>
+        {status.text}
+      </span>
+      <span className="shrink-0 text-muted-foreground">
+        Tablade {info.version}・Recipe {info.recipe_version}
+      </span>
+    </footer>
+  )
+  const dialogs = (
+    <>
+      <ReportDialog
+        open={report.open}
+        onOpenChange={(open) => setReport((r) => ({ ...r, open }))}
+        issues={report.issues}
+        report={report.text}
+      />
+      <SelftestDialog result={info.smoke ? null : selftest} onClose={() => setSelftest(null)} />
+    </>
+  )
+
+  if (!state.recipe.open) {
+    return (
+      <TooltipProvider>
+        <div className="flex h-svh flex-col bg-background">
+          <header className="flex items-center gap-2 border-b px-3 py-1.5">
+            <img src={iconUrl} alt="Tablade" className="size-6" />
+            <span className="px-1 text-[15px] font-semibold">Tablade</span>
+            <div className="ml-auto flex items-center gap-1">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon-sm" aria-label="更多">
+                    <MoreHorizontal />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-60 whitespace-nowrap">
+                  <DropdownMenuItem onSelect={() => void act.downloadSkill()}>
+                    <Download /> 下載 Copilot skill（v{info.recipe_version}）
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => void act.selftest()}>
+                    <Stethoscope /> 自我檢測
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </header>
+          <main className="flex min-h-0 flex-1 items-center justify-center p-6">
+            <div className="w-full max-w-md space-y-4 rounded-lg border p-6 text-center">
+              <img src={iconUrl} alt="" className="mx-auto size-12" />
+              <h1 className="text-lg font-semibold">開始整理資料</h1>
+              <p className="text-sm text-muted-foreground">
+                先新增一個 Recipe（會請你選擇存放位置並命名），或開啟已經存好的 Recipe。之後在「讀取資料」加入檔案，再按「載入資料」。
+              </p>
+              <div className="flex justify-center gap-2">
+                <Button onClick={() => void act.newRecipe()} disabled={busy}>
+                  <FilePlus2 /> 新增 Recipe
+                </Button>
+                <Button variant="outline" onClick={() => void act.openRecipe()} disabled={busy}>
+                  <FolderOpen /> 開啟 Recipe
+                </Button>
+              </div>
+              <UpdateNotice current={info.version} update={update} />
+            </div>
+          </main>
+          {footer}
+        </div>
+        {dialogs}
+      </TooltipProvider>
+    )
+  }
+
+  const input = state.input
+  const emptyPreview = !input.files.length
+    ? '先在「讀取資料」按「瀏覽檔案…」加入檔案。'
+    : !input.can_load
+      ? '檔案清單有找不到的檔，請先在「讀取資料」移除或修正。'
+      : input.stale
+        ? '檔案清單、讀取方式或編碼已變更，請在「讀取資料」按「載入資料」重新讀取。'
+        : '在「讀取資料」按「載入資料」讀取檔案。'
+
   const outputSelected = state.selected === state.steps.length
+  const warnings = state.preview.warnings
   const previewLabel = state.selected < 0 ? '讀取資料' : outputSelected ? '輸出資料' : `步驟 ${state.selected + 1}`
   const errorCount = state.steps.filter((s) => s.status === 'error').length
 
@@ -292,7 +410,6 @@ export default function App() {
           <RecipeTitle
             name={state.recipe.name}
             path={state.recipe.path}
-            dirty={state.recipe.dirty}
             onCommit={(name) => void call('更新名稱', () => api.set_meta({ name }))}
           />
           <div className="mx-1 h-5 w-px bg-border" />
@@ -315,12 +432,21 @@ export default function App() {
           <div className="mx-1 h-5 w-px bg-border" />
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button size="sm" onClick={() => void act.exportParquet()} disabled={busy || errorCount > 0 || state.input.rows === null}>
-                <Play /> 執行
-              </Button>
+              <span>
+                <Button size="sm" onClick={() => void act.exportParquet()} disabled={busy || errorCount > 0 || !input.loaded}>
+                  <Play /> 處理並匯出資料
+                </Button>
+              </span>
             </TooltipTrigger>
-            <TooltipContent>處理全部資料並存成 Parquet（按下後選擇存檔位置）</TooltipContent>
+            <TooltipContent>
+              {!input.loaded
+                ? '先在「讀取資料」按「載入資料」'
+                : errorCount > 0
+                  ? '有步驟出錯，請先修正'
+                  : '處理全部資料並存成 Parquet（按下後選擇存檔位置）'}
+            </TooltipContent>
           </Tooltip>
+          {state.recipe.dirty ? <span className="ml-1.5 text-xs text-muted-foreground">尚未儲存</span> : null}
           <div className="ml-auto flex items-center gap-1">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -328,7 +454,7 @@ export default function App() {
                   <Bot /> Copilot
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
+              <DropdownMenuContent align="end" className="w-60 whitespace-nowrap">
                 <DropdownMenuItem onSelect={() => void showReport()}>
                   <TriangleAlert /> 檢查並複製錯誤報告
                 </DropdownMenuItem>
@@ -343,12 +469,12 @@ export default function App() {
                   <MoreHorizontal />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
+              <DropdownMenuContent align="end" className="w-48 whitespace-nowrap">
                 <DropdownMenuItem onSelect={() => void act.save(true)}>
                   <Save /> 另存 Recipe…
                 </DropdownMenuItem>
                 <DropdownMenuCheckboxItem checked={showSystem} onCheckedChange={(v) => setShowSystem(v === true)}>
-                  顯示系統欄位
+                  <Columns3 /> 顯示系統欄位
                 </DropdownMenuCheckboxItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onSelect={() => void act.selftest()}>
@@ -412,49 +538,83 @@ export default function App() {
                     ) : null}
                   </PaneHeader>
                   <div className="min-h-0 flex-1">
-                    <PreviewGrid
-                      ref={grid}
-                      api={api}
-                      preview={state.preview}
-                      resetKey={previewKey}
-                      showSystem={showSystem}
-                      onAddStep={(r) => void addStep(r.type, r.context)}
-                      onLoaded={onGridLoaded}
-                    />
+                    {input.loaded ? (
+                      <PreviewGrid
+                        ref={grid}
+                        api={api}
+                        preview={state.preview}
+                        resetKey={previewKey}
+                        showSystem={showSystem}
+                        onAddStep={(r) => void addStep(r.type, r.context)}
+                        onLoaded={onGridLoaded}
+                      />
+                    ) : (
+                      <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-muted-foreground">
+                        <p>{emptyPreview}</p>
+                        {state.selected !== -1 ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              rightPanel.current?.expand()
+                              void call('選取', () => api.select_step(-1))
+                            }}
+                          >
+                            前往「讀取資料」
+                          </Button>
+                        ) : null}
+                      </div>
+                    )}
                   </div>
                 </div>
               </ResizablePanel>
               <ResizableHandle />
-              <ResizablePanel defaultSize="22" minSize="8">
-                <div className="flex h-full flex-col">
-                  <div className="border-b px-3 py-1.5 text-xs font-medium tracking-wide text-muted-foreground">
-                    警告
-                    {state.preview.warnings.length ? `（${state.preview.warnings.length.toLocaleString()}）` : ''}
-                  </div>
-                  <ul className="flex-1 overflow-auto text-sm">
-                    {state.preview.warnings.length === 0 ? (
-                      <li className="px-3 py-2 text-muted-foreground">這一步沒有警告</li>
+              <ResizablePanel defaultSize="22" minSize={90} collapsible collapsedSize={HEADER_HEIGHT} panelRef={warnPanel}>
+                {/* 收合到只剩標題列時，右邊的按鈕改成「展開」（index.css 的 .warn-pane） */}
+                <div className="warn-pane flex h-full flex-col">
+                  <PaneHeader className={warnings.length ? 'bg-amber-500/10' : ''}>
+                    {warnings.length ? (
+                      <TriangleAlert className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
                     ) : (
-                      state.preview.warnings.map((w, i) => (
-                        <li key={i}>
-                          <button
-                            type="button"
-                            className="flex w-full gap-2 px-3 py-1 text-left hover:bg-muted"
-                            onClick={async () => {
-                              if (w.source_file === null || w.line_no === null) return
-                              const res = await api.find_row(state.preview.step, w.source_file, w.line_no)
-                              if (res.ok && res.row !== null) grid.current?.scrollToRow(res.row)
-                            }}
-                          >
-                            <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-600" />
-                            <span className="shrink-0 font-mono text-xs text-muted-foreground">
-                              {w.source_file}:{w.line_no}
-                            </span>
-                            <span>{w.message}</span>
-                          </button>
-                        </li>
-                      ))
+                      <CircleCheck className="size-4 shrink-0 text-green-600" />
                     )}
+                    <span
+                      className={`text-sm font-medium ${warnings.length ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}
+                    >
+                      {warnings.length ? `有警告（${warnings.length.toLocaleString()}）` : '沒有警告'}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      className="ml-auto"
+                      aria-label="收合或展開警告"
+                      title="收合或展開警告"
+                      onClick={() => (warnPanel.current?.isCollapsed() ? warnPanel.current.expand() : warnPanel.current?.collapse())}
+                    >
+                      <ChevronDown className="warn-collapse" />
+                      <ChevronUp className="warn-expand" />
+                    </Button>
+                  </PaneHeader>
+                  <ul className="flex-1 overflow-auto text-sm">
+                    {warnings.map((w, i) => (
+                      <li key={i}>
+                        <button
+                          type="button"
+                          className="flex w-full gap-2 px-3 py-1 text-left hover:bg-muted"
+                          onClick={async () => {
+                            if (w.source_file === null || w.line_no === null) return
+                            const res = await api.find_row(state.preview.step, w.source_file, w.line_no)
+                            if (res.ok && res.row !== null) grid.current?.scrollToRow(res.row)
+                          }}
+                        >
+                          <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-600" />
+                          <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                            {w.source_file}:{w.line_no}
+                          </span>
+                          <span>{w.message}</span>
+                        </button>
+                      </li>
+                    ))}
                   </ul>
                 </div>
               </ResizablePanel>
@@ -481,7 +641,11 @@ export default function App() {
                   ) : (
                     <InputPanel
                       state={state}
-                      onOpenData={() => void act.openData()}
+                      busy={busy}
+                      onLoad={() => void act.loadData()}
+                      onAddFiles={() => void act.addFiles()}
+                      onAddEntry={(text) => void call('加入路徑', () => api.add_file_entry(text))}
+                      onRemove={(i) => void call('移除檔案', () => api.remove_file(i))}
                       onInput={(v) => void call('更新資料設定', () => api.set_input(v))}
                     />
                   )}
@@ -491,49 +655,10 @@ export default function App() {
           </ResizablePanel>
         </ResizablePanelGroup>
 
-        <footer className="flex items-center gap-3 border-t px-3 py-1 text-xs">
-          <span role="status" className={`min-w-0 flex-1 truncate ${status.error ? 'text-destructive' : 'text-muted-foreground'}`}>
-            {status.text}
-          </span>
-          <span className="shrink-0 text-muted-foreground">
-            Tablade {info.version}・Recipe {info.recipe_version}・Polars {info.polars}・完全離線執行
-          </span>
-        </footer>
+        {footer}
       </div>
 
-      <ReportDialog
-        open={report.open}
-        onOpenChange={(open) => setReport((r) => ({ ...r, open }))}
-        issues={report.issues}
-        report={report.text}
-      />
-
-      <Dialog open={selftest !== null && !info.smoke} onOpenChange={(open) => !open && setSelftest(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>自我檢測：{selftest?.ok ? '通過' : '失敗'}</DialogTitle>
-            <DialogDescription>
-              {Object.entries(selftest?.versions ?? {})
-                .map(([k, v]) => `${k} ${v}`)
-                .join('　')}
-            </DialogDescription>
-          </DialogHeader>
-          <ul className="space-y-1 text-sm">
-            {selftest?.checks.map((c) => (
-              <li key={c.name} className="flex items-start gap-2">
-                {c.ok ? (
-                  <CircleCheck className="mt-0.5 size-4 shrink-0 text-green-600" />
-                ) : (
-                  <CircleX className="mt-0.5 size-4 shrink-0 text-destructive" />
-                )}
-                <span>
-                  {c.name}：<span className="text-muted-foreground">{c.detail}</span>
-                </span>
-              </li>
-            ))}
-          </ul>
-        </DialogContent>
-      </Dialog>
+      {dialogs}
     </TooltipProvider>
   )
 }
