@@ -13,6 +13,9 @@
   <img src="https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/Polars-2.1-CD792C?logo=polars&logoColor=white" alt="Polars" />
   <img src="https://img.shields.io/badge/pywebview-6.2-555555" alt="pywebview" />
+  <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black" alt="React" />
+  <img src="https://img.shields.io/badge/TypeScript-7-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/shadcn%2Fui-Radix-000000?logo=shadcnui&logoColor=white" alt="shadcn/ui" />
   <img src="https://img.shields.io/badge/PyInstaller-6.22-1F5FA6" alt="PyInstaller" />
 </p>
 
@@ -70,7 +73,7 @@ Four needs drove this tool:
 |---|---|---|
 | Engine | [Polars](https://pola.rs/) 2.x (Python API) | Each step compiles to a LazyFrame operation; preview runs `head(1000)`, export streams to Parquet. |
 | Window | [pywebview](https://pywebview.flowrl.com/) 6 | Native window (WebView2 on Windows, WKWebView on macOS). JS calls Python directly — **no HTTP server, no open port**. |
-| Front end | Static HTML / CSS / JS | Inlined into one HTML string at start-up. |
+| Front end | React 19 + TypeScript + Vite, [shadcn/ui](https://ui.shadcn.com/) (Radix + Tailwind CSS v4) | Built into **one self-contained HTML file** (~300 KB) that Python loads as a string. |
 | Encoding | Python codecs | Auto-detects `utf-8-sig` → `cp950`; reports the first undecodable byte and line. |
 | Excel | [fastexcel](https://github.com/ToucanToco/fastexcel) (calamine) | Fast, read-only XLSX / XLS. |
 | Recipe | pydantic v2 | Validates recipe JSON. |
@@ -92,7 +95,7 @@ Four needs drove this tool:
 ### Data flow
 
 ```
-pywebview window — frontend/ (HTML/JS)
+pywebview window — frontend/ (React + shadcn/ui, one HTML file)
       │  window.pywebview.api.xxx()  (Promise, in-process — no HTTP)
       ▼
 api.py  (argument conversion + error wrapping only)
@@ -114,7 +117,7 @@ cli.py — `tablade run recipe.json` runs the same engine without the UI
   plus `eval` / `exec` / `compile` / `__import__`. It runs in pre-commit and CI.
 - **No local server.** The page is loaded as an HTML string, so pywebview never starts its
   built-in HTTP server and no port is opened.
-- **Content-Security-Policy `default-src 'none'`.** The page cannot fetch, connect, frame or
+- **Content-Security-Policy `default-src 'none'`** (injected at build time). The page cannot fetch, connect, frame or
   load any external resource. `'unsafe-eval'` is allowed only because pywebview's JS bridge
   needs it.
 - **Data is never rendered as HTML.** Cell values are written with `textContent`, so a cell
@@ -154,7 +157,7 @@ cli.py — `tablade run recipe.json` runs the same engine without the UI
 
 | Check | Result |
 |---|---|
-| Unit tests (`pytest`) | 63 passed |
+| Unit tests (`pytest`) | 66 passed |
 | Self-test inside the packaged app (generated cp950 CSV → Parquet → read back → lazy query → Excel engine) | ✅ onefile and `.app` (macOS arm64) |
 | Window smoke test (open window, run self-test through the JS bridge, close) | ✅ onefile and `.app` (macOS arm64) |
 
@@ -169,13 +172,17 @@ Windows numbers will be added once the CI build has been verified on a locked-do
 
 ## 🛠️ Development
 
-Requires [uv](https://docs.astral.sh/uv/).
+Requires [uv](https://docs.astral.sh/uv/) and Node.js 24+.
 
 ```bash
 uv sync                                              # create the venv from uv.lock
+npm --prefix frontend ci                             # install front-end dependencies
+npm --prefix frontend run build                      # build frontend/dist/index.html (needed before running the app)
 uv run pre-commit install                            # install the data-protection hook (required)
 uv run pytest                                        # run the tests
 uv run tablade                                       # open the window from source
+npm --prefix frontend run dev                        # Vite dev server (mock API in a normal browser)
+TABLADE_DEV_URL=http://localhost:5173 uv run tablade # the real window, with hot reload
 uv run python scripts/gen_fixtures.py tmp/fixtures   # generate fake sample data
 uv run python scripts/build.py --gui-smoke           # build onefile + onedir, self-test, zip to dist/release/
 uv run --group icons python scripts/make_icons.py    # regenerate icon.ico / icon.icns from assets/icon.svg
@@ -197,14 +204,14 @@ tablade version
 
 ```
 src/tablade/
-├─ app.py             pywebview entry point; inlines frontend/ into one HTML string
+├─ app.py             pywebview entry point; loads frontend/dist/index.html as a string
 ├─ api.py             JS bridge: argument conversion and error wrapping only
 ├─ cli.py             command line (gui / selftest / convert / version)
 ├─ selftest.py        packaged-environment self-test on generated data
 ├─ fixtures.py        deterministic fake data (tests, self-test, examples)
 ├─ ingest/            encoding detection, CSV reader
 └─ export/            atomic Parquet writer
-frontend/             index.html, app.js, style.css
+frontend/             Vite + React + TypeScript + shadcn/ui; bridge.ts mirrors api.py
 assets/               icon.svg (source), icon.ico, icon.icns, icon.png
 scripts/              build, make_icons, gen_fixtures, check_no_data, check_code_policy
 tests/                pytest suite

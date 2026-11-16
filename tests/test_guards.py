@@ -104,6 +104,16 @@ def test_denylist_matches_content_and_path(check_no_data, tmp_path):
     assert check_no_data.check_file(tmp_path, f"docs/{term}.md", denylist)
 
 
+def test_ascii_denylist_terms_ignore_hashes_but_catch_word_forms(check_no_data, tmp_path):
+    term = "zq" + "xv"  # 組出來的假字詞，避免本檔自己命中
+    denylist = [term]
+    write(tmp_path, "lock.json", f'"integrity": "sha512-Ab3{term.upper()}9+/{term}Q=="\n')
+    assert check_no_data.check_file(tmp_path, "lock.json", denylist) == []
+
+    write(tmp_path, "a.md", f"x\n{term.upper()}'s tool\n{term}ing\nsee ({term})\n")
+    assert [p.line for p in check_no_data.check_file(tmp_path, "a.md", denylist)] == [2, 3, 4]
+
+
 def test_denylist_file_itself_is_blocked(check_no_data, tmp_path):
     write(tmp_path, check_no_data.DENYLIST_NAME, "x\n")
     problems = check_no_data.check_file(tmp_path, check_no_data.DENYLIST_NAME, [])

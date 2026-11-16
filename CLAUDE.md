@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Tablade：本機執行、Power Query 式的資料清洗工具（Python + Polars 2.x + pywebview）。設計見 [DESIGN.md](DESIGN.md)。
+Tablade：本機執行、Power Query 式的資料清洗工具（Python + Polars 2.x + pywebview；前端 React + TypeScript + Vite + shadcn/ui）。設計見 [DESIGN.md](DESIGN.md)。
 
 ## 公開 repo 規則（最高優先）
 
@@ -20,12 +20,26 @@ Tablade：本機執行、Power Query 式的資料清洗工具（Python + Polars 
 - 不使用 `eval` / `exec`；不加入任何網路連線程式碼（`scripts/check_code_policy.py` 會檢查 `src/`）。
 - 依賴版本固定在 `pyproject.toml` 與 `uv.lock`，不要擅自升級。
 - `api.py`（JS bridge）只做參數轉換與錯誤包裝，邏輯放在引擎。
-- pywebview 視窗不開 HTTP server：HTML 以字串載入（見 `app.py`），不要改成用網址或相對路徑載入。
+- pywebview 視窗不開 HTTP server：前端 build 成單一 HTML（`frontend/dist/index.html`），以字串載入（見 `app.py`）。不要改成用網址或相對路徑載入；整份 HTML 必須小於 2 MB。
+
+## 前端規則（frontend/，設計見 DESIGN.md §16）
+
+- 狀態放在 Python：前端只送指令、顯示 Python 回傳的畫面狀態，不自己保存 recipe。
+- 步驟的參數表單由 pydantic schema 自動產生（DESIGN.md §16.5），不要為個別步驟手寫表單；驗證只在 Python 做。
+- `src/bridge.ts` 的 `TabladeApi` 必須與 `api.py` 的公開方法一致（有測試檢查）。
+- 不用 `dangerouslySetInnerHTML` / `innerHTML`，不用 `fetch` / `WebSocket` 等網路 API，不用 `eval` / `new Function`。
+- UI 元件用 shadcn/ui：`cd frontend && npx shadcn@latest add <元件>`。**不要**把 `shadcn` 裝成依賴；新增元件後確認 `src/index.css` 沒有被改回 `@import "shadcn/tailwind.css"`。
+- 不載入外部字型或資源；字型用系統字型。
+- CSP 由 `vite.config.ts` 在 build 時注入，不要寫在 `index.html`。
 
 ## 常用指令
 
 ```bash
 uv sync
+npm --prefix frontend ci && npm --prefix frontend run build   # 開視窗、跑 test_app.py 前要先 build
+npm --prefix frontend run lint
+npm --prefix frontend run dev   # 瀏覽器開 http://localhost:5173（假 API）
+TABLADE_DEV_URL=http://localhost:5173 uv run tablade   # 真正的視窗＋熱更新
 uv run pytest
 uv run python scripts/check_no_data.py --all
 uv run python scripts/check_code_policy.py
@@ -41,4 +55,4 @@ uv run --group icons python scripts/make_icons.py   # 改 assets/icon.svg 後重
 - 前端的 Content-Security-Policy 必須保留 `default-src 'none'`（擋掉所有對外連線）。`'unsafe-eval'` 是 pywebview 的 JS bridge 需要的，不要拿掉。
 - 前端寫入資料一律用 `textContent`，不用 `innerHTML`（這個頁面可以呼叫 Python）。
 
-每次修改都要跑 `pytest`、`check_no_data.py --all`、`check_code_policy.py`。
+每次修改都要跑 `pytest`、`check_no_data.py --all`、`check_code_policy.py`；改到前端時再加 `npm --prefix frontend run lint` 與 `npm --prefix frontend run build`。

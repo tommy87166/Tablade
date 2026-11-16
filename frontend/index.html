@@ -1,49 +1,13 @@
 <!doctype html>
 <html lang="zh-Hant">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- 完全離線：頁面本身不得載入或連線到任何外部資源。
-     'unsafe-eval' 是 pywebview 的 JS bridge 需要的，拿掉會讓 window.pywebview.api 無法使用。 -->
-<meta http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:">
-<title>Tablade</title>
-<link rel="stylesheet" href="style.css">
-</head>
-<body>
-<header class="topbar">
-  <div class="brand">
-    <img class="logo" src="../assets/icon.svg" alt="">
-    <span class="name">Tablade</span>
-    <span class="tag">M0 環境驗證</span>
-  </div>
-  <div class="actions">
-    <button id="btn-open" disabled>開啟 CSV</button>
-    <button id="btn-export" disabled>匯出 Parquet</button>
-    <button id="btn-selftest" class="secondary" disabled>自我檢測</button>
-  </div>
-</header>
-
-<main>
-  <section id="status" class="status" role="status">載入中…</section>
-
-  <section id="selftest" class="panel" hidden>
-    <h2>自我檢測</h2>
-    <ul id="selftest-checks" class="checks"></ul>
-    <p id="selftest-versions" class="muted"></p>
-  </section>
-
-  <section id="preview" class="panel" hidden>
-    <h2 id="preview-title">預覽</h2>
-    <p id="preview-meta" class="muted"></p>
-    <div class="table-wrap">
-      <table id="preview-table"></table>
-    </div>
-  </section>
-</main>
-
-<footer class="footer muted" id="footer"></footer>
-
-<script src="app.js"></script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 正式版的 Content-Security-Policy 由 vite.config.ts 在 build 時注入（dev server 需要 HMR 連線） -->
+    <title>Tablade</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
 </html>

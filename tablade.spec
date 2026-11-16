@@ -20,7 +20,8 @@ ICON = "assets/icon.icns" if IS_MAC else "assets/icon.ico"
 a = Analysis(
     ["src/tablade/__main__.py"],
     pathex=["src"],
-    datas=[("frontend", "frontend"), ("assets/icon.svg", "assets")],
+    # 前端是 build 好的單一 HTML（npm --prefix frontend run build）
+    datas=[("frontend/dist/index.html", "frontend/dist")],
     hiddenimports=[],
     excludes=["tkinter", "unittest", "pydoc", "pytest"],
     noarchive=False,

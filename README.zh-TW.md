@@ -13,6 +13,9 @@
   <img src="https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/Polars-2.1-CD792C?logo=polars&logoColor=white" alt="Polars" />
   <img src="https://img.shields.io/badge/pywebview-6.2-555555" alt="pywebview" />
+  <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black" alt="React" />
+  <img src="https://img.shields.io/badge/TypeScript-7-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/shadcn%2Fui-Radix-000000?logo=shadcnui&logoColor=white" alt="shadcn/ui" />
   <img src="https://img.shields.io/badge/PyInstaller-6.22-1F5FA6" alt="PyInstaller" />
 </p>
 
@@ -67,7 +70,7 @@
 |---|---|---|
 | 引擎 | [Polars](https://pola.rs/) 2.x（Python API） | 每個步驟編譯成 LazyFrame 操作；預覽只跑 `head(1000)`，匯出時串流寫成 Parquet。 |
 | 視窗 | [pywebview](https://pywebview.flowrl.com/) 6 | 原生視窗（Windows 用 WebView2、macOS 用 WKWebView）。JS 直接呼叫 Python——**不起 HTTP 服務、不開 port**。 |
-| 前端 | 靜態 HTML / CSS / JS | 啟動時內嵌成一份 HTML 字串。 |
+| 前端 | React 19 + TypeScript + Vite，[shadcn/ui](https://ui.shadcn.com/)（Radix + Tailwind CSS v4） | build 成**單一、自給自足的 HTML 檔**（約 300 KB），由 Python 以字串載入。 |
 | 編碼 | Python codecs | 自動偵測 `utf-8-sig` → `cp950`；失敗時指出第一個無法解碼的位元組與行號。 |
 | Excel | [fastexcel](https://github.com/ToucanToco/fastexcel)（calamine） | 快速、唯讀的 XLSX / XLS 讀取。 |
 | Recipe | pydantic v2 | 驗證 recipe JSON。 |
@@ -89,7 +92,7 @@
 ### 資料流
 
 ```
-pywebview 視窗 — frontend/（HTML/JS）
+pywebview 視窗 — frontend/（React + shadcn/ui，單一 HTML）
       │  window.pywebview.api.xxx()（Promise，同一個行程，不走 HTTP）
       ▼
 api.py（只做參數轉換與錯誤包裝）
@@ -110,7 +113,7 @@ cli.py — `tablade run recipe.json` 不開 UI，跑同一套引擎
   `socket`、`http`、`urllib`、`requests`、`httpx`、`aiohttp`、`ssl` 等模組，也禁止
   `eval` / `exec` / `compile` / `__import__`。pre-commit 與 CI 都會跑。
 - **沒有本機伺服器。** 頁面以 HTML 字串載入，pywebview 不會啟動內建的 HTTP server，也不開 port。
-- **Content-Security-Policy `default-src 'none'`。** 頁面無法連線、嵌入或載入任何外部資源。
+- **Content-Security-Policy `default-src 'none'`**（build 時注入）。頁面無法連線、嵌入或載入任何外部資源。
   `'unsafe-eval'` 只是因為 pywebview 的 JS bridge 需要。
 - **資料不會被當成 HTML 顯示。** 儲存格內容一律用 `textContent` 寫入，含有標記的資料不會變成
   可以呼叫 Python 的程式。
@@ -147,7 +150,7 @@ cli.py — `tablade run recipe.json` 不開 UI，跑同一套引擎
 
 | 項目 | 結果 |
 |---|---|
-| 單元測試（`pytest`） | 63 項通過 |
+| 單元測試（`pytest`） | 66 項通過 |
 | 打包後的自我檢測（產生 cp950 CSV → Parquet → 讀回比對 → Lazy 查詢 → Excel 引擎） | ✅ onefile 與 `.app`（macOS arm64） |
 | 視窗 smoke test（開視窗、透過 JS bridge 跑自我檢測、關閉） | ✅ onefile 與 `.app`（macOS arm64） |
 
@@ -162,13 +165,17 @@ Windows 的數據會在 CI 版本於權限受管控的電腦上驗證後補上�
 
 ## 🛠️ 開發
 
-需要 [uv](https://docs.astral.sh/uv/)。
+需要 [uv](https://docs.astral.sh/uv/) 與 Node.js 24 以上。
 
 ```bash
 uv sync                                              # 依 uv.lock 建立虛擬環境
+npm --prefix frontend ci                             # 安裝前端依賴
+npm --prefix frontend run build                      # build 出 frontend/dist/index.html（開視窗前必做）
 uv run pre-commit install                            # 安裝資料防護 hook（必做）
 uv run pytest                                        # 跑測試
 uv run tablade                                       # 從原始碼開啟視窗
+npm --prefix frontend run dev                        # Vite dev server（一般瀏覽器會用假 API）
+TABLADE_DEV_URL=http://localhost:5173 uv run tablade # 在真正的視窗裡熱更新
 uv run python scripts/gen_fixtures.py tmp/fixtures   # 產生假資料
 uv run python scripts/build.py --gui-smoke           # 打包 onefile + onedir、自我檢測、壓縮到 dist/release/
 uv run --group icons python scripts/make_icons.py    # 從 assets/icon.svg 重新產生 icon.ico / icon.icns
@@ -193,14 +200,14 @@ tablade version
 
 ```
 src/tablade/
-├─ app.py             pywebview 進入點；把 frontend/ 內嵌成一份 HTML 字串
+├─ app.py             pywebview 進入點；把 frontend/dist/index.html 讀成字串載入
 ├─ api.py             JS bridge：只做參數轉換與錯誤包裝
 ├─ cli.py             命令列（gui / selftest / convert / version）
 ├─ selftest.py        用假資料檢測打包後的環境
 ├─ fixtures.py        決定性的假資料（測試、自我檢測、範例共用）
 ├─ ingest/            編碼偵測、CSV 讀取
 └─ export/            原子寫入的 Parquet 輸出
-frontend/             index.html、app.js、style.css
+frontend/             Vite + React + TypeScript + shadcn/ui；bridge.ts 與 api.py 對應
 assets/               icon.svg（原始檔）、icon.ico、icon.icns、icon.png
 scripts/              build、make_icons、gen_fixtures、check_no_data、check_code_policy
 tests/                pytest

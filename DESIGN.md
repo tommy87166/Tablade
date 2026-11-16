@@ -46,7 +46,8 @@
 | 語言 | Python 3.12+（開發與打包用 3.13） | 開發快、AI coding 友善 |
 | 資料引擎 | **Polars 2.x**（Python API，目前固定 2.1） | Python API 有正式的版本與棄用政策；Lazy API 適合把步驟串成查詢計畫 |
 | 視窗 / UI 殼 | **pywebview 6.x** | 單一行程；JS 直接呼叫 Python（`js_api`），不開 port、不起 HTTP 服務；Windows 用 WebView2、Mac 用 WKWebView |
-| 前端 | 靜態 HTML / JS（先不用框架，或用 Vite 打包後的靜態檔） | 前端只是 Polars API 的外殼，不需要伺服器 |
+| 前端 | **React 19 + TypeScript + Vite**，UI 元件用 **shadcn/ui**（Radix + Tailwind CSS v4） | build 成單一 HTML 檔，以字串載入，不需要伺服器（見 §16） |
+| 預覽表格 | TanStack Virtual（M2 引入） | 列與欄都能虛擬捲動、MIT、約 20 KB |
 | Excel | `polars.read_excel`（calamine 引擎，需 `fastexcel`） | 快、純讀取 |
 | 編碼 | Python 內建 codecs（`utf-8-sig`、`cp950`） | Polars `read_csv` 只支援 UTF-8 |
 | Schema 驗證 | pydantic v2 | recipe JSON 驗證與型別 |
@@ -65,7 +66,7 @@
 
 ```
 ┌──────────────────────── pywebview 視窗 ────────────────────────┐
-│  frontend/（HTML/JS）                                           │
+│  frontend/（React + shadcn/ui，build 成單一 HTML）                │
 │   步驟清單 │ 資料預覽表格 │ 步驟參數表單 │ 警告 / 列數            │
 │        │  window.pywebview.api.xxx()（Promise）                  │
 └────────┼───────────────────────────────────────────────────────┘
@@ -235,7 +236,7 @@
 - **PyInstaller `--onefile`** 為主；**`--onedir`**（壓成 zip，解壓即用）為備案。
   - 單一執行檔每次啟動會先解壓縮到暫存資料夾（Windows 的 `%TEMP%\_MEI…`），可能比較慢、可能被防毒軟體誤判，也可能被 AppLocker 擋。
   - 實測參考：Linux 上 Python 3.13 + Polars 2.1 的最小 onefile 約 64MB，啟動約 0.9 秒。加上 pywebview、fastexcel 和前端後，預估 70 到 100MB。
-- 前端靜態檔以 `--add-data` 打包；程式內用 `sys._MEIPASS` 取得路徑。
+- 前端 build 好的 `frontend/dist/index.html` 以 `datas` 打包；程式內用 `sys._MEIPASS` 取得路徑。
 - Windows：pywebview 使用 Edge WebView2（Win10/11 通常已內建）。
 - macOS：未簽章，第一次開啟要按右鍵 →「打開」，或執行 `xattr -dr com.apple.quarantine`。PyInstaller 不支援 macOS 的 onefile `.app`，所以 macOS 發布 onedir 的 `Tablade.app` 加上 onefile 的命令列執行檔。
 - **GitHub Actions**：在 `windows-latest` 和 `macos-latest` 上建置 onefile 與 onedir，上傳 artifacts；推 tag 時建立 Release。打包、自我檢測、壓縮都寫在 `scripts/build.py`，本機與 CI 共用。
@@ -321,10 +322,16 @@ tablade/
 │   └── export/
 │       ├── parquet.py
 │       └── manifest.py
-├── frontend/
-│   ├── index.html
-│   ├── app.js
-│   └── style.css
+├── frontend/                  # Vite + React + TypeScript + shadcn/ui（見 §16）
+│   ├── package.json / package-lock.json
+│   ├── vite.config.ts         # 單一檔案輸出、build 時注入 CSP
+│   ├── components.json        # shadcn/ui 設定
+│   └── src/
+│       ├── main.tsx / App.tsx
+│       ├── bridge.ts          # 與 api.py 對應的型別與取得方式
+│       ├── mock.ts            # 開發用的假 API（只在 dev 載入）
+│       ├── components/ui/     # shadcn/ui 元件（npx shadcn@latest add 產生）
+│       └── styles/shadcn-tailwind.css
 ├── assets/
 │   └── icon.svg               # 圖示原始檔（置中表格＋🔪）；icon.ico / icon.icns / icon.png 由 make_icons.py 產生
 ├── examples/
@@ -378,7 +385,79 @@ tablade/
 ## 15. 待決事項
 
 - [ ] 正式名稱：Tablade（首推）／Helvetab／Bladeframe；中文名可以叫「瑞刃」
-- [ ] 前端要用純 JS，還是 Vite + 框架？預覽表格要用哪個虛擬捲動元件？（要能離線打包、授權寬鬆）
+- [x] 前端框架與預覽表格元件：React + Vite + TypeScript + shadcn/ui，表格用 TanStack Virtual（見 §16）
 - [ ] 第一版的資料量目標（單檔最大幾 GB／幾千萬列），以決定是否需要提早引入 DuckDB
 - [ ] recipe 預設存放位置（跟資料放在一起，或放在使用者指定的資料夾）
 - [ ] 是否需要「每一步顯示等效的 Polars 程式碼」給檢查的人看
+
+---
+
+## 16. 前端架構
+
+### 16.1 硬限制
+
+| 限制 | 影響 |
+|---|---|
+| 不開 HTTP server，HTML 以字串交給 WebView2（`NavigateToString`） | **整份 HTML 必須小於 2 MB**；`scripts/build.py` 與測試都會檢查 |
+| Chromium 在 `file://` 下會擋 ES module script | 不能直接用 `file://` 載入 Vite 的多檔產物，必須合併成單一 HTML（`vite-plugin-singlefile`） |
+| pywebview 的 JS bridge 內部用到 `eval` | CSP 必須保留 `'unsafe-eval'` |
+| 完全離線 | 不載入外部字型（用系統字型，含繁中）、圖示以 data URI 內嵌 |
+
+### 16.2 技術選型
+
+- **React 19 + TypeScript + Vite**：元件化、有型別、AI 輔助支援最好；`npm run build` 先跑 `tsc -b` 型別檢查。
+- **shadcn/ui**（Radix 為底層、Nova 主題、Tailwind CSS v4、lucide 圖示）：元件原始碼直接放在 `src/components/ui/`，需要時用 `npx shadcn@latest add <元件>` 加入。
+  - 不把 shadcn CLI 裝成依賴（它會帶進數百個套件和安全性警告）。它唯一需要的 `tailwind.css` 已複製到 `src/styles/shadcn-tailwind.css`（MIT）。
+  - 主色：圖示用 `#fd5108`；按鈕底色用深一階的 `#d03f00`（白字對比 4.7:1），深色模式用 `#ff7a3d`。
+- **lint**：oxlint，開啟 `react/no-danger`（禁止 `dangerouslySetInnerHTML`）。
+- **真正會出貨的套件**只有 react、react-dom、radix-ui、lucide-react、class-variance-authority、cn；其餘都是 build 工具。
+
+### 16.3 載入方式
+
+- 正式版：`npm run build` → `frontend/dist/index.html`（JS、CSS、圖示全部內嵌，目前約 300 KB）→ PyInstaller 打包 → `app.py` 讀成字串交給 `create_window(html=...)`。
+- CSP 只在 build 時注入（`vite.config.ts`），dev server 才能用 HMR。
+- 開發：`npm --prefix frontend run dev` 啟動 Vite，再用 `TABLADE_DEV_URL=http://localhost:5173 uv run tablade` 讓視窗載入 dev server（只接受 localhost）。也可以直接用一般瀏覽器打開 dev server，`bridge.ts` 會在找不到 pywebview 時改用 `mock.ts` 的假 API。
+
+### 16.4 狀態與溝通（M1 起）
+
+- **狀態放在 Python**：recipe、目前選到的步驟、預覽快取、警告、undo / redo 都由 Python 的 session 管理。前端呼叫指令（`add_step`、`update_step`、`move_step`、`toggle_step`、`delete_step`、`select_step`），每次拿回一份新的畫面狀態：步驟清單（含 `describe()`、列數變化、警告數）與目前步驟的參數。
+- **最新的結果才算數**：pywebview 每次 JS 呼叫都在新的 thread 執行。每個預覽請求帶流水號，Python 只回傳最新一次的結果，前端也丟掉過時的回應。
+- **表格分頁取資料**：`get_rows(step_id, offset, limit)` 只回傳畫面看得到的那一段，用欄式陣列（`{columns, data: [[...], ...]}`）傳輸。
+- **長時間工作**：完整匯出、掃描大檔在 Python 背景執行，進度寫進 pywebview 的 `window.state`，前端監聽 `pywebview.state` 的 `change` 事件。
+- **檔案只用代號**：開檔對話框由 Python 開啟，前端只拿到檔案代號，不能要求 Python 讀任意路徑。
+
+### 16.5 參數表單從 pydantic schema 自動產生
+
+每種步驟的參數 model（§7.3）就是表單的唯一來源，前端沒有任何步驟專屬的表單程式碼。
+
+1. Python 用 `Model.model_json_schema()` 產生 JSON Schema，連同目前的參數值與「上一步的輸出欄位」一起交給前端。
+2. 前端依 schema 的型別挑元件：
+
+| JSON Schema | 元件 |
+|---|---|
+| `type: string` | Input |
+| `type: integer` / `number` | 數字 Input |
+| `type: boolean` | Switch |
+| `enum`（來自 `Literal[...]`） | Select；選項文字用 `ui_labels` |
+| `type: array` + `items: string` | 可增減的標籤輸入 |
+| `ui: "column"` / `ui: "columns"` | 欄位選擇器（單選 / 多選），選項是上一步的輸出欄位 |
+| `ui: "regex"` | 正規表示式輸入框＋即時測試 |
+| `oneOf` + `discriminator` | 先選類型，再顯示對應的子表單（例如篩選條件「等於 / 包含 / 數值比較」） |
+
+3. 欄位標題用 `Field(title=...)`、說明用 `Field(description=...)`、預設值用 Python 的預設值；`ui`、`ui_labels` 等提示放在 `json_schema_extra`。
+4. **驗證只在 Python 做**：前端送出原始值，pydantic 驗證；錯誤的 `loc`（例如 `["delimiter"]`）對應回表單欄位顯示。前端不重複寫驗證規則。
+5. 驗證通過後，Python 重算預覽並回傳 `describe()` 的一句話說明，步驟清單即時更新。
+
+新增一種步驟只要寫 Python（參數 model、`apply()`、`describe()`、測試），表單自動出現。
+
+### 16.6 畫面配置（M2）
+
+- 左側：輸入檔案與步驟清單（拖曳排序、停用、刪除、每步的列數變化）。
+- 中間：預覽表格。欄標題顯示型別與空值比例；在欄標題按右鍵可直接建立步驟（拆欄、轉數字…）。
+- 右側：目前步驟的參數表單（§16.5）。
+- 下方：警告區，每則附來源檔名與行號，點一下跳到該列。
+
+### 16.7 檢查
+
+- `tests/test_app.py`：前端產物是單一檔案且小於 2 MB、CSP 是 `default-src 'none'`、`bridge.ts` 的方法與 `api.py` 一致、前端原始碼沒有 `innerHTML` / `dangerouslySetInnerHTML` / `fetch` / `WebSocket` / `eval` 等。
+- CI 在 Windows / macOS / Linux 都先 `npm ci`、`npm run lint`、`npm run build`，再跑 pytest 與打包。

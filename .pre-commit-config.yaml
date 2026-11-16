@@ -13,6 +13,12 @@ repos:
         language: python
         pass_filenames: false
         files: ^src/
+      - id: frontend-lint
+        name: 前端 lint（oxlint）
+        entry: npm --prefix frontend run lint
+        language: system
+        pass_filenames: false
+        files: ^frontend/
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.17.5

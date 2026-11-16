@@ -5,7 +5,10 @@
     uv run python scripts/build.py onedir          # 只打包一種
     uv run python scripts/build.py --gui-smoke     # 另外開視窗跑 smoke test
 
+需要 Node.js 24 以上（先 build 前端成單一 HTML，再交給 PyInstaller）。
+
 輸出：
+    frontend/dist/index.html         前端產物（必須小於 2 MB）
     dist/onefile/、dist/onedir/      PyInstaller 產物
     dist/release/*.zip               可發布的壓縮檔
 
@@ -25,6 +28,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+FRONTEND = ROOT / "frontend"
 DIST = ROOT / "dist"
 RELEASE = DIST / "release"
 MODES = ("onefile", "onedir")
@@ -46,6 +50,22 @@ def executable(mode: str) -> Path:
     if IS_MAC:
         return DIST / "onedir" / "Tablade.app" / "Contents" / "MacOS" / exe
     return DIST / "onedir" / "tablade" / exe
+
+
+def build_frontend() -> None:
+    from tablade.app import MAX_HTML_BYTES
+
+    npm = shutil.which("npm")
+    if npm is None:
+        raise SystemExit("找不到 npm：請先安裝 Node.js 24 以上")
+    print("== 前端", flush=True)
+    if os.environ.get("CI") or not (FRONTEND / "node_modules").is_dir():
+        subprocess.run([npm, "ci"], cwd=FRONTEND, check=True)
+    subprocess.run([npm, "run", "build"], cwd=FRONTEND, check=True)
+    size = (FRONTEND / "dist" / "index.html").stat().st_size
+    if size >= MAX_HTML_BYTES:
+        raise SystemExit(f"前端產物 {size:,} bytes，超過 WebView2 的 2 MB 上限")
+    print(f"== 前端產物 {size / 1024:.0f} KB")
 
 
 def build(mode: str) -> None:
@@ -132,10 +152,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--gui-smoke", action="store_true", help="另外開視窗跑 smoke test")
     parser.add_argument("--skip-build", action="store_true", help="只檢測與壓縮現有的產物")
+    parser.add_argument("--skip-frontend", action="store_true", help="沿用現有的前端產物")
     args = parser.parse_args(argv)
     args.modes = args.modes or list(MODES)
     if unknown := set(args.modes) - set(MODES):
         parser.error(f"不認得的 mode：{', '.join(sorted(unknown))}")
+
+    if not (args.skip_build or args.skip_frontend):
+        build_frontend()
 
     failed = []
     for mode in args.modes:

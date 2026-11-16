@@ -122,9 +122,22 @@ def load_denylist(root: Path) -> list[str]:
     return terms
 
 
+# 英數字詞前面若是英數字或 base64 符號就不算命中，避免 lockfile 雜湊這類字串誤判；
+# 後面不限制，所以字首相同的變化形（複數、-ing、所有格）照樣會被擋下。
+_ASCII_TERM_LEFT_BOUNDARY = r"(?<![A-Za-z0-9_+/])"
+
+
+def denylist_matcher(term: str) -> re.Pattern[str]:
+    """中文等非 ASCII 字詞用子字串比對；英數字詞要求左側邊界。都不分大小寫。"""
+    escaped = re.escape(term)
+    if term.isascii():
+        escaped = _ASCII_TERM_LEFT_BOUNDARY + escaped
+    return re.compile(escaped, re.IGNORECASE)
+
+
 def scan_text(rel: str, text: str, denylist: list[str]) -> list[Problem]:
     problems: list[Problem] = []
-    lowered_terms = [(t, t.casefold()) for t in denylist]
+    matchers = [(t, denylist_matcher(t)) for t in denylist]
     for lineno, line in enumerate(text.splitlines(), start=1):
         for m in TW_ID_RE.finditer(line):
             value = m.group(1) + m.group(2)
@@ -133,9 +146,8 @@ def scan_text(rel: str, text: str, denylist: list[str]) -> list[Problem]:
         for pattern in UBN_RES:
             for m in pattern.finditer(line):
                 problems.append(Problem(rel, lineno, f"疑似統一編號 {mask(m.group(1))}"))
-        folded = line.casefold()
-        for term, folded_term in lowered_terms:
-            if folded_term in folded:
+        for term, matcher in matchers:
+            if matcher.search(line):
                 problems.append(Problem(rel, lineno, f"含有封鎖清單字詞 {mask(term)}"))
     return problems
 
@@ -151,9 +163,8 @@ def check_file(root: Path, rel: str, denylist: list[str]) -> list[Problem]:
             Problem(rel, None, "資料檔副檔名，不得 commit（測試資料請用 gen_fixtures.py 產生）")
         )
 
-    folded_path = rel.casefold()
     for term in denylist:
-        if term.casefold() in folded_path:
+        if denylist_matcher(term).search(rel):
             problems.append(Problem(rel, None, f"檔名含有封鎖清單字詞 {mask(term)}"))
 
     full = root / rel
