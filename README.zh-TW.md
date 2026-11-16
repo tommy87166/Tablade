@@ -51,7 +51,7 @@
 或是多數工具讀不了的 **Big5 / cp950** 編碼。常見的做法是先手動合併，再用資料庫瀏覽器篩選——
 又慢，而且沒辦法重現。
 
-這個工具要滿足四件事：
+這個工具要滿足五件事：
 
 - **爛檔也能一步一步處理。** 每個實體行原封不動讀進來（保留原始行號），再用一個個可預覽的小步驟
   清洗，而不是寫一大段腳本。
@@ -61,6 +61,9 @@
   [🔒 安全性：不對外連線](#-安全性不對外連線)）。
 - **能在權限受管控的電腦上執行。** 不用安裝 Python、不需要系統管理員權限：Windows 與 macOS
   都提供單一執行檔（或解壓即用的資料夾）。
+- **讓 AI 助理寫 recipe。** Tablade 會從步驟 registry 自動產生 Agent Skills 套件（`SKILL.md`、步驟目錄、
+  schema 與驗證器），Microsoft 365 Copilot 等 AI 助理就能把口語描述轉成 recipe 並自行驗證。
+  skill 與 recipe 格式共用同一個版本號（見 [`DESIGN.md` §17](DESIGN.md)）。
 
 ---
 
@@ -227,8 +230,9 @@ tablade.spec          PyInstaller 設定（以 TABLADE_BUILD 切換 onefile / on
 | 階段 | 內容 | 完成標準 |
 |---|---|---|
 | **M0 環境驗證** | 最小 pywebview + Polars 程式，onefile 與 onedir 打包 | 在權限受管控的 Windows 筆電上能開出視窗，並把 CSV 轉成 Parquet |
-| M1 引擎 | recipe schema、`text_lines` / `csv` 讀取、compiler、CLI、前 8 種步驟 | `tablade run examples/sales_report.recipe.json` 產出正確結果 |
-| M2 UI | 步驟清單（新增、排序、停用、刪除）、預覽表格、參數表單 | 不寫 JSON 也能完成範例清洗流程 |
+| M1 引擎 | 有版本號的 recipe schema、步驟 registry、`text_lines` / `csv` 讀取、compiler、CLI（`run` / `validate` / `schema`）、前 8 種步驟 | `tablade run examples/sales_report.recipe.json` 產出正確結果 |
+| M1.5 AI skill | 沙箱實測、`tablade profile`、skill 產生器、單一檔案驗證器 | Copilot 載入 skill 後能寫出通過驗證的 recipe |
+| M2 UI | 步驟清單（新增、排序、停用、刪除）、預覽表格、參數表單、匯入 recipe 與錯誤報告、下載 skill | 不寫 JSON 也能完成範例清洗流程 |
 | M3 在地格式與追溯 | `parse_number`、`parse_date`（民國）、`trim_clean`、manifest | 輸出附 manifest，警告附行號 |
 | M4 多檔與 Excel | glob、diagonal concat、Excel 讀取、`classify_rows`、`extract_regex` | 分段報表的範例可以完整攤平 |
 | M5 進階步驟 | join、group_by、unpivot、pivot、dedupe、匯出成 Python 腳本 | — |

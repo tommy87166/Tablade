@@ -125,7 +125,7 @@
 
 ```json
 {
-  "tablade_recipe": 1,
+  "tablade_recipe": "1.0",
   "name": "明細整理範例",
   "inputs": [
     {
@@ -152,6 +152,7 @@
 
 **規則**
 
+- `tablade_recipe` 是 recipe 格式的版本號（`MAJOR.MINOR`，規則見 §17.6），AI skill 共用同一個版本號。
 - 每個步驟都有唯一的 `id`，並可加上 `"enabled": false` 暫時停用。
 - **依資料決定結構的步驟**（提升標題列、拆成幾欄、樞紐），在**建立步驟的當下**先掃一次資料，把欄名和欄數寫死在 recipe 裡。之後套用到新資料時，若出現更多段數或新的欄位，產生**警告**，不默默增減欄位。
 - recipe 本身可能含有敏感資訊（例如篩選條件裡的人名或公司名稱），所以**真實 recipe 也不得 commit**，repo 只放範例 recipe。
@@ -194,6 +195,9 @@
 3. `describe()`：給 UI 顯示的一句話說明，例如「移除前 4 列」
 4. `infer_schema()`（如果需要）：建立步驟時掃描資料，決定欄名與欄數
 5. 單元測試（假資料）
+6. 欄位效果宣告：這一步對欄位做了什麼（見 §17.5），驗證器不用資料就能檢查欄位引用
+7. 範例：輸入假資料、參數、預期輸出；同時是單元測試，也會寫進 AI skill 的步驟目錄
+8. 給 AI 的說明：適用情境與常見誤用
 
 ---
 
@@ -359,8 +363,9 @@ tablade/
 | 階段 | 內容 | 完成標準 |
 |---|---|---|
 | **M0 環境驗證** | 最小 pywebview + Polars 程式，用 onefile 和 onedir 各打包一次 | **在目標 Windows 筆電（權限受管控的公司電腦）上能開出視窗，並讀一個 CSV 寫出 Parquet** |
-| M1 引擎 | recipe schema、ingest（text_lines / csv）、compiler、CLI、MVP 中的 8 種步驟 | `tablade run examples/sales_report.recipe.json` 產出正確結果，測試全過 |
-| M2 UI | 步驟清單（新增、排序、停用、刪除）、預覽表格、參數表單 | 不寫 JSON，也能在 UI 完成範例整理流程 |
+| M1 引擎 | recipe schema（版本 `MAJOR.MINOR`、schema lock）、registry（含 §7.3 的 8 件事）、ingest（text_lines / csv）、compiler、CLI（`run` / `validate` / `schema`）、MVP 中的 8 種步驟 | `tablade run examples/sales_report.recipe.json` 產出正確結果，測試全過 |
+| M1.5 AI skill | probe skill 實測沙箱、`tablade profile`、skill 產生器、單一檔案驗證器（§17） | Copilot 載入 skill 後，能依描述寫出通過驗證的範例 recipe |
+| M2 UI | 步驟清單（新增、排序、停用、刪除）、預覽表格、參數表單、匯入 recipe（版本檢查、錯誤報告）、下載 AI skill | 不寫 JSON，也能在 UI 完成範例整理流程 |
 | M3 台灣格式與留痕 | parse_number、parse_date（民國）、trim_clean、manifest | 輸出附 manifest，警告附行號 |
 | M4 多檔與 Excel | glob、diagonal concat、excel reader、classify_rows、extract_regex | 分段報表的範例可以完整攤平 |
 | M5 進階步驟 | join、group_by、unpivot、pivot、dedupe、匯出 Python 腳本 | — |
@@ -389,6 +394,7 @@ tablade/
 - [ ] 第一版的資料量目標（單檔最大幾 GB／幾千萬列），以決定是否需要提早引入 DuckDB
 - [ ] recipe 預設存放位置（跟資料放在一起，或放在使用者指定的資料夾）
 - [ ] 是否需要「每一步顯示等效的 Polars 程式碼」給檢查的人看
+- [ ] Copilot 沙箱的 Python 版本、skill 的 script 能否讀取聊天中上傳的檔案（用 probe skill 實測，見 §17.3）
 
 ---
 
@@ -461,3 +467,93 @@ tablade/
 
 - `tests/test_app.py`：前端產物是單一檔案且小於 2 MB、CSP 是 `default-src 'none'`、`bridge.ts` 的方法與 `api.py` 一致、前端原始碼沒有 `innerHTML` / `dangerouslySetInnerHTML` / `fetch` / `WebSocket` / `eval` 等。
 - CI 在 Windows / macOS / Linux 都先 `npm ci`、`npm run lint`、`npm run build`，再跑 pytest 與打包。
+
+---
+
+## 17. AI skill：讓 AI 助理撰寫 recipe
+
+### 17.1 目標與流程
+
+使用者在 AI 助理裡描述要怎麼整理資料，AI 讀資料、寫出 recipe，並用 skill 內的驗證器自我檢查；使用者再把 recipe 匯入 Tablade，由 Tablade 做最終驗證與試跑。
+
+- 目標環境：**Microsoft 365 Copilot 的 Agent Builder**。skill 採開放的 Agent Skills 格式（`SKILL.md`），GitHub Copilot、Claude 等也能使用同一個套件。
+- 資料：AI 服務若已獲准處理這些資料，可以直接讀取原始檔。大檔或 Big5 檔建議先用 `tablade profile` 產生精簡摘要（UTF-8：偵測到的編碼、行數、前 N 行原文、欄位與簡單統計）再上傳；`--mask` 可把數字與文字遮罩成 `9` / `a` / `〇`。
+
+```
+使用者描述 ＋ 上傳資料（或 tablade profile 摘要）
+        ▼
+Copilot（載入 Tablade skill）── 寫 recipe ──► scripts/validate_recipe.py（在沙箱內自我檢查）
+        ▼ 使用者下載 recipe
+Tablade 匯入 → 完整驗證 ＋ 用真實資料試跑 → 有問題就「複製錯誤報告」，貼回 Copilot 修正
+```
+
+### 17.2 skill 內容（build 時從 registry 自動產生）
+
+```
+tablade-recipe-skill-v1.4.zip
+├── SKILL.md                     # frontmatter：name、description（含版本）；工作流程與規則
+├── references/
+│   ├── steps.md                 # 步驟目錄：用途、參數表、範例（自動產生）
+│   ├── recipe.schema.json       # 完整 recipe JSON Schema（由 pydantic 產生）
+│   └── examples/*.recipe.json   # 範例 recipe（搭配假資料）
+└── scripts/
+    └── validate_recipe.py       # 驗證器：單一檔案、只用 Python 標準函式庫
+```
+
+新增步驟放進 registry，下次 build 就會自動出現在 `steps.md`、schema 與驗證器裡，不用手改。
+
+### 17.3 Agent Builder 的限制（Microsoft Learn，2026-11）
+
+| 項目 | 上限 |
+|---|---|
+| 每個 agent 的 skill 數 | 8 |
+| zip 大小 | 50 MB |
+| 單一檔案 | 25 MB |
+| 檔案數 | 350 |
+| 目錄深度 | 3 |
+| SKILL.md 指示 | 20,000 字元 |
+| 允許的檔案 | 資源：`.md` `.json` `.csv` `.txt` `.yaml` 等；script：`.py` `.js` `.sh` 等 |
+| 執行 script 的沙箱 | 沒有網路、不能安裝套件；預裝套件清單沒有公開 |
+
+- 所以驗證器**只用 Python 標準函式庫**；build 與測試會檢查以上限制（字數、檔案數、深度、副檔名）。
+- 文件沒有寫、需要實測：沙箱的 Python 版本、script 能不能讀取聊天中上傳的檔案。M1.5 先做一個 probe skill（只回報 Python 版本、可用套件、看得到哪些檔案），上傳到 Agent Builder 實測。
+- 更新方式文件沒有寫：新版本要在 Agent Builder 移除舊 skill、再上傳新 zip。
+
+### 17.4 驗證器
+
+- **一份程式碼，兩個地方用**：`src/tablade/recipe/validator.py`（只用標準函式庫）同時給 Tablade（`tablade validate`、匯入 recipe）與 skill 使用；build 時把它和從 registry 產生的步驟規格（JSON）合併成單一檔案。
+- **三層檢查**：
+  1. 結構：版本號、步驟類型是否存在、參數型別 / 必填 / 列舉（依內嵌的 JSON Schema）
+  2. 語意：步驟 id 不重複、欄位引用存在（依各步驟的欄位效果一步步推算）、需要寫死欄名的步驟有寫、`only_row_types` 引用的類型有定義
+  3. 試跑（只在 Tablade）：用真實資料跑一次，回報每一步的列數、欄名、警告與行號
+- **給 AI 看的輸出**：JSON，每個錯誤含 `path`（例如 `steps[3].params.column`）、`error`、`hint`（例如相近的欄位名稱）。
+- **與 pydantic 一致**：測試用一組正確與錯誤的 recipe，確認 pydantic 與驗證器的結論相同。
+
+### 17.5 欄位效果宣告
+
+每種步驟用少數幾種標準形式宣告自己對欄位的影響，例如：
+
+| 形式 | 例子 |
+|---|---|
+| 不變 | `remove_top_rows`、`filter`、`fill_down` |
+| 新增 | `classify_rows` 新增 `__row_type` |
+| 拆分 | `split_column`：移除 `column`，新增 `names` |
+| 整組換掉 | `split_delimited`、`promote_headers`：換成參數裡寫死的欄名 |
+| 選取 / 改名 | `select_columns`、`rename_columns` |
+
+Tablade 的 `output_columns()` 與驗證器都從這份宣告推算，所以不需要資料就能檢查「第 5 步引用的欄位在那之前存在嗎」。
+
+### 17.6 版本號
+
+- recipe：`"tablade_recipe": "MAJOR.MINOR"`。
+  - minor：相容的變更（新增步驟、新增選用參數）
+  - major：不相容的變更，附自動升級舊 recipe 的程式
+- **skill 版本 = recipe 版本**（zip 檔名、SKILL.md、驗證器常數都標示）。App 版本另外計算，例如 Tablade 0.3.0 支援 recipe 1.4。
+- **由 CI 把關**：repo 存一份 `recipe-schema.lock.json`（完整 schema 快照），測試重新產生後比對；步驟定義變了但版本沒升，CI 就失敗並提示該升 minor 還是 major。
+- Tablade 開啟 recipe：版本比 App 新 → 提示更新 Tablade；比較舊 → 自動升級。
+- 驗證器遇到不同 major 或比自己新的 minor → 提示改用對應版本的 skill。
+
+### 17.7 下載
+
+- 前端的說明選單提供「下載 Copilot skill（v1.4）」：Python 依目前的 registry 當場產生 zip，再開存檔對話框，所以下載到的 skill 一定與 App 版本一致。
+- CI 也把 skill zip 附到 Release。

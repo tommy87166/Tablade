@@ -53,7 +53,7 @@ Real-world data rarely arrives clean. It comes **split across dozens of files**,
 exports that most tools refuse to read. The usual fix — merge by hand, then filter in a
 database browser — is slow and impossible to reproduce.
 
-Four needs drove this tool:
+Five needs drove this tool:
 
 - **Messy input, step by step.** Read each physical line as-is (keeping its original line
   number), then clean it with small, previewable steps instead of one giant script.
@@ -64,6 +64,10 @@ Four needs drove this tool:
   ruled out at the code level** (see [🔒 Security — no egress](#-security--no-egress)).
 - **Runs on locked-down computers.** No Python install, no admin rights: Tablade ships as a
   single executable (or an unzip-and-run folder) for Windows and macOS.
+- **Let an AI assistant write the recipe.** Tablade generates an Agent Skills package
+  (`SKILL.md`, step catalog, schema and a validator) from its step registry, so an assistant such
+  as Microsoft 365 Copilot can turn a plain-language description into a recipe and check it.
+  The skill shares its version number with the recipe format (see [`DESIGN.md` §17](DESIGN.md)).
 
 ---
 
@@ -232,8 +236,9 @@ tablade.spec          PyInstaller config (onefile / onedir via TABLADE_BUILD)
 | Milestone | Scope | Done when |
 |---|---|---|
 | **M0 Environment** | Minimal pywebview + Polars app, onefile and onedir builds | The window opens on a locked-down Windows laptop and converts a CSV to Parquet |
-| M1 Engine | Recipe schema, `text_lines` / `csv` readers, compiler, CLI, first 8 steps | `tablade run examples/sales_report.recipe.json` gives the expected output |
-| M2 UI | Step list (add, reorder, disable, delete), preview grid, parameter forms | The example cleanup can be done without writing JSON |
+| M1 Engine | Versioned recipe schema, step registry, `text_lines` / `csv` readers, compiler, CLI (`run` / `validate` / `schema`), first 8 steps | `tablade run examples/sales_report.recipe.json` gives the expected output |
+| M1.5 AI skill | Sandbox probe, `tablade profile`, skill generator, single-file validator | Copilot loads the skill and writes a recipe that passes validation |
+| M2 UI | Step list (add, reorder, disable, delete), preview grid, parameter forms, recipe import with error report, skill download | The example cleanup can be done without writing JSON |
 | M3 Local formats & traceability | `parse_number`, `parse_date` (ROC calendar), `trim_clean`, manifest | Output ships with a manifest; warnings carry line numbers |
 | M4 Multi-file & Excel | glob, diagonal concat, Excel reader, `classify_rows`, `extract_regex` | A sectioned report example flattens completely |
 | M5 Advanced steps | join, group_by, unpivot, pivot, dedupe, export as a Python script | — |
