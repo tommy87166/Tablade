@@ -140,7 +140,7 @@ def steps_markdown(spec: dict[str, Any] | None = None) -> str:
         out += [
             f"## `{cls.type_name()}` — {cls.label}",
             "",
-            (cls.__doc__ or "").strip(),
+            cls.summary(),
             "",
             f"- 分類：{cls.category}",
             f"- 欄位效果：{_effect_text(cls)}",
@@ -179,8 +179,7 @@ def steps_markdown(spec: dict[str, Any] | None = None) -> str:
 
 def skill_markdown() -> str:
     quick = ["| type | 用途 |", "|---|---|"] + [
-        f"| `{cls.type_name()}` | {cls.label}：{(cls.__doc__ or '').strip()} |"
-        for cls in all_steps()
+        f"| `{cls.type_name()}` | {cls.label}：{cls.summary()} |" for cls in all_steps()
     ]
     return f"""---
 name: {SKILL_NAME}
@@ -220,12 +219,13 @@ Tablade 是本機執行的資料清洗工具。使用者描述要怎麼整理資
   "steps": [
     {{ "id": "s1", "type": "remove_top_rows", "n": 2 }}
   ],
-  "output": {{ "format": "parquet", "path": "output/名稱.parquet", "keep_system_columns": true }}
+  "output": {{ "format": "parquet", "keep_system_columns": true }}
 }}
 ```
 
 - `tablade_recipe` 一定要是 `"{RECIPE_VERSION}"`。
-- `pattern` 與 `output.path` 都是**相對於 recipe 檔所在的資料夾**；`pattern` 可用 glob 一次讀多個檔案。
+- `pattern` 是**相對於 recipe 檔所在的資料夾**，可用 glob 一次讀多個檔案。
+- recipe 不記輸出位置：使用者在 Tablade 按「執行」時才選存檔位置（`output` 裡沒有 `path`）。
 - 目前一個 recipe 只能有一個 input。
 - 每一列都帶系統欄位 `__source_file`（來源檔）與 `__line_no`（原始行號），可以在條件裡引用。
 - 「前 N 列」「後 N 列」「向下填滿」「提升標題列」都是**每個來源檔各自計算**。

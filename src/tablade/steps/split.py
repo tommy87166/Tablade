@@ -58,7 +58,7 @@ def _parse_line(line: str | None, delimiter: str, quote: str) -> list[str]:
 
 @register
 class SplitDelimited(Step):
-    """把一欄（通常是 text_lines 讀進來的 line）依分隔符號拆成多欄，會處理引號。"""
+    """把逐行讀取（爛格式檔案）依分隔符號拆成多欄，會處理引號。"""
 
     type: Literal["split_delimited"] = "split_delimited"
     column: ColumnRef = Field(default="line", title="要拆的欄位")

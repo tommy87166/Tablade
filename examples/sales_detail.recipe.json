@@ -1,5 +1,5 @@
 {
-  "tablade_recipe": "1.0",
+  "tablade_recipe": "1.1",
   "name": "門市銷售明細整理",
   "description": "範例：先執行 uv run python scripts/gen_fixtures.py examples/data 產生假資料",
   "inputs": [
@@ -18,5 +18,5 @@
     { "id": "s8", "type": "filter",
       "conditions": [{ "column": "金額", "op": "starts_with", "value": "(" }], "keep": "non_matching" }
   ],
-  "output": { "format": "parquet", "path": "output/明細.parquet", "keep_system_columns": true }
+  "output": { "format": "parquet", "keep_system_columns": true }
 }

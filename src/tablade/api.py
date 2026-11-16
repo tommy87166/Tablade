@@ -28,7 +28,7 @@ from .selftest import run_selftest
 from .session import Session, catalog
 
 DATA_TYPES = ("資料檔 (*.csv;*.txt;*.tsv;*.prn;*.dat)", "所有檔案 (*.*)")
-RECIPE_TYPES = ("Tablade recipe (*.json)", "所有檔案 (*.*)")
+RECIPE_TYPES = ("Tablade Recipe (*.json)", "所有檔案 (*.*)")
 PARQUET_TYPES = ("Parquet (*.parquet)",)
 
 
@@ -256,11 +256,10 @@ class Api:
 
     @_wrap
     def export_parquet(self) -> dict[str, Any]:
-        default = Path(self._session.output.get("path") or "result.parquet")
-        base = self._session.base_dir or Path.home()
-        folder = base / default.parent if (base / default.parent).is_dir() else base
+        """「執行」：開存檔對話框選輸出位置，再處理全部資料。"""
+        folder, name = self._session.export_suggestion()
         picked = self._dialog(
-            "save", directory=str(folder), save_filename=default.name, file_types=PARQUET_TYPES
+            "save", directory=str(folder), save_filename=name, file_types=PARQUET_TYPES
         )
         if not picked:
             return {"cancelled": True}

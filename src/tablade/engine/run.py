@@ -152,11 +152,12 @@ def execute(
     lf, files = scan(source.pattern, source.reader, source.encoding, base_dir, progress)
     input_rows = sum(f.rows for f in files)
     mode = choose_mode(files, write_output, mode)
-    target = output or (base_dir / recipe.output.path)
+    if write_output and output is None:
+        raise ValueError("寫出檔案時要指定 output（recipe 不記輸出位置）")
     if mode == "stream":
-        if not write_output:
+        if output is None:
             raise ValueError("stream 模式一定會寫出檔案")
-        return None, _execute_stream(recipe, lf, files, input_rows, target, limit, progress)
+        return None, _execute_stream(recipe, lf, files, input_rows, output, limit, progress)
 
     frame = (
         lf.collect(engine="streaming")
@@ -187,9 +188,9 @@ def execute(
     if not recipe.output.keep_system_columns:
         frame = frame.select(_data_columns(frame.columns))
     written = None
-    if write_output:
-        write_parquet(frame, target)
-        written = target.as_posix()
+    if output is not None and write_output:
+        write_parquet(frame, output)
+        written = output.as_posix()
     report = RunReport(
         files,
         input_rows,

@@ -26,13 +26,14 @@ from .registry import register
 
 @register
 class FillDown(Step):
-    """用上一列的值填滿空白的儲存格（每個來源檔各自填，不會跨檔）。"""
+    """空白的儲存格填入上面最近一個有值的內容。"""
 
     type: Literal["fill_down"] = "fill_down"
     columns: ColumnRefs = Field(title="要填滿的欄位")
     blank_as_null: bool = Field(default=True, title="空字串也當成空白")
 
     label = "向下填滿"
+    per_file = True
     category = "欄"
     ai_notes = (
         "報表或匯出檔常只在群組的第一列寫值（例如門市、科別），用這一步補齊。"

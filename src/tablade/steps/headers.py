@@ -26,12 +26,13 @@ from .registry import register
 
 @register
 class PromoteHeaders(Step):
-    """用每個來源檔目前的第一列當欄名，並移除那一列。欄名在建立步驟時寫死在 recipe。"""
+    """用目前的第一列當欄名，並移除那一列。欄名在新增步驟時就決定好；之後資料的標題不同時會警告，但仍用原本的欄名。"""
 
     type: Literal["promote_headers"] = "promote_headers"
     names: NewColumns = Field(title="欄名", description="建立步驟時從第一列讀出，之後固定")
 
     label = "提升標題列"
+    per_file = True
     category = "欄"
     effect = {"kind": "rename_data", "names": "$names"}
     ai_notes = (

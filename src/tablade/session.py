@@ -17,6 +17,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,11 +41,12 @@ from .ingest.encoding import DecodeError
 from .ingest.sources import InputError, Progress, SourceFile, sample, scan
 from .recipe.schema import RECIPE_VERSION, RecipeError, load_json, parse_recipe, pydantic_issues
 from .steps import all_steps, get
-from .steps.base import SYSTEM_PREFIX, Step
+from .steps.base import SOURCE_FILE, SYSTEM_PREFIX, Step
 
 MAX_UNDO = 100
 DEFAULT_INPUT = {"id": "src", "pattern": "", "reader": "text_lines", "encoding": "auto"}
-DEFAULT_OUTPUT = {"format": "parquet", "path": "output/result.parquet", "keep_system_columns": True}
+DEFAULT_OUTPUT = {"format": "parquet", "keep_system_columns": True}
+INVALID_FILENAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
 class SessionError(ValueError):
@@ -69,6 +71,17 @@ def _digest(value: Any) -> str:
 
 def _data_columns(frame: pl.DataFrame) -> list[str]:
     return [c for c in frame.columns if not c.startswith(SYSTEM_PREFIX)]
+
+
+def _files(frame: pl.DataFrame) -> list[str]:
+    """目前的來源檔（依出現順序）。"""
+    if SOURCE_FILE not in frame.columns:
+        return []
+    return frame.get_column(SOURCE_FILE).unique(maintain_order=True).to_list()
+
+
+def _file_count(frame: pl.DataFrame) -> int:
+    return frame.get_column(SOURCE_FILE).n_unique() if SOURCE_FILE in frame.columns else 0
 
 
 def _jsonable(value: Any) -> Any:
@@ -107,6 +120,8 @@ class Session:
         self.progress: Progress = None
         """讀檔、轉碼、匯出時的進度回報（api.py 會把它推給前端）。"""
         self._computed: list[_Computed] = []
+        self.last_export: Path | None = None
+        """上次「執行」存的位置：下次存檔對話框的預設值。"""
 
     # ── 快照與 undo / redo ─────────────────────────────────────
 
@@ -206,11 +221,10 @@ class Session:
         with self._lock:
             target = path or self.recipe_path
             if target is None:
-                raise SessionError("還沒有指定 recipe 檔的位置")
+                raise SessionError("還沒有指定 Recipe 檔的位置")
             target = target.resolve()
             if self.base_dir and self.input.get("pattern") and target.parent != self.base_dir:
                 self.input["pattern"] = self._relocate(self.input["pattern"], target.parent)
-                self.output["path"] = self._relocate(self.output["path"], target.parent)
             self.base_dir = target.parent
             target.write_text(
                 json.dumps(self.recipe_dict(), ensure_ascii=False, indent=2) + "\n",
@@ -246,8 +260,7 @@ class Session:
             ).as_posix()
             if not self.meta.get("name"):
                 self.meta["name"] = paths[0].stem
-                self.output["path"] = f"output/{paths[0].stem}.parquet"
-            self.selected = min(self.selected, len(self.steps) - 1)
+            self.selected = min(self.selected, len(self.steps))
 
     def set_input(self, values: dict[str, Any]) -> None:
         with self._lock:
@@ -259,9 +272,8 @@ class Session:
     def set_output(self, values: dict[str, Any]) -> None:
         with self._lock:
             self._change()
-            for key in ("path", "keep_system_columns"):
-                if key in values:
-                    self.output[key] = values[key]
+            if "keep_system_columns" in values:
+                self.output["keep_system_columns"] = bool(values["keep_system_columns"])
 
     def set_meta(self, values: dict[str, Any]) -> None:
         with self._lock:
@@ -342,11 +354,15 @@ class Session:
             self._check_index(index)
             self._change()
             del self.steps[index]
-            self.selected = min(self.selected, len(self.steps) - 1)
+            if self.selected > index:
+                self.selected -= 1  # 前面少一步：仍選同一步（或仍是「輸出資料」）
+            elif self.selected == index:
+                self.selected = min(index, len(self.steps) - 1)
 
     def select(self, index: int) -> None:
+        """-1 是「讀取資料」，0..n-1 是步驟，n（步驟數）是「輸出資料」。"""
         with self._lock:
-            self.selected = max(-1, min(index, len(self.steps) - 1))
+            self.selected = max(-1, min(index, len(self.steps)))
 
     def _check_index(self, index: int) -> None:
         if not 0 <= index < len(self.steps):
@@ -504,6 +520,10 @@ class Session:
                         if item.frame is not None and previous is not None and enabled
                         else None,
                         "input_columns": _data_columns(previous) if previous is not None else None,
+                        "files": _file_count(item.frame)
+                        if item.frame is not None and enabled
+                        else None,
+                        "input_files": _files(previous) if previous is not None else None,
                         "warning_count": item.warning_count,
                         "errors": item.errors,
                         "run_error": item.run_error,
@@ -512,9 +532,11 @@ class Session:
                 )
                 if item.frame is not None:
                     previous = item.frame
-            selected = self.selected if self.selected < len(self.steps) else len(self.steps) - 1
+            selected = max(-1, min(self.selected, len(self.steps)))
+            # 「輸出資料」預覽最後一步的結果
+            requested = min(selected, len(self.steps) - 1)
             # 選取的步驟算不出來時，顯示它之前最後一個算得出來的結果
-            shown_index = selected
+            shown_index = requested
             while shown_index >= 0 and computed[shown_index].frame is None:
                 shown_index -= 1
             shown = source if shown_index < 0 else computed[shown_index].frame
@@ -547,7 +569,7 @@ class Session:
                 "selected": selected,
                 "preview": {
                     "step": shown_index,
-                    "requested": selected,
+                    "requested": requested,
                     "rows": shown.height if shown is not None else None,
                     "columns": [
                         {"name": n, "dtype": str(t), "system": n.startswith(SYSTEM_PREFIX)}
@@ -590,15 +612,33 @@ class Session:
 
     # ── 匯出與報告 ────────────────────────────────────────────
 
-    def export(self, target: Path | None = None) -> dict[str, Any]:
+    def export_suggestion(self) -> tuple[Path, str]:
+        """按「執行」時存檔對話框的預設資料夾與檔名。
+
+        上次存的位置優先；否則存在 Recipe（或資料）的資料夾，檔名用 Recipe 檔名或名稱。
+        """
+        with self._lock:
+            base = self.base_dir or Path.home()
+            if self.last_export is not None:
+                folder = self.last_export.parent
+                return (folder if folder.is_dir() else base), self.last_export.name
+            if self.recipe_path is not None:
+                stem = self.recipe_path.name.removesuffix(".json").removesuffix(".recipe")
+            else:
+                stem = self.meta.get("name", "")
+            stem = INVALID_FILENAME.sub("_", stem).strip(" .") or "result"
+            return base, f"{stem}.parquet"
+
+    def export(self, target: Path) -> dict[str, Any]:
+        """處理全部資料，存成 target（輸出位置不記在 recipe 裡，每次執行時決定）。"""
         with self._lock:
             if self.base_dir is None:
                 raise SessionError("還沒有開啟資料")
             recipe = parse_recipe(self.recipe_dict())
-            path = target or (self.base_dir / self.output["path"])
-            _, report = execute(recipe, self.base_dir, output=path, progress=self.progress)
+            _, report = execute(recipe, self.base_dir, output=target, progress=self.progress)
+            self.last_export = target
             return {
-                "path": str(path),
+                "path": str(target),
                 "rows": report.rows,
                 "columns": len(report.columns),
                 "warnings": report.warning_count,
@@ -608,9 +648,9 @@ class Session:
     def error_report(self) -> str:
         """給 AI 助理（Copilot）看的驗證結果：問題、每一步的列數、警告。"""
         with self._lock:
-            lines = [f"Tablade 驗證結果（recipe 版本 {RECIPE_VERSION}，Tablade {__version__}）"]
+            lines = [f"Tablade 驗證結果（Recipe 版本 {RECIPE_VERSION}，Tablade {__version__}）"]
             if self.recipe_path:
-                lines.append(f"recipe：{self.recipe_path.name}")
+                lines.append(f"Recipe：{self.recipe_path.name}")
             data = self.recipe_dict()
             result = check_recipe(
                 data, self.base_dir or Path.cwd(), dry_run=self.base_dir is not None
@@ -621,7 +661,7 @@ class Session:
                 lines += ["", "沒有發現問題。"]
             if result.report:
                 lines += ["", "試跑結果：", format_report(result.report, max_warnings=20)]
-            lines += ["", f'請依上面的問題修正 recipe，tablade_recipe 維持 "{RECIPE_VERSION}"。']
+            lines += ["", f'請依上面的問題修正 Recipe，tablade_recipe 維持 "{RECIPE_VERSION}"。']
             return "\n".join(lines)
 
 
@@ -643,6 +683,7 @@ def catalog() -> list[dict[str, Any]]:
                 "label": cls.label,
                 "category": cls.category,
                 "description": (cls.__doc__ or "").strip(),
+                "scope": cls.scope(),
                 "schema": schema,
             }
         )

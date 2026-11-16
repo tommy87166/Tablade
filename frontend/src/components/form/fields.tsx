@@ -1,5 +1,5 @@
 /** 表單欄位元件：依 JSON Schema 的型別與 ui 提示挑選（DESIGN.md §16.5）。 */
-import { Plus, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, Plus, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -17,6 +17,8 @@ export interface FieldProps {
   value: unknown
   onChange: (value: unknown) => void
   columns: string[] | null
+  /** 這一步之前的來源檔（來源檔順序用） */
+  files?: string[] | null
   issues: Issue[]
   required: boolean
 }
@@ -43,7 +45,17 @@ function asList(value: unknown): string[] {
   return Array.isArray(value) ? value.map(asString) : []
 }
 
-function TextInput({ value, onChange, schema, placeholder }: { value: unknown; onChange: (v: unknown) => void; schema: JsonSchema; placeholder?: string }) {
+function TextInput({
+  value,
+  onChange,
+  schema,
+  placeholder,
+}: {
+  value: unknown
+  onChange: (v: unknown) => void
+  schema: JsonSchema
+  placeholder?: string
+}) {
   return (
     <Input
       value={asString(value)}
@@ -155,6 +167,50 @@ export function TagsEditor({ value, onChange, placeholder }: { value: unknown; o
   )
 }
 
+/** 來源檔順序：列出目前的來源檔，可上下移動；存成完整的順序。 */
+function SourceFilesOrder({ value, onChange, files }: { value: unknown; onChange: (v: unknown) => void; files: string[] | null }) {
+  const listed = asList(value)
+  if (!files) return <TagsEditor value={listed} onChange={onChange} placeholder="來源檔名稱" />
+  const order = [...listed.filter((f) => files.includes(f)), ...files.filter((f) => !listed.includes(f))]
+  const missing = listed.filter((f) => !files.includes(f))
+  const move = (i: number, to: number) => {
+    const next = [...order]
+    const [item] = next.splice(i, 1)
+    next.splice(to, 0, item)
+    onChange([...next, ...missing])
+  }
+  return (
+    <div className="space-y-1.5">
+      <ol className="divide-y rounded-md border text-sm">
+        {order.map((f, i) => (
+          <li key={f} className="flex items-center gap-1.5 py-1 pr-1 pl-2">
+            <span className="w-5 text-right text-xs text-muted-foreground tabular-nums">{i + 1}</span>
+            <span className="min-w-0 flex-1 truncate">{f}</span>
+            <Button variant="ghost" size="icon-xs" aria-label={`上移 ${f}`} disabled={i === 0} onClick={() => move(i, i - 1)}>
+              <ArrowUp />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label={`下移 ${f}`}
+              disabled={i === order.length - 1}
+              onClick={() => move(i, i + 1)}
+            >
+              <ArrowDown />
+            </Button>
+          </li>
+        ))}
+      </ol>
+      {missing.length ? <p className="text-xs text-muted-foreground">目前的資料沒有：{missing.join('、')}</p> : null}
+      {listed.length ? (
+        <Button variant="outline" size="sm" onClick={() => onChange([])}>
+          恢復原本的順序
+        </Button>
+      ) : null}
+    </div>
+  )
+}
+
 type Condition = Record<string, unknown> & { op?: string; column?: string }
 
 function ConditionsEditor({ value, onChange, schema, root, columns, issues, path }: FieldProps) {
@@ -177,64 +233,101 @@ function ConditionsEditor({ value, onChange, schema, root, columns, issues, path
     update(i, base)
   }
 
+  const label = 'text-xs text-muted-foreground'
+
   return (
     <div className="space-y-2">
       {items.map((cond, i) => {
         const variant = cond.op ? byOp.get(cond.op) : undefined
         const extra = Object.entries(variant?.schema.properties ?? {}).filter(([n]) => n !== 'column' && n !== 'op')
+        const required = variant?.schema.required ?? []
+        const at = (name: string) => issues.filter((x) => x.path === `${path}[${i}].${name}`)
         return (
-          <div key={i} className="space-y-2 rounded-md border bg-muted/30 p-2">
-            <div className="flex items-center gap-1.5">
-              <div className="min-w-0 flex-1">
-                <ColumnSelect value={cond.column} columns={columns} onChange={(c) => update(i, { ...cond, column: String(c) })} />
+          // 欄位、條件、值各佔一行：右欄再窄也看得到選了哪一欄
+          <div
+            key={i}
+            className="grid grid-cols-[2.75rem_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1.5 rounded-md border bg-muted/30 p-2"
+          >
+            <span className={label}>欄位</span>
+            <ColumnSelect value={cond.column} columns={columns} onChange={(c) => update(i, { ...cond, column: String(c) })} />
+            <Button variant="ghost" size="icon-sm" aria-label="移除條件" onClick={() => onChange(items.filter((_, k) => k !== i))}>
+              <X />
+            </Button>
+            {at('column').length ? (
+              <div className="col-span-2 col-start-2">
+                <FieldErrors issues={at('column')} />
               </div>
-              <div className="w-40">
-                <Select value={cond.op ?? ''} onValueChange={(op) => changeOp(i, op)}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="條件" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {[...groups.entries()].map(([group, list]) => (
-                      <SelectGroup key={group}>
-                        <SelectLabel>{group}</SelectLabel>
-                        {list.map((v) => (
-                          <SelectItem key={v.op} value={v.op}>
-                            {v.label}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <Button variant="ghost" size="icon-sm" aria-label="移除條件" onClick={() => onChange(items.filter((_, k) => k !== i))}>
-                <X />
-              </Button>
+            ) : null}
+
+            <span className={label}>條件</span>
+            <div className="col-span-2">
+              <Select value={cond.op ?? ''} onValueChange={(op) => changeOp(i, op)}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="選擇條件" />
+                </SelectTrigger>
+                <SelectContent>
+                  {[...groups.entries()].map(([group, list]) => (
+                    <SelectGroup key={group}>
+                      <SelectLabel>{group}</SelectLabel>
+                      {list.map((v) => (
+                        <SelectItem key={v.op} value={v.op}>
+                          {v.label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
-            {extra.map(([name, prop]) => (
-              <Field
-                key={name}
-                name={name}
-                path={`${path}[${i}].${name}`}
-                schema={prop}
-                root={root}
-                value={cond[name]}
-                columns={columns}
-                issues={issues}
-                required={(variant?.schema.required ?? []).includes(name)}
-                onChange={(v) => update(i, { ...cond, [name]: v })}
-                compact
+
+            {extra.map(([name, prop]) => {
+              const kind = fieldKind(prop, root)
+              const fieldProps: FieldProps = {
+                name,
+                path: `${path}[${i}].${name}`,
+                schema: prop,
+                root,
+                value: cond[name],
+                columns,
+                issues,
+                required: required.includes(name),
+                onChange: (v) => update(i, { ...cond, [name]: v }),
+              }
+              const title = resolve(prop, root).title ?? name
+              if (kind === 'boolean') {
+                return (
+                  <label key={name} className="col-span-3 flex items-center justify-between gap-3">
+                    <span className={label}>{title}</span>
+                    {control(kind, fieldProps)}
+                  </label>
+                )
+              }
+              return (
+                <div key={name} className="contents">
+                  <span className={label}>
+                    {title}
+                    {fieldProps.required ? <span className="text-destructive">*</span> : null}
+                  </span>
+                  <div className="col-span-2">{control(kind, fieldProps)}</div>
+                  {at(name).length ? (
+                    <div className="col-span-2 col-start-2">
+                      <FieldErrors issues={at(name)} />
+                    </div>
+                  ) : null}
+                </div>
+              )
+            })}
+            <div className="col-span-3 empty:hidden">
+              <FieldErrors
+                issues={issuesAt(issues, `${path}[${i}]`).filter(
+                  (x) => !['column', ...extra.map(([n]) => n)].some((n) => x.path.endsWith(`.${n}`)),
+                )}
               />
-            ))}
-            <FieldErrors issues={issuesAt(issues, `${path}[${i}]`).filter((x) => !extra.some(([n]) => x.path.endsWith(`.${n}`)))} />
+            </div>
           </div>
         )
       })}
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={() => onChange([...items, { column: columns?.[0] ?? '', op: 'equals', value: '' }])}
-      >
+      <Button variant="outline" size="sm" onClick={() => onChange([...items, { column: columns?.[0] ?? '', op: 'equals', value: '' }])}>
         <Plus /> 新增條件
       </Button>
     </div>
@@ -253,6 +346,8 @@ function control(kind: FieldKind, props: FieldProps) {
       return <TagsEditor value={value} onChange={onChange} placeholder="欄名" />
     case 'conditions':
       return <ConditionsEditor {...props} />
+    case 'source_files':
+      return <SourceFilesOrder value={value} onChange={onChange} files={props.files ?? null} />
     case 'enum':
       return <EnumSelect value={value} onChange={onChange} schema={schema} />
     case 'boolean':

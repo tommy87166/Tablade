@@ -9,6 +9,7 @@ from . import split  # noqa: F401  依分隔符號拆成多欄、拆欄
 from . import headers  # noqa: F401  提升標題列
 from . import fill_down  # noqa: F401  向下填滿
 from . import filter  # noqa: F401  篩選
+from . import files  # noqa: F401  合併來源檔
 from .registry import all_steps, get
 
 __all__ = ["all_steps", "get"]

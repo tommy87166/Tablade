@@ -1,5 +1,5 @@
 {
-  "recipe_version": "1.0",
+  "recipe_version": "1.1",
   "spec": {
     "readers": {
       "csv": {
@@ -11,7 +11,7 @@
         ]
       }
     },
-    "recipe_version": "1.0",
+    "recipe_version": "1.1",
     "schema": {
       "$defs": {
         "EmptyCondition": {
@@ -193,6 +193,43 @@
           ],
           "type": "object"
         },
+        "MergeFiles": {
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "name": {
+              "default": "合併",
+              "minLength": 1,
+              "type": "string"
+            },
+            "order": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": "array",
+              "ui": "source_files"
+            },
+            "type": {
+              "const": "merge_files",
+              "default": "merge_files",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "type": "object"
+        },
         "NumberCondition": {
           "additionalProperties": false,
           "properties": {
@@ -233,15 +270,8 @@
             "keep_system_columns": {
               "default": true,
               "type": "boolean"
-            },
-            "path": {
-              "minLength": 1,
-              "type": "string"
             }
           },
-          "required": [
-            "path"
-          ],
           "type": "object"
         },
         "PromoteHeaders": {
@@ -570,6 +600,7 @@
               "mapping": {
                 "fill_down": "#/$defs/FillDown",
                 "filter": "#/$defs/Filter",
+                "merge_files": "#/$defs/MergeFiles",
                 "promote_headers": "#/$defs/PromoteHeaders",
                 "remove_blank_rows": "#/$defs/RemoveBlankRows",
                 "remove_bottom_rows": "#/$defs/RemoveBottomRows",
@@ -603,6 +634,9 @@
               },
               {
                 "$ref": "#/$defs/Filter"
+              },
+              {
+                "$ref": "#/$defs/MergeFiles"
               }
             ]
           },
@@ -632,6 +666,12 @@
           "kind": "keep"
         },
         "schema_ref": "Filter"
+      },
+      "merge_files": {
+        "effect": {
+          "kind": "keep"
+        },
+        "schema_ref": "MergeFiles"
       },
       "promote_headers": {
         "effect": {

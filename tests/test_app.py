@@ -8,6 +8,7 @@ import pytest
 
 from tablade import app
 from tablade.api import Api
+from tablade.recipe.schema import RECIPE_VERSION
 
 FRONTEND = Path(__file__).resolve().parents[1] / "frontend"
 API_METHODS = {
@@ -119,7 +120,7 @@ def test_bridge_wraps_errors():
 def test_ready_reports_versions_and_catalog():
     res = Api(smoke=True).ready()
     assert res["ok"] and res["smoke"] is True
-    assert res["polars"].startswith("2.") and res["recipe_version"] == "1.0"
+    assert res["polars"].startswith("2.") and res["recipe_version"] == RECIPE_VERSION
     assert next(c["type"] for c in res["catalog"]) == "remove_top_rows"
 
 

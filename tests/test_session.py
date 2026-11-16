@@ -8,7 +8,7 @@ import pytest
 
 from tablade.engine import run as engine_run
 from tablade.fixtures import messy_export, write_all
-from tablade.recipe.schema import RecipeError
+from tablade.recipe.schema import RECIPE_VERSION, RecipeError
 from tablade.session import Session, SessionError, catalog, common_pattern
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -209,7 +209,7 @@ def test_load_recipe_with_problems_and_error_report(data):
 
     report = s.error_report()
     assert "steps[5].columns[0]" in report and "是不是「門市」？" in report
-    assert 'tablade_recipe 維持 "1.0"' in report
+    assert f'tablade_recipe 維持 "{RECIPE_VERSION}"' in report
 
     s.update_step(5, {"columns": ["門市"]})
     report = s.error_report()
@@ -240,9 +240,20 @@ def test_save_relocates_paths_and_export(data, tmp_path):
     loaded.load_recipe(target)
     assert loaded.state()["steps"][0]["rows"] == 92
 
+    assert loaded.export_suggestion() == (target.parent.resolve(), "x.parquet")
     result = loaded.export(tmp_path / "out.parquet")
     assert result["rows"] == 92
     assert pl.read_parquet(tmp_path / "out.parquet").height == 92
+    assert loaded.export_suggestion() == (tmp_path, "out.parquet")  # 下次預設上次的位置
+    assert "path" not in json.loads(target.read_text(encoding="utf-8"))["output"]
+
+
+def test_export_suggestion_before_saving(data):
+    s = Session()
+    s.open_data(files(data))
+    assert s.export_suggestion() == (data.resolve(), "明細_01.parquet")  # 還沒存 Recipe：用名稱
+    s.set_meta({"name": 'a/b:c*"d'})
+    assert s.export_suggestion() == (data.resolve(), "a_b_c__d.parquet")
 
 
 def test_no_data_yet():
@@ -264,3 +275,45 @@ def test_catalog_has_every_step_with_schema():
     split = next(i for i in items if i["type"] == "split_column")
     assert split["label"] == "拆欄"
     assert split["schema"]["properties"]["column"]["ui"] == "column"
+
+
+def test_select_input_and_output(data):
+    """-1 是「讀取資料」，步驟數是「輸出資料」（預覽最後一步的結果）。"""
+    s = Session()
+    s.open_data(files(data))
+    s.select(0)
+    state = s.state()
+    # 沒有步驟時，「輸出資料」就是讀取的資料
+    assert state["selected"] == 0 and state["preview"]["requested"] == -1
+
+    s.add_step("remove_top_rows")
+    s.add_step("remove_bottom_rows")
+    s.select(99)
+    state = s.state()
+    assert state["selected"] == 2
+    assert state["preview"]["step"] == state["preview"]["requested"] == 1
+    assert state["preview"]["rows"] == state["steps"][1]["rows"]
+
+    i = s.add_step("remove_blank_rows")  # 從「輸出資料」新增：加在最後
+    assert i == 2 and s.steps[-1]["type"] == "remove_blank_rows"
+
+    s.select(3)
+    s.delete_step(0)  # 刪掉前面的步驟，仍選「輸出資料」
+    assert s.selected == 2 and s.state()["preview"]["step"] == 1
+    s.select(1)
+    s.delete_step(0)  # 仍選同一步
+    assert s.selected == 0 and s.steps[0]["type"] == "remove_blank_rows"
+    s.delete_step(0)  # 刪掉選取的最後一步：沒有步驟了，回到讀取資料
+    assert s.selected == -1
+
+
+def test_state_reports_source_files_per_step(data):
+    s = Session()
+    s.open_data(files(data))
+    s.add_step("remove_top_rows")
+    s.add_step("merge_files")
+    s.update_step(1, {"order": ["明細_02.csv"]})
+    steps = s.state()["steps"]
+    assert [st["files"] for st in steps] == [2, 1]
+    assert steps[1]["input_files"] == ["明細_01.csv", "明細_02.csv"]  # 表單用：這一步之前的來源檔
+    assert s.rows(1, 0, 1)["rows"][0][:2] == ["合併", 1]  # 第二個檔排到最前面

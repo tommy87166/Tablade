@@ -217,7 +217,7 @@ tablade                              # 開啟視窗
 tablade selftest [--out result.json] # 用假資料自我檢測（結束代碼 0 表示通過）
 tablade gui --smoke                  # 開視窗、自我檢測後關閉
 tablade convert in.csv out.parquet [--encoding auto|utf-8|cp950|big5hkscs]
-tablade run recipe.json [--json]                 # 執行 recipe、寫出 Parquet、列出每一步的列數
+tablade run recipe.json [-o out.parquet] [--json]  # 執行 recipe、寫出 Parquet（預設在 recipe 旁邊）、列出每一步的列數
 tablade validate recipe.json [--run] [--json]    # 驗證 recipe（--run：用真實資料試跑）
 tablade schema [--out spec.json]                 # 步驟目錄＋recipe JSON Schema
 tablade skill [--out x.zip] [--probe]            # 給 Microsoft 365 Copilot 的 AI skill（或沙箱 probe）

@@ -229,7 +229,7 @@ tablade                              # open the window
 tablade selftest [--out result.json] # self-test with generated data (exit code 0 = pass)
 tablade gui --smoke                  # open the window, self-test, close
 tablade convert in.csv out.parquet [--encoding auto|utf-8|cp950|big5hkscs]
-tablade run recipe.json [--json]                 # run a recipe, write Parquet, print row counts per step
+tablade run recipe.json [-o out.parquet] [--json]  # run a recipe, write Parquet (default: next to the recipe), print row counts per step
 tablade validate recipe.json [--run] [--json]    # check a recipe (--run: dry-run on the real data)
 tablade schema [--out spec.json]                 # step catalog + recipe JSON Schema
 tablade skill [--out x.zip] [--probe]            # AI skill for Microsoft 365 Copilot (or the sandbox probe)

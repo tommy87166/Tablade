@@ -22,7 +22,7 @@ def build_spec() -> dict[str, Any]:
         steps[cls.type_name()] = {
             "label": cls.label,
             "category": cls.category,
-            "description": (cls.__doc__ or "").strip(),
+            "description": cls.summary(),
             "effect": cls.effect,
             "schema_ref": cls.__name__,
         }

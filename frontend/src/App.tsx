@@ -3,11 +3,10 @@ import {
   CircleCheck,
   CircleX,
   Download,
-  FileDown,
   FilePlus2,
   FolderOpen,
-  FileUp,
   MoreHorizontal,
+  Play,
   Redo2,
   Save,
   Stethoscope,
@@ -15,6 +14,7 @@ import {
   Undo2,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { usePanelRef } from 'react-resizable-panels'
 
 import iconUrl from '../../assets/icon.svg'
 import { Badge } from '@/components/ui/badge'
@@ -43,8 +43,10 @@ import {
 } from './bridge'
 import { StepForm } from './components/form/StepForm'
 import { PreviewGrid, type AddStepRequest, type GridHandle } from './components/PreviewGrid'
+import { CollapseButton, CollapsiblePane, PaneHeader, PaneMeta, PaneTitle, RAIL_WIDTH } from './components/Pane'
+import { RecipeTitle } from './components/RecipeTitle'
 import { ReportDialog } from './components/ReportDialog'
-import { SourcePanel } from './components/SourcePanel'
+import { InputPanel, OutputPanel } from './components/SourcePanel'
 import { StepsPanel } from './components/StepsPanel'
 
 type Status = { text: string; error?: boolean }
@@ -82,7 +84,17 @@ function ProgressBar({ progress }: { progress: Progress }) {
   )
 }
 
-function ToolButton({ label, onClick, disabled, children }: { label: string; onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
+function ToolButton({
+  label,
+  onClick,
+  disabled,
+  children,
+}: {
+  label: string
+  onClick: () => void
+  disabled?: boolean
+  children: React.ReactNode
+}) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -106,6 +118,9 @@ export default function App() {
   const [selftest, setSelftest] = useState<SelftestResult | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
   const grid = useRef<GridHandle>(null)
+  const leftPanel = usePanelRef()
+  const rightPanel = usePanelRef()
+
   const gridLoaded = useRef<((total: number) => void) | null>(null)
 
   /** 呼叫 Python：統一處理忙碌狀態、錯誤與新的畫面狀態。 */
@@ -160,7 +175,7 @@ export default function App() {
       onProgress(setProgress)
       const first = await target.state()
       if (first.ok) setState(first.state)
-      setStatus({ text: '就緒。先「開啟資料」，再從左下角新增步驟。' })
+      setStatus({ text: '就緒。先在「讀取資料」選擇檔案，再按「新增步驟」或在欄名上按右鍵。' })
       if (ready.smoke) await target.smoke_done(await runSmoke(target))
     })()
     return () => {
@@ -171,10 +186,10 @@ export default function App() {
   // ── 動作 ──────────────────────────────────────────────────
 
   const act = {
-    newRecipe: () => api && call('新增 recipe', () => api.new_recipe()),
+    newRecipe: () => api && call('新增 Recipe', () => api.new_recipe()),
     openRecipe: async () => {
       if (!api) return
-      const res = await call('開啟 recipe', () => api.open_recipe())
+      const res = await call('開啟 Recipe', () => api.open_recipe())
       if (!res || res.cancelled) return
       setStatus({ text: `已開啟 ${res.state.recipe.path}` })
       if (res.issues?.length) await showReport(res.issues)
@@ -191,17 +206,17 @@ export default function App() {
     },
     exportParquet: async () => {
       if (!api) return
-      const res = await call('匯出 Parquet', () => api.export_parquet())
+      const res = await call('執行', () => api.export_parquet())
       if (res && !res.cancelled) {
         const warn = res.warnings ? `，警告 ${res.warnings.toLocaleString()} 則` : ''
         const how = res.mode === 'stream' ? '（串流處理全部資料）' : ''
-        setStatus({ text: `已匯出 ${res.path}：${res.rows?.toLocaleString()} 列 × ${res.columns} 欄${warn}${how}` })
+        setStatus({ text: `已輸出 ${res.path}：${res.rows?.toLocaleString()} 列 × ${res.columns} 欄${warn}${how}` })
       }
     },
     downloadSkill: async () => {
       if (!api) return
       const res = await call('下載 Copilot skill', () => api.download_skill())
-      if (res && !res.cancelled) setStatus({ text: `已存成 ${res.path}（recipe 版本 ${res.version}）` })
+      if (res && !res.cancelled) setStatus({ text: `已存成 ${res.path}（Recipe 版本 ${res.version}）` })
     },
     selftest: async () => {
       if (!api) return
@@ -246,14 +261,14 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   })
 
-  const selected = state && state.selected >= 0 ? state.steps[state.selected] : null
+  const selected = state && state.selected >= 0 ? (state.steps[state.selected] ?? null) : null
   const catalogItem = selected ? info?.catalog.find((c) => c.type === selected.type) : undefined
 
   // 預覽的內容變了才讓表格重新載入
   const previewKey = useMemo(() => {
     if (!state) return ''
-    const upto = state.steps.slice(0, state.selected + 1).map((s) => s.params)
-    return JSON.stringify([state.selected, state.input.pattern, state.input.reader, state.input.encoding, upto, state.preview.rows])
+    const upto = state.steps.slice(0, state.preview.step + 1).map((s) => s.params)
+    return JSON.stringify([state.preview.step, state.input.pattern, state.input.reader, state.input.encoding, upto, state.preview.rows])
   }, [state])
 
   const onGridLoaded = useCallback((total: number) => {
@@ -265,27 +280,29 @@ export default function App() {
     return <div className="flex h-svh items-center justify-center text-sm text-muted-foreground">{status.text}</div>
   }
 
-  const previewLabel = state.selected < 0 ? '原始資料' : `${state.selected + 1}. ${selected?.label ?? ''}`
+  const outputSelected = state.selected === state.steps.length
+  const previewLabel = state.selected < 0 ? '讀取資料' : outputSelected ? '輸出資料' : `步驟 ${state.selected + 1}`
   const errorCount = state.steps.filter((s) => s.status === 'error').length
 
   return (
     <TooltipProvider>
       <div className="flex h-svh flex-col bg-background">
         <header className="flex flex-wrap items-center gap-1 border-b px-3 py-1.5">
-          <img src={iconUrl} alt="" className="mr-1 size-6" />
-          <span className="font-semibold">Tablade</span>
-          <span className="mx-2 min-w-0 max-w-64 truncate text-sm text-muted-foreground">
-            {state.recipe.name || '未命名 recipe'}
-            {state.recipe.dirty ? ' •' : ''}
-          </span>
+          <img src={iconUrl} alt="Tablade" className="size-6" />
+          <RecipeTitle
+            name={state.recipe.name}
+            path={state.recipe.path}
+            dirty={state.recipe.dirty}
+            onCommit={(name) => void call('更新名稱', () => api.set_meta({ name }))}
+          />
           <div className="mx-1 h-5 w-px bg-border" />
-          <ToolButton label="新增 recipe" onClick={() => void act.newRecipe()} disabled={busy}>
+          <ToolButton label="新增 Recipe" onClick={() => void act.newRecipe()} disabled={busy}>
             <FilePlus2 />
           </ToolButton>
-          <ToolButton label="開啟 recipe（⌘O）" onClick={() => void act.openRecipe()} disabled={busy}>
+          <ToolButton label="開啟 Recipe（⌘O）" onClick={() => void act.openRecipe()} disabled={busy}>
             <FolderOpen />
           </ToolButton>
-          <ToolButton label="儲存 recipe（⌘S，⇧⌘S 另存）" onClick={() => void act.save(false)} disabled={busy}>
+          <ToolButton label="儲存 Recipe（⌘S，⇧⌘S 另存）" onClick={() => void act.save(false)} disabled={busy}>
             <Save />
           </ToolButton>
           <div className="mx-1 h-5 w-px bg-border" />
@@ -296,12 +313,14 @@ export default function App() {
             <Redo2 />
           </ToolButton>
           <div className="mx-1 h-5 w-px bg-border" />
-          <Button variant="outline" size="sm" onClick={() => void act.openData()} disabled={busy}>
-            <FileUp /> 開啟資料
-          </Button>
-          <Button size="sm" onClick={() => void act.exportParquet()} disabled={busy || errorCount > 0 || state.input.rows === null}>
-            <FileDown /> 匯出 Parquet
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button size="sm" onClick={() => void act.exportParquet()} disabled={busy || errorCount > 0 || state.input.rows === null}>
+                <Play /> 執行
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>處理全部資料並存成 Parquet（按下後選擇存檔位置）</TooltipContent>
+          </Tooltip>
           <div className="ml-auto flex items-center gap-1">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -326,7 +345,7 @@ export default function App() {
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onSelect={() => void act.save(true)}>
-                  <Save /> 另存 recipe…
+                  <Save /> 另存 Recipe…
                 </DropdownMenuItem>
                 <DropdownMenuCheckboxItem checked={showSystem} onCheckedChange={(v) => setShowSystem(v === true)}>
                   顯示系統欄位
@@ -342,30 +361,34 @@ export default function App() {
         {busy && progress ? <ProgressBar progress={progress} /> : null}
 
         <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
-          <ResizablePanel defaultSize="22" minSize={220}>
-            <StepsPanel
-              state={state}
-              catalog={info.catalog}
-              busy={busy}
-              onSelect={(i) => void call('選取', () => api.select_step(i))}
-              onAdd={(type) => void addStep(type)}
-              onMove={(i, to) => void call('移動步驟', () => api.move_step(i, to))}
-              onToggle={(i) => void call('切換步驟', () => api.toggle_step(i))}
-              onDelete={(i) => void call('刪除步驟', () => api.delete_step(i))}
-            />
+          <ResizablePanel defaultSize="22" minSize={220} collapsible collapsedSize={RAIL_WIDTH} panelRef={leftPanel}>
+            <CollapsiblePane side="left" label="步驟" onExpand={() => leftPanel.current?.expand()}>
+              <StepsPanel
+                state={state}
+                catalog={info.catalog}
+                busy={busy}
+                onSelect={(i) => void call('選取', () => api.select_step(i))}
+                onAdd={(type) => void addStep(type)}
+                onMove={(i, to) => void call('移動步驟', () => api.move_step(i, to))}
+                onToggle={(i) => void call('切換步驟', () => api.toggle_step(i))}
+                onDelete={(i) => void call('刪除步驟', () => api.delete_step(i))}
+                onCollapse={() => leftPanel.current?.collapse()}
+              />
+            </CollapsiblePane>
           </ResizablePanel>
           <ResizableHandle />
           <ResizablePanel defaultSize="53" minSize="30">
             <ResizablePanelGroup orientation="vertical">
               <ResizablePanel defaultSize="78" minSize="30">
                 <div className="flex h-full flex-col">
-                  <div className="flex items-center gap-2 border-b px-3 py-1.5 text-sm">
-                    <span className="font-medium">{previewLabel}</span>
-                    {state.preview.rows !== null ? (
-                      <span className="text-muted-foreground tabular-nums">
-                        {state.preview.rows.toLocaleString()} 列 × {state.preview.columns.filter((c) => !c.system).length} 欄
-                      </span>
-                    ) : null}
+                  <PaneHeader>
+                    <PaneTitle>資料</PaneTitle>
+                    <PaneMeta>
+                      {previewLabel}
+                      {state.preview.rows !== null
+                        ? `・${state.preview.rows.toLocaleString()} 列 × ${state.preview.columns.filter((c) => !c.system).length} 欄`
+                        : ''}
+                    </PaneMeta>
                     {state.input.sampled ? (
                       <Tooltip>
                         <TooltipTrigger asChild>
@@ -382,11 +405,12 @@ export default function App() {
                     ) : null}
                     {state.preview.step !== state.preview.requested ? (
                       <Badge variant="destructive">
-                        這一步還算不出來，下面是{state.preview.step < 0 ? '原始資料' : `第 ${state.preview.step + 1} 步的結果`}
+                        {outputSelected ? '最後一步' : '這一步'}
+                        還算不出來，下面是
+                        {state.preview.step < 0 ? '讀取的資料' : `第 ${state.preview.step + 1} 步的結果`}
                       </Badge>
                     ) : null}
-                    <span className="ml-auto text-xs text-muted-foreground">在欄名或儲存格按右鍵可以新增步驟</span>
-                  </div>
+                  </PaneHeader>
                   <div className="min-h-0 flex-1">
                     <PreviewGrid
                       ref={grid}
@@ -404,7 +428,8 @@ export default function App() {
               <ResizablePanel defaultSize="22" minSize="8">
                 <div className="flex h-full flex-col">
                   <div className="border-b px-3 py-1.5 text-xs font-medium tracking-wide text-muted-foreground">
-                    警告{state.preview.warnings.length ? `（${state.preview.warnings.length.toLocaleString()}）` : ''}
+                    警告
+                    {state.preview.warnings.length ? `（${state.preview.warnings.length.toLocaleString()}）` : ''}
                   </div>
                   <ul className="flex-1 overflow-auto text-sm">
                     {state.preview.warnings.length === 0 ? (
@@ -417,7 +442,7 @@ export default function App() {
                             className="flex w-full gap-2 px-3 py-1 text-left hover:bg-muted"
                             onClick={async () => {
                               if (w.source_file === null || w.line_no === null) return
-                              const res = await api.find_row(state.selected, w.source_file, w.line_no)
+                              const res = await api.find_row(state.preview.step, w.source_file, w.line_no)
                               if (res.ok && res.row !== null) grid.current?.scrollToRow(res.row)
                             }}
                           >
@@ -436,25 +461,33 @@ export default function App() {
             </ResizablePanelGroup>
           </ResizablePanel>
           <ResizableHandle />
-          <ResizablePanel defaultSize="25" minSize={280}>
-            <div className="h-full overflow-auto p-4">
-              {selected && catalogItem ? (
-                <StepForm
-                  key={selected.id}
-                  step={selected}
-                  item={catalogItem}
-                  onChange={(values) => void call('更新步驟', () => api.update_step(selected.index, values))}
-                />
-              ) : (
-                <SourcePanel
-                  state={state}
-                  onOpenData={() => void act.openData()}
-                  onInput={(v) => void call('更新資料設定', () => api.set_input(v))}
-                  onOutput={(v) => void call('更新輸出設定', () => api.set_output(v))}
-                  onMeta={(v) => void call('更新名稱', () => api.set_meta(v))}
-                />
-              )}
-            </div>
+          <ResizablePanel defaultSize="25" minSize={280} collapsible collapsedSize={RAIL_WIDTH} panelRef={rightPanel}>
+            <CollapsiblePane side="right" label="設定" onExpand={() => rightPanel.current?.expand()}>
+              <div className="flex h-full flex-col">
+                <PaneHeader>
+                  <CollapseButton side="right" label="設定" onClick={() => rightPanel.current?.collapse()} />
+                  <PaneTitle>設定</PaneTitle>
+                </PaneHeader>
+                <div className="min-h-0 flex-1 overflow-auto p-4">
+                  {selected && catalogItem ? (
+                    <StepForm
+                      key={selected.id}
+                      step={selected}
+                      item={catalogItem}
+                      onChange={(values) => void call('更新步驟', () => api.update_step(selected.index, values))}
+                    />
+                  ) : outputSelected ? (
+                    <OutputPanel state={state} onOutput={(v) => void call('更新輸出設定', () => api.set_output(v))} />
+                  ) : (
+                    <InputPanel
+                      state={state}
+                      onOpenData={() => void act.openData()}
+                      onInput={(v) => void call('更新資料設定', () => api.set_input(v))}
+                    />
+                  )}
+                </div>
+              </div>
+            </CollapsiblePane>
           </ResizablePanel>
         </ResizablePanelGroup>
 
@@ -463,7 +496,7 @@ export default function App() {
             {status.text}
           </span>
           <span className="shrink-0 text-muted-foreground">
-            Tablade {info.version}・recipe {info.recipe_version}・Polars {info.polars}・完全離線執行
+            Tablade {info.version}・Recipe {info.recipe_version}・Polars {info.polars}・完全離線執行
           </span>
         </footer>
       </div>
@@ -488,7 +521,11 @@ export default function App() {
           <ul className="space-y-1 text-sm">
             {selftest?.checks.map((c) => (
               <li key={c.name} className="flex items-start gap-2">
-                {c.ok ? <CircleCheck className="mt-0.5 size-4 shrink-0 text-green-600" /> : <CircleX className="mt-0.5 size-4 shrink-0 text-destructive" />}
+                {c.ok ? (
+                  <CircleCheck className="mt-0.5 size-4 shrink-0 text-green-600" />
+                ) : (
+                  <CircleX className="mt-0.5 size-4 shrink-0 text-destructive" />
+                )}
                 <span>
                   {c.name}：<span className="text-muted-foreground">{c.detail}</span>
                 </span>

@@ -39,9 +39,9 @@ export function ReportDialog({ open, onOpenChange, issues, report }: Props) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>{errors.length ? `recipe 有 ${errors.length} 個問題` : '驗證結果'}</DialogTitle>
+          <DialogTitle>{errors.length ? `Recipe 有 ${errors.length} 個問題` : '驗證結果'}</DialogTitle>
           <DialogDescription>
-            把報告複製貼給 AI 助理（例如 Copilot），請它依報告修正 recipe；也可以直接在左側步驟裡修改。
+            把報告複製貼給 AI 助理（例如 Copilot），請它依報告修正 Recipe；也可以直接在左側步驟裡修改。
           </DialogDescription>
         </DialogHeader>
         {issues.length ? (

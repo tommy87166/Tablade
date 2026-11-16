@@ -29,20 +29,23 @@ def build_parser() -> argparse.ArgumentParser:
     convert.add_argument("output", type=Path)
     convert.add_argument("--encoding", default="auto", choices=SUPPORTED)
 
-    run = sub.add_parser("run", help="執行 recipe，輸出 Parquet")
+    run = sub.add_parser("run", help="執行 Recipe，輸出 Parquet")
     run.add_argument("recipe", type=Path)
+    run.add_argument(
+        "-o", "--output", type=Path, help="輸出的 Parquet 檔（預設在 Recipe 旁邊、同名的 .parquet）"
+    )
     run.add_argument("--json", action="store_true", help="以 JSON 輸出結果")
 
-    validate = sub.add_parser("validate", help="驗證 recipe（結束代碼 0 表示通過）")
+    validate = sub.add_parser("validate", help="驗證 Recipe（結束代碼 0 表示通過）")
     validate.add_argument("recipe", type=Path)
     validate.add_argument("--run", action="store_true", help="另外用真實資料試跑（不寫出檔案）")
     validate.add_argument("--json", action="store_true", help="以 JSON 輸出結果")
 
-    schema = sub.add_parser("schema", help="輸出步驟規格與 recipe JSON Schema")
+    schema = sub.add_parser("schema", help="輸出步驟規格與 Recipe JSON Schema")
     schema.add_argument("--out", type=Path, help="寫到檔案（預設印出）")
 
     skill = sub.add_parser(
-        "skill", help="產生 AI skill（給 Microsoft 365 Copilot 等 AI 助理撰寫 recipe）"
+        "skill", help="產生 AI skill（給 Microsoft 365 Copilot 等 AI 助理撰寫 Recipe）"
     )
     skill.add_argument("--out", type=Path, help="zip 檔位置（預設為目前資料夾）")
     skill.add_argument(
@@ -63,6 +66,12 @@ def _print_json(data: object) -> None:
     print(json.dumps(data, ensure_ascii=False, indent=2, default=str))
 
 
+def default_output(recipe: Path) -> Path:
+    """沒指定 --output 時：Recipe 旁邊、同名的 .parquet（明細.recipe.json → 明細.parquet）。"""
+    name = recipe.name.removesuffix(".json").removesuffix(".recipe") or "result"
+    return recipe.with_name(f"{name}.parquet")
+
+
 def _check(args: argparse.Namespace, *, dry_run: bool) -> int:
     from .engine.check import check_recipe_file, format_issues, format_report
     from .engine.run import RunError, execute
@@ -71,7 +80,8 @@ def _check(args: argparse.Namespace, *, dry_run: bool) -> int:
     writing = args.command == "run" and result.ok and result.recipe is not None
     if writing:
         try:
-            _, result.report = execute(result.recipe, args.recipe.parent)
+            output = args.output or default_output(args.recipe)
+            _, result.report = execute(result.recipe, args.recipe.parent, output=output)
         except RunError as err:
             result.issues.append({"path": "steps", "error": str(err), "severity": "error"})
     if args.json:
@@ -85,10 +95,10 @@ def _check(args: argparse.Namespace, *, dry_run: bool) -> int:
     else:
         if result.issues:
             errors = sum(1 for i in result.issues if i["severity"] == "error")
-            print(f"recipe 有 {errors} 個錯誤：" if errors else "recipe 通過驗證，有提醒：")
+            print(f"Recipe 有 {errors} 個錯誤：" if errors else "Recipe 通過驗證，有提醒：")
             print(format_issues(result.issues))
         elif not result.report:
-            print("recipe 通過驗證")
+            print("Recipe 通過驗證")
         if result.report:
             print(format_report(result.report))
     return 0 if result.ok else 1

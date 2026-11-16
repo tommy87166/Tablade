@@ -110,7 +110,7 @@ def _fmt(path: list[str | int]) -> str:
     out = ""
     for part in path:
         out += f"[{part}]" if isinstance(part, int) else (f".{part}" if out else part)
-    return out or "(recipe)"
+    return out or "(Recipe)"
 
 
 def _issue(path: list[str | int], error: str, hint: str | None = None) -> Issue:
@@ -286,6 +286,25 @@ class _Schema:
         return refs
 
 
+# ── 舊版 recipe 自動升級（DESIGN.md §17.6）────────────────────────────
+
+
+def upgrade(recipe: Any) -> Any:
+    """把舊的次版本 recipe 換成目前的格式（不改動傳進來的物件）。
+
+    - 1.0 → 1.1：拿掉 ``output.path``（輸出位置改成執行時才決定）。
+    """
+    if not isinstance(recipe, dict):
+        return recipe
+    match = VERSION_RE.match(str(recipe.get("tablade_recipe", "")))
+    if not match or tuple(int(x) for x in match.groups()) != (1, 0):
+        return recipe
+    output = recipe.get("output")
+    if isinstance(output, dict) and "path" in output:
+        recipe = {**recipe, "output": {k: v for k, v in output.items() if k != "path"}}
+    return recipe
+
+
 # ── 驗證 ─────────────────────────────────────────────────────────
 
 
@@ -300,12 +319,12 @@ def check_version(value: Any, current: str) -> Issue | None:
     if major != cur_major:
         return _issue(
             path,
-            f"不相容的 recipe 版本 {value}（這裡支援 {cur_major}.x）",
-            f"請改用 recipe 版本 {current} 的 skill 或 Tablade",
+            f"不相容的 Recipe 版本 {value}（這裡支援 {cur_major}.x）",
+            f"請改用 Recipe 版本 {current} 的 skill 或 Tablade",
         )
     if minor > cur_minor:
         return _issue(
-            path, f"recipe 版本 {value} 比這裡支援的 {current} 新", "請更新 Tablade 或 skill"
+            path, f"Recipe 版本 {value} 比這裡支援的 {current} 新", "請更新 Tablade 或 skill"
         )
     return None
 
@@ -320,7 +339,8 @@ def validate(
     ``input_columns`` 可提供各 input 的欄位（例如從 CSV 標題列讀到的），用來檢查欄位引用。
     """
     if not isinstance(recipe, dict):
-        return [_issue([], "recipe 必須是 JSON 物件")]
+        return [_issue([], "Recipe 必須是 JSON 物件")]
+    recipe = upgrade(recipe)
     issues: list[Issue] = []
     version_issue = check_version(recipe.get("tablade_recipe"), spec["recipe_version"])
     if version_issue:
@@ -441,7 +461,7 @@ def _utf8_output() -> None:
 
 def main(argv: list[str] | None = None, spec: dict[str, Any] | None = None) -> int:
     _utf8_output()
-    parser = argparse.ArgumentParser(description="驗證 Tablade recipe")
+    parser = argparse.ArgumentParser(description="驗證 Tablade Recipe")
     parser.add_argument("recipe", type=Path)
     parser.add_argument("--data", type=Path, help="input 為 csv 時，用這個檔案的標題列檢查欄位引用")
     parser.add_argument("--spec", type=Path, help="步驟規格 JSON（預設用內嵌的）")
@@ -469,12 +489,12 @@ def main(argv: list[str] | None = None, spec: dict[str, Any] | None = None) -> i
     if args.json:
         print(json.dumps({"ok": not issues, "issues": issues}, ensure_ascii=False, indent=2))
     elif issues:
-        print(f"recipe 有 {len(issues)} 個問題：")
+        print(f"Recipe 有 {len(issues)} 個問題：")
         for item in issues:
             hint = f"（{item['hint']}）" if item.get("hint") else ""
             print(f"  {item['path']}: {item['error']}{hint}")
     else:
-        print(f"recipe 通過驗證（版本 {spec['recipe_version']}）")
+        print(f"Recipe 通過驗證（版本 {spec['recipe_version']}）")
     return 1 if issues else 0
 
 

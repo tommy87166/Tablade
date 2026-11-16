@@ -53,6 +53,31 @@ def test_registry_examples(cls, example):
     assert not [c for c in out.columns if c.startswith(TEMP_PREFIX)]
 
 
+def test_per_file_steps():
+    """說明裡標「每個來源檔分別處理」的步驟。"""
+    per_file = {cls.type_name() for cls in all_steps() if cls.per_file}
+    assert per_file == {
+        "remove_top_rows",
+        "remove_bottom_rows",
+        "promote_headers",
+        "fill_down",
+        "merge_files",
+    }
+    assert get("fill_down").summary().endswith("[每個來源檔分別處理]")
+    assert get("filter").summary().endswith("[與來源檔分檔無關]")
+
+
+@pytest.mark.parametrize(("cls", "example"), [p for p in EXAMPLES if not p.values[0].per_file])
+def test_row_steps_ignore_file_boundaries(cls, example):
+    """標「與來源檔分檔無關」的步驟：同樣的列切成兩個檔，結果不變。"""
+    step = cls.model_validate({"id": "ex", "type": cls.type_name(), **example.params})
+    n = len(next(iter(example.input.values())))
+    split = ["a.txt"] * (n // 2) + ["b.txt"] * (n - n // 2)
+    one, _, _ = run(step, frame(example.input))
+    two, _, _ = run(step, frame(example.input, split))
+    assert data_of(one) == data_of(two)
+
+
 @pytest.mark.parametrize(("cls", "example"), EXAMPLES)
 def test_effect_predicts_output_columns(cls, example):
     """驗證器用的欄位效果，必須和實際輸出的欄位一致。"""
@@ -74,6 +99,7 @@ def test_registry_metadata_is_complete():
         "promote_headers",
         "fill_down",
         "filter",
+        "merge_files",
     ]
     for cls in all_steps():
         assert cls.label and cls.category and cls.__doc__ and cls.ai_notes, cls
@@ -213,6 +239,36 @@ def test_fill_down_does_not_cross_files_and_respects_blank_option():
     assert out["g"].to_list() == ["A", "A", "A", None, "B"]
     strict, _, _ = run(make("fill_down", columns=["g"], blank_as_null=False), df)
     assert strict["g"].to_list() == ["A", "", "", "", "B"]
+
+
+# ── 合併來源檔 ─────────────────────────────────────────────────
+
+
+def test_merge_files_relabels_and_renumbers():
+    df = frame({"line": ["a1", "a2", "b1", "b2", "c1"]}, files=["a", "a", "b", "b", "c"])
+    out, _, _ = run(make("merge_files"), df)
+    assert out["line"].to_list() == ["a1", "a2", "b1", "b2", "c1"]
+    assert out[SOURCE_FILE].to_list() == ["合併"] * 5
+    assert out[LINE_NO].to_list() == [1, 2, 3, 4, 5] and out[LINE_NO].dtype == pl.Int64
+
+
+def test_merge_files_order_puts_listed_files_first():
+    df = frame({"line": ["a1", "a2", "b1", "c1"]}, files=["a", "a", "b", "c"])
+    out, _, _ = run(make("merge_files", order=["c", "x", "a"], name="全部"), df)
+    assert out["line"].to_list() == ["c1", "a1", "a2", "b1"]  # 沒有的 x 略過，沒列到的 b 接在後面
+    assert set(out[SOURCE_FILE]) == {"全部"}
+    assert make("merge_files", order=["c", "a"]).describe() == "依「c、a」的順序合併成「合併」"
+
+
+def test_per_file_steps_see_one_file_after_merge():
+    df = frame(
+        {"line": ["a1", "a2", "b1", "b2"], "g": ["A", "", "", "B"]}, files=["a", "a", "b", "b"]
+    )
+    merged, _, _ = run(make("merge_files"), df)
+    top, _, _ = run(make("remove_top_rows", n=1), merged)
+    assert top["line"].to_list() == ["a2", "b1", "b2"]  # 只去掉整份的第一列
+    filled, _, _ = run(make("fill_down", columns=["g"]), merged)
+    assert filled["g"].to_list() == ["A", "A", "A", "B"]  # 會跨過原本的檔界
 
 
 # ── 篩選 ──────────────────────────────────────────────────────

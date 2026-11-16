@@ -1,4 +1,4 @@
-/** 右側（選取「原始資料」時）：recipe 名稱、input 設定、來源檔清單、輸出設定。 */
+/** 右側設定：選取「讀取資料」時是 input 設定與來源檔清單，選取「輸出資料」時是輸出設定。 */
 import { FolderOpen } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
@@ -9,7 +9,13 @@ import { Switch } from '@/components/ui/switch'
 import type { ViewState } from '../bridge'
 
 const READERS = { text_lines: '逐行讀取（爛格式檔案）', csv: '乾淨的 CSV' }
-const ENCODINGS = { auto: '自動偵測（UTF-8 → cp950）', 'utf-8': 'UTF-8', 'utf-8-sig': 'UTF-8（BOM）', cp950: 'cp950（Big5）', big5hkscs: 'Big5-HKSCS' }
+const ENCODINGS = {
+  auto: '自動偵測（UTF-8 → cp950）',
+  'utf-8': 'UTF-8',
+  'utf-8-sig': 'UTF-8（BOM）',
+  cp950: 'cp950（Big5）',
+  big5hkscs: 'Big5-HKSCS',
+}
 
 function formatBytes(n: number) {
   if (n < 1024) return `${n} B`
@@ -54,93 +60,91 @@ function LazyInput({ value, onCommit, placeholder }: { value: string; onCommit: 
   )
 }
 
-interface Props {
+interface InputProps {
   state: ViewState
   onOpenData: () => void
   onInput: (values: Partial<ViewState['input']>) => void
-  onOutput: (values: Partial<ViewState['output']>) => void
-  onMeta: (values: { name?: string }) => void
 }
 
-export function SourcePanel({ state, onOpenData, onInput, onOutput, onMeta }: Props) {
-  const { input, output, recipe } = state
+export function InputPanel({ state, onOpenData, onInput }: InputProps) {
+  const { input } = state
   return (
-    <div className="space-y-5">
-      <section className="space-y-1.5">
-        <div className="text-sm font-medium">recipe 名稱</div>
-        <LazyInput value={recipe.name} onCommit={(name) => onMeta({ name })} placeholder="例如：門市銷售明細整理" />
-        <p className="text-xs text-muted-foreground">{recipe.path ?? '尚未存檔'}</p>
-      </section>
-
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="text-sm font-medium">原始資料</div>
-          <Button size="sm" variant="outline" onClick={onOpenData}>
-            <FolderOpen /> 選擇檔案…
-          </Button>
+    <section className="space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium">讀取資料</div>
+        <Button size="sm" variant="outline" onClick={onOpenData}>
+          <FolderOpen /> 選擇檔案…
+        </Button>
+      </div>
+      <div className="space-y-1.5">
+        <div className="text-xs text-muted-foreground">檔案（相對於 Recipe 所在資料夾，可用 * 一次讀多個檔）</div>
+        <LazyInput value={input.pattern} onCommit={(pattern) => onInput({ pattern })} placeholder="例如 data/明細_*.csv" />
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <div className="space-y-1.5">
+          <div className="text-xs text-muted-foreground">讀取方式</div>
+          <Select value={input.reader} onValueChange={(reader) => onInput({ reader: reader as ViewState['input']['reader'] })}>
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(READERS).map(([k, v]) => (
+                <SelectItem key={k} value={k}>
+                  {v}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <div className="space-y-1.5">
-          <div className="text-xs text-muted-foreground">檔案（相對於 recipe 所在資料夾，可用 * 一次讀多個檔）</div>
-          <LazyInput value={input.pattern} onCommit={(pattern) => onInput({ pattern })} placeholder="例如 data/明細_*.csv" />
+          <div className="text-xs text-muted-foreground">編碼</div>
+          <Select value={input.encoding} onValueChange={(encoding) => onInput({ encoding })}>
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(ENCODINGS).map(([k, v]) => (
+                <SelectItem key={k} value={k}>
+                  {v}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
-        <div className="grid grid-cols-2 gap-2">
-          <div className="space-y-1.5">
-            <div className="text-xs text-muted-foreground">讀取方式</div>
-            <Select value={input.reader} onValueChange={(reader) => onInput({ reader: reader as ViewState['input']['reader'] })}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {Object.entries(READERS).map(([k, v]) => (
-                  <SelectItem key={k} value={k}>
-                    {v}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1.5">
-            <div className="text-xs text-muted-foreground">編碼</div>
-            <Select value={input.encoding} onValueChange={(encoding) => onInput({ encoding })}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {Object.entries(ENCODINGS).map(([k, v]) => (
-                  <SelectItem key={k} value={k}>
-                    {v}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-        {input.error ? <p className="rounded-md bg-destructive/10 p-2 text-sm text-destructive">{input.error}</p> : null}
-        {input.files.length ? (
-          <ul className="divide-y rounded-md border text-xs">
-            {input.files.map((f) => (
-              <li key={f.path} className="flex items-center justify-between gap-2 px-2 py-1.5">
-                <span className="min-w-0 truncate">{f.path}</span>
-                <span className="shrink-0 text-muted-foreground tabular-nums">
-                  {f.encoding}・{f.rows.toLocaleString()} 列・{formatBytes(f.bytes)}
-                </span>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-      </section>
+      </div>
+      {input.error ? <p className="rounded-md bg-destructive/10 p-2 text-sm text-destructive">{input.error}</p> : null}
+      {input.files.length ? (
+        <ul className="divide-y rounded-md border text-xs">
+          {input.files.map((f) => (
+            <li key={f.path} className="flex items-center justify-between gap-2 px-2 py-1.5">
+              <span className="min-w-0 truncate">{f.path}</span>
+              <span className="shrink-0 text-muted-foreground tabular-nums">
+                {f.encoding}・{f.rows.toLocaleString()} 列・
+                {formatBytes(f.bytes)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  )
+}
 
-      <section className="space-y-3">
-        <div className="text-sm font-medium">輸出</div>
-        <div className="space-y-1.5">
-          <div className="text-xs text-muted-foreground">Parquet 檔（相對於 recipe 所在資料夾）</div>
-          <LazyInput value={output.path} onCommit={(path) => onOutput({ path })} />
-        </div>
-        <label className="flex items-center justify-between gap-3 text-sm">
-          保留系統欄位（__source_file、__line_no）
-          <Switch checked={output.keep_system_columns} onCheckedChange={(keep_system_columns) => onOutput({ keep_system_columns })} />
-        </label>
-      </section>
-    </div>
+interface OutputProps {
+  state: ViewState
+  onOutput: (values: Partial<ViewState['output']>) => void
+}
+
+export function OutputPanel({ state, onOutput }: OutputProps) {
+  const { output } = state
+  return (
+    <section className="space-y-3">
+      <div className="text-sm font-medium">輸出資料</div>
+      <p className="text-xs text-muted-foreground">按工具列的「執行」處理全部資料。</p>
+      <label className="flex items-center justify-between gap-3 text-sm">
+        保留系統欄位（__source_file、__line_no）
+        <Switch checked={output.keep_system_columns} onCheckedChange={(keep_system_columns) => onOutput({ keep_system_columns })} />
+      </label>
+    </section>
   )
 }

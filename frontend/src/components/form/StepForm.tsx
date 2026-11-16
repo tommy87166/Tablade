@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import type { CatalogItem, StepState } from '../../bridge'
 import { editableFields, resolve } from '../../lib/schema'
+import { StepScope } from '../StepScope'
 import { Field, FieldErrors } from './fields'
 
 const DEBOUNCE_MS = 350
@@ -64,6 +65,7 @@ export function StepForm({ step, item, onChange }: Props) {
     <div className="space-y-4">
       <div>
         <div className="font-medium">{item.label}</div>
+        <StepScope scope={item.scope} />
         <p className="text-xs text-muted-foreground">{item.description}</p>
       </div>
       {fields.map(([name, prop]) => (
@@ -76,15 +78,14 @@ export function StepForm({ step, item, onChange }: Props) {
           value={name in draft ? draft[name] : resolve(prop, schema).default}
           onChange={(v) => set(name, v)}
           columns={step.input_columns}
+          files={step.input_files}
           issues={step.errors}
           required={required.has(name)}
         />
       ))}
       {fields.length === 0 ? <p className="text-sm text-muted-foreground">這個步驟沒有參數。</p> : null}
       <FieldErrors issues={stray} />
-      {step.run_error ? (
-        <p className="rounded-md bg-destructive/10 p-2 text-sm text-destructive">執行失敗：{step.run_error}</p>
-      ) : null}
+      {step.run_error ? <p className="rounded-md bg-destructive/10 p-2 text-sm text-destructive">執行失敗：{step.run_error}</p> : null}
     </div>
   )
 }

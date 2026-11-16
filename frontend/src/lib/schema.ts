@@ -17,6 +17,7 @@ export type FieldKind =
   | 'number'
   | 'string'
   | 'conditions'
+  | 'source_files'
   | 'unknown'
 
 export function resolve(schema: JsonSchema, root: JsonSchema): JsonSchema {
@@ -30,7 +31,13 @@ export function resolve(schema: JsonSchema, root: JsonSchema): JsonSchema {
 
 export function fieldKind(prop: JsonSchema, root: JsonSchema): FieldKind {
   const schema = resolve(prop, root)
-  if (schema.ui === 'column' || schema.ui === 'columns' || schema.ui === 'new_columns' || schema.ui === 'regex') {
+  if (
+    schema.ui === 'column' ||
+    schema.ui === 'columns' ||
+    schema.ui === 'new_columns' ||
+    schema.ui === 'regex' ||
+    schema.ui === 'source_files'
+  ) {
     return schema.ui
   }
   if (schema.enum) return 'enum'
@@ -73,6 +80,7 @@ export function defaultFor(prop: JsonSchema, root: JsonSchema): unknown {
     case 'columns':
     case 'new_columns':
     case 'conditions':
+    case 'source_files':
       return []
     default:
       return undefined

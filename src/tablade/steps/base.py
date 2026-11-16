@@ -73,10 +73,27 @@ class Step(BaseModel):
     effect: ClassVar[dict[str, Any]] = {"kind": "keep"}
     examples: ClassVar[tuple[Example, ...]] = ()
     ai_notes: ClassVar[str] = ""
+    per_file: ClassVar[bool] = False
+    """True：每個來源檔分別處理（看得到檔案的開頭結尾，例如前 N 列、向下填滿）；
+    False：一列一列處理，結果與來源檔怎麼分檔無關（有測試檢查）。"""
+    scope_note: ClassVar[str] = ""
+    """不是單純「分別處理／無關」時，畫面上改顯示這句（例如合併來源檔）。"""
 
     @classmethod
     def type_name(cls) -> str:
         return cls.model_fields["type"].default
+
+    @classmethod
+    def scope(cls) -> str:
+        """是否每個來源檔分別處理（畫面上接在步驟名稱後面）。"""
+        if cls.scope_note:
+            return cls.scope_note
+        return "每個來源檔分別處理" if cls.per_file else "與來源檔分檔無關"
+
+    @classmethod
+    def summary(cls) -> str:
+        """純文字的步驟說明＋[scope]：給 spec 與 AI skill。"""
+        return f"{(cls.__doc__ or '').strip()}[{cls.scope()}]"
 
     @classmethod
     def suggest(cls, frame: pl.DataFrame, context: dict[str, Any]) -> dict[str, Any]:

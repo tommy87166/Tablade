@@ -129,13 +129,33 @@ def test_stream_mode_collects_warnings_with_line_numbers(workdir):
     assert streamed.warning_count == len(pl.read_parquet(workdir / "s.parquet"))
 
 
+def test_stream_matches_eager_with_reordered_merge(workdir):
+    """合併來源檔（改順序）後，串流與整份讀進記憶體的結果一致。"""
+    data = json.loads(EXAMPLE.read_text(encoding="utf-8"))
+    # 每個檔先去掉標題雜訊與頁尾，倒過來接成一份，再對整份做向下填滿
+    data["steps"].insert(2, {"id": "m", "type": "merge_files", "order": ["data/明細_02.csv"]})
+    (workdir / "merge.recipe.json").write_text(
+        json.dumps(data, ensure_ascii=False), encoding="utf-8"
+    )
+    r = parse_recipe(load_json(workdir / "merge.recipe.json"))
+    _, eager = execute(r, workdir, output=workdir / "e.parquet", mode="eager")
+    _, streamed = execute(r, workdir, output=workdir / "s.parquet", mode="stream")
+    a = pl.read_parquet(workdir / "e.parquet")
+    b = pl.read_parquet(workdir / "s.parquet")
+    assert a.equals(b) and streamed.rows == eager.rows
+    assert set(b["__source_file"]) == {"合併"}
+    assert b["__line_no"].to_list() == sorted(b["__line_no"].to_list())
+    # 第二個檔排在前面
+    assert b["單號"][0] == messy_export(30, 1)[1][0]["單號"]
+
+
 def test_auto_mode_samples_dry_runs_and_streams_exports(workdir, monkeypatch):
     monkeypatch.setattr(engine_run, "SAMPLE_THRESHOLD", 10)
     monkeypatch.setattr(engine_run, "SAMPLE_HEAD", 20)
     monkeypatch.setattr(engine_run, "SAMPLE_TAIL", 3)
     _, dry = execute(recipe(workdir), workdir, write_output=False)
     assert dry.mode == "sample" and dry.sample_rows == 2 * (20 + 3)
-    _, full = execute(recipe(workdir), workdir)
+    _, full = execute(recipe(workdir), workdir, output=workdir / "full.parquet")
     assert full.mode == "stream" and full.rows == 70
 
 

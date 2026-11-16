@@ -9,6 +9,7 @@ import pytest
 
 from tablade.cli import main
 from tablade.fixtures import messy_export, write_all
+from tablade.recipe.schema import RECIPE_VERSION
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "sales_detail.recipe.json"
@@ -26,15 +27,22 @@ def test_run_example_recipe(workdir, capsys):
     printed = capsys.readouterr().out
     assert "結果：70 列 × 8 欄" in printed
 
-    out = pl.read_parquet(workdir / "output" / "明細.parquet")
+    out = pl.read_parquet(workdir / "sales_detail.parquet")
     expected = messy_export(50, 0)[1] + messy_export(30, 1)[1]
     assert out.drop("__source_file", "__line_no").to_dicts() == expected
     assert out.columns[:2] == ["__source_file", "__line_no"]
 
 
+def test_run_writes_to_the_given_output(workdir):
+    target = workdir / "out" / "結果.parquet"
+    assert main(["run", str(workdir / EXAMPLE.name), "-o", str(target)]) == 0
+    assert pl.read_parquet(target).height == 70
+    assert not (workdir / "sales_detail.parquet").exists()
+
+
 def test_every_output_row_points_to_its_physical_line(workdir):
     assert main(["run", str(workdir / EXAMPLE.name)]) == 0
-    out = pl.read_parquet(workdir / "output" / "明細.parquet")
+    out = pl.read_parquet(workdir / "sales_detail.parquet")
     files = {}
     for row in out.iter_rows(named=True):
         path = row["__source_file"]
@@ -51,7 +59,7 @@ def test_validate_with_dry_run_reports_each_step(workdir, capsys):
     rows = [s["rows"] for s in result["report"]["steps"]]
     assert rows == [90, 88, 82, 82, 80, 80, 80, 70]
     assert result["report"]["inputs"][0]["encoding"] == "cp950"
-    assert not (workdir / "output").exists(), "試跑不應寫出檔案"
+    assert not list(workdir.glob("*.parquet")), "試跑不應寫出檔案"
 
 
 def test_run_reports_problems_instead_of_running(workdir, capsys):
@@ -62,7 +70,7 @@ def test_run_reports_problems_instead_of_running(workdir, capsys):
     assert main(["run", str(path)]) == 1
     printed = capsys.readouterr().out
     assert "steps[5].columns[0]" in printed and "是不是「門市」？" in printed
-    assert not (workdir / "output").exists()
+    assert not list(workdir.glob("*.parquet"))
 
 
 def test_missing_data_is_reported(tmp_path, capsys):
@@ -83,5 +91,5 @@ def test_schema_command(tmp_path):
     target = tmp_path / "spec.json"
     assert main(["schema", "--out", str(target)]) == 0
     spec = json.loads(target.read_text(encoding="utf-8"))
-    assert spec["recipe_version"] == "1.0"
+    assert spec["recipe_version"] == RECIPE_VERSION
     assert "split_column" in spec["steps"]

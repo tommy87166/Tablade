@@ -1,26 +1,21 @@
-/** 左側：原始資料＋步驟清單（點選、拖曳排序、停用、刪除）＋新增步驟選單。 */
-import { AlertTriangle, ArrowDown, ArrowUp, CircleX, Eye, EyeOff, FileText, GripVertical, Plus, Trash2 } from 'lucide-react'
+/** 左側：讀取資料 → 步驟清單（點選、拖曳排序、停用、刪除）→ 輸出資料，以及新增步驟選單。 */
+import { AlertTriangle, ArrowDown, ArrowUp, CircleX, Eye, EyeOff, FileInput, FileOutput, GripVertical, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
-} from '@/components/ui/context-menu'
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from '@/components/ui/context-menu'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import type { CatalogItem, ViewState } from '../bridge'
+import { CollapseButton, PaneHeader, PaneTitle } from './Pane'
+import { StepScope } from './StepScope'
 
 interface Props {
   state: ViewState
@@ -31,6 +26,7 @@ interface Props {
   onMove: (index: number, to: number) => void
   onToggle: (index: number) => void
   onDelete: (index: number) => void
+  onCollapse: () => void
 }
 
 function rowsText(rows: number | null, delta: number | null) {
@@ -45,19 +41,24 @@ export function AddStepMenu({ catalog, onAdd, disabled }: { catalog: CatalogItem
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button className="w-full" disabled={disabled}>
+        <Button size="xs" disabled={disabled}>
           <Plus /> 新增步驟
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent className="w-72" align="start">
-        {[...groups.entries()].map(([category, items], g) => (
+      {/* 每個分類一欄：列、欄並排 */}
+      <DropdownMenuContent className="grid w-[36rem] max-w-[calc(100vw-2rem)] grid-cols-2 gap-x-3" align="start">
+        {[...groups.entries()].map(([category, items]) => (
           <DropdownMenuGroup key={category}>
-            {g > 0 ? <DropdownMenuSeparator /> : null}
             <DropdownMenuLabel>{category}</DropdownMenuLabel>
             {items.map((item) => (
-              <DropdownMenuItem key={item.type} onSelect={() => onAdd(item.type)}>
+              <DropdownMenuItem
+                key={item.type}
+                onSelect={() => onAdd(item.type)}
+                className="my-1 rounded-l-none border-l-2 border-muted-foreground/50 pl-2.5 focus:border-primary"
+              >
                 <div>
                   <div>{item.label}</div>
+                  <StepScope scope={item.scope} />
                   <div className="text-xs text-muted-foreground">{item.description}</div>
                 </div>
               </DropdownMenuItem>
@@ -69,7 +70,7 @@ export function AddStepMenu({ catalog, onAdd, disabled }: { catalog: CatalogItem
   )
 }
 
-export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onToggle, onDelete }: Props) {
+export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onToggle, onDelete, onCollapse }: Props) {
   const [dragging, setDragging] = useState<number | null>(null)
   const [over, setOver] = useState<number | null>(null)
   const input = state.input
@@ -77,10 +78,14 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b px-3 py-2 text-xs font-medium tracking-wide text-muted-foreground">
-        套用的步驟
-        {state.input.sampled ? <span className="font-normal text-amber-700 dark:text-amber-400">列數為預覽樣本</span> : null}
-      </div>
+      <PaneHeader>
+        <PaneTitle>步驟</PaneTitle>
+        {state.input.sampled ? <span className="truncate text-[11px] text-amber-700 dark:text-amber-400">列數為樣本</span> : null}
+        <span className="ml-auto flex shrink-0 items-center gap-1">
+          <AddStepMenu catalog={catalog} onAdd={onAdd} disabled={busy} />
+          <CollapseButton side="left" label="步驟" onClick={onCollapse} />
+        </span>
+      </PaneHeader>
       <ol className="flex-1 space-y-1 overflow-auto p-2">
         <li>
           <button
@@ -88,9 +93,9 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
             onClick={() => onSelect(-1)}
             className={`flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted ${state.selected === -1 ? 'bg-primary/10 ring-1 ring-primary/40' : ''}`}
           >
-            <FileText className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+            <FileInput className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
             <span className="min-w-0 flex-1">
-              <span className="block font-medium">原始資料</span>
+              <span className="block font-medium">讀取資料</span>
               <span className="block truncate text-xs text-muted-foreground">
                 {input.error ?? `${input.pattern}（${input.files.length} 個檔案）`}
               </span>
@@ -145,18 +150,21 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
                     <span className="min-w-0 flex-1">
                       <span className={`block font-medium ${step.enabled ? '' : 'line-through'}`}>{step.label}</span>
                       <span className="block truncate text-xs text-muted-foreground">
-                        {step.status === 'error'
-                          ? step.run_error ?? step.errors[0]?.error ?? '參數有誤'
-                          : step.describe ?? ''}
+                        {step.status === 'error' ? (step.run_error ?? step.errors[0]?.error ?? '參數有誤') : (step.describe ?? '')}
                       </span>
                       <span className="mt-0.5 flex flex-wrap items-center gap-1">
-                        {rows ? <span className="text-xs text-muted-foreground tabular-nums">{rows}</span> : null}
+                        {rows ? <span className="text-xs whitespace-nowrap text-muted-foreground tabular-nums">{rows}</span> : null}
+                        {step.files !== null ? (
+                          <span className="text-xs whitespace-nowrap text-muted-foreground tabular-nums">{step.files} 個來源檔</span>
+                        ) : null}
                         {step.status === 'error' ? (
                           <Badge variant="destructive" className="h-4 px-1 text-[10px]">
                             <CircleX /> 錯誤
                           </Badge>
                         ) : null}
-                        {step.status === 'pending' ? <span className="text-xs text-muted-foreground">（前面的步驟有錯，尚未計算）</span> : null}
+                        {step.status === 'pending' ? (
+                          <span className="text-xs text-muted-foreground">（前面的步驟有錯，尚未計算）</span>
+                        ) : null}
                         {step.warning_count ? (
                           <Badge variant="outline" className="h-4 border-amber-500/50 px-1 text-[10px] text-amber-700 dark:text-amber-400">
                             <AlertTriangle /> {step.warning_count.toLocaleString()}
@@ -209,11 +217,20 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
             </ContextMenu>
           )
         })}
+        <li>
+          <button
+            type="button"
+            onClick={() => onSelect(state.steps.length)}
+            className={`flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted ${state.selected === state.steps.length ? 'bg-primary/10 ring-1 ring-primary/40' : ''}`}
+          >
+            <FileOutput className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1">
+              <span className="block font-medium">輸出資料</span>
+              <span className="block truncate text-xs text-muted-foreground">Parquet・執行時選擇位置</span>
+            </span>
+          </button>
+        </li>
       </ol>
-      <div className="border-t p-2">
-        <AddStepMenu catalog={catalog} onAdd={onAdd} disabled={busy} />
-        <p className="mt-1.5 text-center text-[11px] text-muted-foreground">新步驟會加在選取的步驟之後</p>
-      </div>
     </div>
   )
 }

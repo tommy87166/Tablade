@@ -13,12 +13,13 @@ from .registry import register
 
 @register
 class RemoveTopRows(Step):
-    """移除每個來源檔最前面的 N 列（以目前剩下的列計算）。"""
+    """移除最前面的 N 列（以目前剩下的列計算）。"""
 
     type: Literal["remove_top_rows"] = "remove_top_rows"
     n: int = Field(title="列數", ge=0)
 
     label = "移除前 N 列"
+    per_file = True
     category = "列"
     ai_notes = (
         "用來去掉報表開頭的標題雜訊。多個檔案時每個檔案各自移除；"
@@ -49,12 +50,13 @@ class RemoveTopRows(Step):
 
 @register
 class RemoveBottomRows(Step):
-    """移除每個來源檔最後面的 N 列（以目前剩下的列計算）。"""
+    """移除最後面的 N 列（以目前剩下的列計算）。"""
 
     type: Literal["remove_bottom_rows"] = "remove_bottom_rows"
     n: int = Field(title="列數", ge=0)
 
     label = "移除後 N 列"
+    per_file = True
     category = "列"
     ai_notes = "用來去掉報表結尾的合計、頁尾或「共 N 筆」。多個檔案時每個檔案各自移除。"
     examples = (

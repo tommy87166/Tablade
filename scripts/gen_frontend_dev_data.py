@@ -3,7 +3,7 @@
 
     uv run python scripts/gen_frontend_dev_data.py
 
-用假資料跑一次範例 recipe，把每一步的畫面狀態與前 200 列存起來。之後用一般瀏覽器跑
+用假資料跑一次範例 recipe，把每一步（含讀取資料、輸出資料）的畫面狀態與前 200 列存起來。之後用一般瀏覽器跑
 ``npm --prefix frontend run dev`` 時，``src/mock.ts`` 會用這份資料，畫面和真的一樣。
 """
 
@@ -33,12 +33,14 @@ def main() -> int:
         api._session.load_recipe(work / "sales_detail.recipe.json")
         ready = api.ready()
         states, rows = {}, {}
-        for index in range(-1, len(api._session.steps)):
+        count = len(api._session.steps)
+        for index in range(-1, count + 1):  # count 是「輸出資料」
             state = api.select_step(index)["state"]
             state["recipe"]["path"] = "（開發用假資料）/sales_detail.recipe.json"
             state["recipe"]["base_dir"] = None
             states[str(index)] = state
-            rows[str(index)] = api.rows(index, 0, 200)
+            if index < count:
+                rows[str(index)] = api.rows(index, 0, 200)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     TARGET.parent.mkdir(parents=True, exist_ok=True)

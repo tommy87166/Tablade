@@ -17,10 +17,12 @@ const files = import.meta.glob<Sample>('./dev/sample.json', { eager: true, impor
 const sample = Object.values(files)[0]
 
 const missing = '找不到 src/dev/sample.json：請先執行 uv run python scripts/gen_frontend_dev_data.py'
-let selected = sample ? sample.states[String(Math.max(...Object.keys(sample.states).map(Number)))].selected : -1
+// 跟開啟 recipe 一樣，一開始選最後一步（最大的鍵是「輸出資料」）
+let selected = sample ? Math.max(...Object.keys(sample.states).map(Number)) - 1 : -1
 
-const delay = <T,>(value: T, ms = 120) => new Promise<T>((r) => setTimeout(() => r(value), ms))
-const current = () => sample.states[String(selected)]
+const delay = <T>(value: T, ms = 120) => new Promise<T>((r) => setTimeout(() => r(value), ms))
+// 每次回傳複本：React 才會察覺狀態變了
+const current = () => structuredClone(sample.states[String(selected)])
 const withState = <T extends object>(extra?: T) => delay({ ok: true as const, state: current(), ...(extra ?? ({} as T)) })
 const fail = () => delay({ ok: false as const, error: missing })
 
@@ -28,7 +30,10 @@ export const mockApi: TabladeApi = sample
   ? {
       ready: () => delay({ ...sample.ready, platform: 'Browser（開發用假資料）' }, 0),
       selftest: () =>
-        delay({ ok: true, result: { ok: true, checks: [{ name: '假的自我檢測', ok: true, detail: '開發模式' }], versions: { mode: 'dev' } } }),
+        delay({
+          ok: true,
+          result: { ok: true, checks: [{ name: '假的自我檢測', ok: true, detail: '開發模式' }], versions: { mode: 'dev' } },
+        }),
       smoke_done: () => delay({ ok: true }),
       smoke_example: () => withState({ issues: [] }),
       state: () => withState(),
@@ -44,7 +49,10 @@ export const mockApi: TabladeApi = sample
       open_data: () => withState({ cancelled: true }),
       set_input: () => withState(),
       set_output: () => withState(),
-      set_meta: () => withState(),
+      set_meta: (values) => {
+        for (const s of Object.values(sample.states)) Object.assign(s.recipe, values, { dirty: true })
+        return withState()
+      },
       add_step: () => withState({ index: selected }),
       update_step: () => withState(),
       move_step: () => withState(),

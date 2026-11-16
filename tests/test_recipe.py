@@ -98,6 +98,23 @@ def test_structural_messages_are_actionable():
     )
 
 
+def test_old_minor_is_upgraded():
+    """1.0 的 output.path 拿掉了：舊 recipe 照樣通過（自動忽略），新版本寫了就是錯。"""
+    old = example()
+    old["tablade_recipe"] = "1.0"
+    old["output"]["path"] = "output/明細.parquet"
+    assert check(old) == []
+    upgraded = validator.upgrade(old)
+    assert "path" not in upgraded["output"] and "path" in old["output"]  # 不改動傳進來的物件
+    assert parse_recipe(upgraded).tablade_recipe == "1.0"
+
+    new = example()
+    new["output"]["path"] = "x.parquet"
+    assert paths(check(new)) == ["output.path"]
+    with pytest.raises(RecipeError):
+        parse_recipe(new)
+
+
 def test_version_rules():
     assert validator.check_version("1.0", "1.4") is None
     assert "比這裡支援的" in validator.check_version("1.5", "1.4")["error"]

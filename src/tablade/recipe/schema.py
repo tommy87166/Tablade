@@ -12,9 +12,9 @@ from tablade.ingest.encoding import SUPPORTED
 from tablade.steps import all_steps
 from tablade.steps.base import Step
 
-from .validator import check_version
+from .validator import check_version, upgrade
 
-RECIPE_VERSION = "1.0"
+RECIPE_VERSION = "1.1"
 """recipe 格式（也是 AI skill）的版本號：MAJOR.MINOR（DESIGN.md §17.6）。"""
 
 READERS: dict[str, dict[str, Any]] = {
@@ -34,7 +34,7 @@ class Input(_Model):
     pattern: str = Field(
         title="檔案",
         min_length=1,
-        description="相對於 recipe 檔所在的資料夾，可用 glob，例如 data/明細_*.csv",
+        description="相對於 Recipe 檔所在的資料夾，可用 glob，例如 data/明細_*.csv",
     )
     reader: Literal["text_lines", "csv"] = Field(
         default="text_lines",
@@ -48,14 +48,13 @@ class Input(_Model):
 
 class Output(_Model):
     format: Literal["parquet"] = Field(default="parquet", title="格式")
-    path: str = Field(title="輸出檔", min_length=1, description="相對於 recipe 檔所在的資料夾")
     keep_system_columns: bool = Field(
         default=True, title="保留系統欄位（__source_file、__line_no）"
     )
 
 
 class Recipe(_Model):
-    tablade_recipe: str = Field(title="recipe 版本", pattern=r"^\d+\.\d+$")
+    tablade_recipe: str = Field(title="Recipe 版本", pattern=r"^\d+\.\d+$")
     name: str = Field(default="", title="名稱")
     description: str = Field(default="", title="說明")
     inputs: list[Input] = Field(title="輸入", min_length=1, max_length=1)
@@ -92,7 +91,7 @@ def pydantic_issues(err: ValidationError) -> list[dict[str, Any]]:
             path += f"[{part}]" if isinstance(part, int) else (f".{part}" if path else str(part))
             previous = part
         message = e["msg"].removeprefix("Value error, ")
-        issues.append({"path": path or "(recipe)", "error": message, "severity": "error"})
+        issues.append({"path": path or "(Recipe)", "error": message, "severity": "error"})
     return issues
 
 
@@ -123,7 +122,7 @@ def load_json(path: str | Path) -> dict[str, Any]:
         raise RecipeError(
             [
                 {
-                    "path": "(recipe)",
+                    "path": "(Recipe)",
                     "error": f"不是合法的 JSON：第 {err.lineno} 行第 {err.colno} 欄，{err.msg}",
                     "severity": "error",
                 }
@@ -131,6 +130,6 @@ def load_json(path: str | Path) -> dict[str, Any]:
         ) from None
     if not isinstance(data, dict):
         raise RecipeError(
-            [{"path": "(recipe)", "error": "recipe 必須是 JSON 物件", "severity": "error"}]
+            [{"path": "(Recipe)", "error": "Recipe 必須是 JSON 物件", "severity": "error"}]
         )
-    return data
+    return upgrade(data)  # 舊的次版本先換成目前的格式

@@ -45,6 +45,8 @@ export interface CatalogItem {
   label: string
   category: string
   description: string
+  /** 「每個來源檔分別處理」或「與來源檔分檔無關」 */
+  scope: string
   schema: JsonSchema
 }
 
@@ -83,6 +85,10 @@ export interface StepState {
   rows: number | null
   delta: number | null
   input_columns: string[] | null
+  /** 這一步處理後有幾個來源檔 */
+  files: number | null
+  /** 這一步之前的來源檔（依目前順序） */
+  input_files: string[] | null
   warning_count: number
   errors: Issue[]
   run_error: string | null
@@ -123,8 +129,9 @@ export interface ViewState {
     columns: string[] | null
     files: SourceFile[]
   }
-  output: { format: string; path: string; keep_system_columns: boolean }
+  output: { format: string; keep_system_columns: boolean }
   steps: StepState[]
+  /** -1 是「讀取資料」，0..n-1 是步驟，steps.length 是「輸出資料」（預覽最後一步的結果） */
   selected: number
   preview: {
     /** 實際顯示的步驟（選取的步驟算不出來時，是它之前最後一個算得出來的） */
@@ -175,10 +182,7 @@ export interface TabladeApi {
   set_input(values: Partial<ViewState['input']>): Promise<WithState>
   set_output(values: Partial<ViewState['output']>): Promise<WithState>
   set_meta(values: { name?: string; description?: string }): Promise<WithState>
-  add_step(
-    type_name: string,
-    context?: { column?: string; value?: Cell; exclude?: boolean },
-  ): Promise<WithState<{ index: number }>>
+  add_step(type_name: string, context?: { column?: string; value?: Cell; exclude?: boolean }): Promise<WithState<{ index: number }>>
   update_step(index: number, values: Record<string, unknown>): Promise<WithState>
   move_step(index: number, to: number): Promise<WithState>
   toggle_step(index: number): Promise<WithState>

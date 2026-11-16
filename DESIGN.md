@@ -125,7 +125,7 @@
 
 ```json
 {
-  "tablade_recipe": "1.0",
+  "tablade_recipe": "1.1",
   "name": "明細整理範例",
   "inputs": [
     {
@@ -146,7 +146,7 @@
       "negative": "parentheses", "on_error": "null_and_report" },
     { "id": "s6", "type": "parse_date", "column": "日期", "format": "roc" }
   ],
-  "output": { "format": "parquet", "path": "output/明細.parquet", "keep_system_columns": true }
+  "output": { "format": "parquet", "keep_system_columns": true }
 }
 ```
 
@@ -154,6 +154,7 @@
 
 - `tablade_recipe` 是 recipe 格式的版本號（`MAJOR.MINOR`，規則見 §17.6），AI skill 共用同一個版本號。
 - 每個步驟都有唯一的 `id`，並可加上 `"enabled": false` 暫時停用。
+- recipe **不記輸出位置**：視窗裡按「執行」時才用存檔對話框選位置；命令列 `tablade run` 用 `-o` 指定，預設是 recipe 旁邊同名的 `.parquet`。（1.1 起；1.0 的 `output.path` 開啟時自動忽略）
 - **依資料決定結構的步驟**（提升標題列、拆成幾欄、樞紐），在**建立步驟的當下**先掃一次資料，把欄名和欄數寫死在 recipe 裡。之後套用到新資料時，若出現更多段數或新的欄位，產生**警告**，不默默增減欄位。
 - recipe 本身可能含有敏感資訊（例如篩選條件裡的人名或公司名稱），所以**真實 recipe 也不得 commit**，repo 只放範例 recipe。
 
@@ -163,7 +164,7 @@
 
 ### 7.1 MVP（第一版）
 
-M1 已完成：`remove_top_rows`、`remove_bottom_rows`、`remove_blank_rows`、`promote_headers`、`split_delimited`、`split_column`、`fill_down`、`filter`。
+M1 已完成：`remove_top_rows`、`remove_bottom_rows`、`remove_blank_rows`、`promote_headers`、`split_delimited`、`split_column`、`fill_down`、`filter`；recipe 1.1 加上 `merge_files`。
 
 | 類型 | 說明 | Polars 實作方向 |
 |---|---|---|
@@ -175,6 +176,7 @@ M1 已完成：`remove_top_rows`、`remove_bottom_rows`、`remove_blank_rows`、
 | `split_column` | 某一欄依分隔符號再拆 | `str.split_exact(sep, n)` 後 `unnest` |
 | `fill_down` | 向下填滿 | 先依 `__line_no` 排序，再 `fill_null(strategy="forward")` |
 | `filter` | 條件篩選（等於、包含、開頭是、正規表示式、空值、數值比較） | `filter(expr)`，條件用結構化參數組成，不接受任意字串運算式 |
+| `merge_files` | 依指定順序把所有來源檔接成一份；`__source_file` 改成同一個名稱、`__line_no` 從 1 重編，之後「前 N 列」等步驟改對整份計算 | 順序不變時只改系統欄位；要改順序時依檔案 `filter` 再 `concat`（串流執行，不排序） |
 | `select_columns` | 保留、刪除、重新排序欄位 | `select` |
 | `rename_columns` | 重新命名欄位 | `rename` |
 | `trim_clean` | 修剪空白、全形轉半形（NFKC）、移除不可見字元 | `str.strip_chars`、`map_batches` 加 `unicodedata` |
