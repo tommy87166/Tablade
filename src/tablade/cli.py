@@ -80,7 +80,15 @@ def _check(args: argparse.Namespace, *, dry_run: bool) -> int:
     return 0 if result.ok else 1
 
 
+def _tolerant_output() -> None:
+    """主控台編碼印不出的字元（例如 cp950 沒有 ≥）改成替代字元，不要讓整個指令失敗。"""
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _tolerant_output()
     args = build_parser().parse_args(argv)
     command = args.command or "gui"
 

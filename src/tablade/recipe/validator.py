@@ -432,7 +432,15 @@ def csv_header(path: Path) -> list[str]:
     return next(csv.reader([first]), [])
 
 
+def _utf8_output() -> None:
+    """一律用 UTF-8 輸出（Windows 的管線預設是 cp1252，印中文會失敗；AI 讀的也是 UTF-8）。"""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None, spec: dict[str, Any] | None = None) -> int:
+    _utf8_output()
     parser = argparse.ArgumentParser(description="驗證 Tablade recipe")
     parser.add_argument("recipe", type=Path)
     parser.add_argument("--data", type=Path, help="input 為 csv 時，用這個檔案的標題列檢查欄位引用")
