@@ -36,6 +36,8 @@ Tablade：本機執行、Power Query 式的資料清洗工具（Python + Polars 
 - UI 元件用 shadcn/ui：`cd frontend && npx shadcn@latest add <元件>`。**不要**把 `shadcn` 裝成依賴；新增元件後確認 `src/index.css` 沒有被改回 `@import "shadcn/tailwind.css"`。
 - 不載入外部字型或資源；字型用系統字型。
 - CSP 由 `vite.config.ts` 在 build 時注入，不要寫在 `index.html`。
+- UI 的新功能：邏輯寫在 `session.py`（有 pytest），`api.py` 只包一層（開對話框、回傳新的 `state`），再到 `bridge.ts` 加型別。
+- 用一般瀏覽器開發前端：先 `uv run python scripts/gen_frontend_dev_data.py`，再 `npm --prefix frontend run dev`（`mock.ts` 會用產生的假資料）。
 
 ## 常用指令
 

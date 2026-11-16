@@ -376,8 +376,8 @@ tablade/
 |---|---|---|
 | **M0 環境驗證** | 最小 pywebview + Polars 程式，用 onefile 和 onedir 各打包一次 | **在目標 Windows 筆電（權限受管控的公司電腦）上能開出視窗，並讀一個 CSV 寫出 Parquet** |
 | M1 引擎 | recipe schema（版本 `MAJOR.MINOR`、schema lock）、registry（含 §7.3 的 8 件事）、ingest（text_lines / csv）、compiler、CLI（`run` / `validate` / `schema`）、MVP 中的 8 種步驟 | `tablade run examples/sales_detail.recipe.json` 產出正確結果，測試全過（✅ 完成） |
-| M1.5 AI skill | probe skill 實測沙箱、`tablade profile`、skill 產生器、單一檔案驗證器（§17） | Copilot 載入 skill 後，能依描述寫出通過驗證的範例 recipe |
-| M2 UI | 步驟清單（新增、排序、停用、刪除）、預覽表格、參數表單、匯入 recipe（版本檢查、錯誤報告）、下載 AI skill | 不寫 JSON，也能在 UI 完成範例整理流程 |
+| M1.5 AI skill | probe skill 實測沙箱、`tablade profile`、skill 產生器、單一檔案驗證器（§17） | Copilot 載入 skill 後，能依描述寫出通過驗證的範例 recipe（程式已完成，等 Copilot 實測） |
+| M2 UI | 步驟清單（新增、排序、停用、刪除）、預覽表格、參數表單、匯入 recipe（版本檢查、錯誤報告）、下載 AI skill | 不寫 JSON，也能在 UI 完成範例整理流程（✅ 完成） |
 | M3 台灣格式與留痕 | parse_number、parse_date（民國）、trim_clean、manifest | 輸出附 manifest，警告附行號 |
 | M4 多檔與 Excel | glob、diagonal concat、excel reader、classify_rows、extract_regex | 分段報表的範例可以完整攤平 |
 | M5 進階步驟 | join、group_by、unpivot、pivot、dedupe、匯出 Python 腳本 | — |
@@ -443,6 +443,13 @@ tablade/
 - **表格分頁取資料**：`get_rows(step_id, offset, limit)` 只回傳畫面看得到的那一段，用欄式陣列（`{columns, data: [[...], ...]}`）傳輸。
 - **長時間工作**：完整匯出、掃描大檔在 Python 背景執行，進度寫進 pywebview 的 `window.state`，前端監聽 `pywebview.state` 的 `change` 事件。
 - **檔案只用代號**：開檔對話框由 Python 開啟，前端只拿到檔案代號，不能要求 Python 讀任意路徑。
+- **M2 實作**（`src/tablade/session.py`）：
+  - 步驟以原始 dict 保存，參數還不合法的步驟也能留在清單裡；計算到第一個錯誤的步驟為止，預覽顯示它之前最後一個算得出來的結果（`preview.step` ≠ `preview.requested`）。
+  - 每一步的結果依「input ＋ 到這一步為止的步驟」的雜湊快取；改第 k 步時，前面的步驟直接沿用。
+  - 新增步驟時，各步驟的 `suggest(frame, context)` 依目前的資料給建議參數：判斷分隔符號（會處理引號）、從第一列抓欄名、帶入右鍵點選的欄位或值。
+  - 存檔時去掉跟預設值相同的參數；另存到別的資料夾時，input 的 pattern 會改成相對於新位置。
+  - 點警告時用 `find_row` 找到那一列在預覽中的位置並捲過去。
+- **前端開發**：`scripts/gen_frontend_dev_data.py` 用假資料跑一次範例 recipe，產生 `frontend/src/dev/sample.json`（不進版控）；在一般瀏覽器開 dev server 時，`mock.ts` 用它模擬 API。
 
 ### 16.5 參數表單從 pydantic schema 自動產生
 
@@ -565,7 +572,11 @@ Tablade 的 `output_columns()` 與驗證器都從這份宣告推算，所以不�
 - Tablade 開啟 recipe：版本比 App 新 → 提示更新 Tablade；比較舊 → 自動升級。
 - 驗證器遇到不同 major 或比自己新的 minor → 提示改用對應版本的 skill。
 
-### 17.7 下載
+### 17.7 下載與命令列
+
+- `tablade skill [--out x.zip]`：產生 skill；`tablade skill --probe`：產生 probe skill（只回報 Python 版本、可用套件、看得到的檔名與大小，不讀檔案內容）。
+- `tablade profile 檔案… [--lines N] [--mask]`：給 AI 助理看的資料檔摘要。
+- 打包後的 App 只有編譯過的模組，所以 `validator.py` 原始碼另外以資料檔打包（`tablade.spec`）；`scripts/build.py` 會用打包後的 App 實際產生一次 skill 確認。
 
 - 前端的說明選單提供「下載 Copilot skill（v1.4）」：Python 依目前的 registry 當場產生 zip，再開存檔對話框，所以下載到的 skill 一定與 App 版本一致。
 - CI 也把 skill zip 附到 Release。

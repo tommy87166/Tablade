@@ -21,7 +21,12 @@ a = Analysis(
     ["src/tablade/__main__.py"],
     pathex=["src"],
     # 前端是 build 好的單一 HTML（npm --prefix frontend run build）
-    datas=[("frontend/dist/index.html", "frontend/dist")],
+    # 範例 recipe：--smoke 走完整流程、AI skill 的範例；validator.py 原始碼：放進 AI skill
+    datas=[
+        ("frontend/dist/index.html", "frontend/dist"),
+        ("examples/sales_detail.recipe.json", "examples"),
+        ("src/tablade/recipe/validator.py", "skill"),
+    ],
     hiddenimports=[],
     excludes=["tkinter", "unittest", "pydoc", "pytest"],
     noarchive=False,

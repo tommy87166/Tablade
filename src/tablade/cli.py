@@ -41,6 +41,20 @@ def build_parser() -> argparse.ArgumentParser:
     schema = sub.add_parser("schema", help="輸出步驟規格與 recipe JSON Schema")
     schema.add_argument("--out", type=Path, help="寫到檔案（預設印出）")
 
+    skill = sub.add_parser(
+        "skill", help="產生 AI skill（給 Microsoft 365 Copilot 等 AI 助理撰寫 recipe）"
+    )
+    skill.add_argument("--out", type=Path, help="zip 檔位置（預設為目前資料夾）")
+    skill.add_argument(
+        "--probe", action="store_true", help="改產生 probe skill：檢查 AI 環境能不能執行 script"
+    )
+
+    prof = sub.add_parser("profile", help="把資料檔整理成給 AI 助理看的摘要（Markdown）")
+    prof.add_argument("files", type=Path, nargs="+")
+    prof.add_argument("--lines", type=int, default=30, help="列出前幾行（預設 30）")
+    prof.add_argument("--mask", action="store_true", help="把數字、英文字母、文字遮罩成 9 / a / 〇")
+    prof.add_argument("--out", type=Path, help="寫到檔案（預設印出）")
+
     sub.add_parser("version", help="顯示版本")
     return parser
 
@@ -127,6 +141,25 @@ def main(argv: list[str] | None = None) -> int:
         text = json.dumps(build_spec(), ensure_ascii=False, indent=2)
         if args.out:
             args.out.write_text(text + "\n", encoding="utf-8")
+            print(f"已寫入 {args.out}")
+        else:
+            print(text)
+        return 0
+
+    if command == "skill":
+        from .skill import skill_filename, write_zip
+
+        target = args.out or Path(skill_filename(args.probe))
+        write_zip(target, probe=args.probe)
+        print(f"已產生 {target}")
+        return 0
+
+    if command == "profile":
+        from .profile import profile
+
+        text = profile(args.files, head=args.lines, mask=args.mask)
+        if args.out:
+            args.out.write_text(text, encoding="utf-8")
             print(f"已寫入 {args.out}")
         else:
             print(text)

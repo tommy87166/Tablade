@@ -48,6 +48,14 @@ class PromoteHeaders(Step):
     )
 
     @classmethod
+    def suggest(cls, frame, context):
+        columns = [c for c in frame.columns if not c.startswith("__")]
+        if not columns or frame.height == 0:
+            return {"names": columns}
+        first = frame.sort(ORDER).select(columns).row(0)
+        return {"names": cls.suggest_names(list(first))}
+
+    @classmethod
     def suggest_names(cls, first_row: list[object]) -> list[str]:
         """建立步驟時從第一列產生欄名：空白補成「欄N」，重複的加上 _2、_3。"""
         names: list[str] = []

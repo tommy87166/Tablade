@@ -38,6 +38,10 @@ class RemoveTopRows(Step):
         ),
     )
 
+    @classmethod
+    def suggest(cls, frame, context):
+        return {"n": 1}
+
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
         return (
             lf.sort(ORDER)
@@ -68,6 +72,10 @@ class RemoveBottomRows(Step):
             output={"line": ["日期,門市", "115/01/05,北區門市"]},
         ),
     )
+
+    @classmethod
+    def suggest(cls, frame, context):
+        return {"n": 1}
 
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
         return (

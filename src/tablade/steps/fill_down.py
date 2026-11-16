@@ -16,6 +16,7 @@ from .base import (
     StepError,
     data_columns,
     is_blank,
+    pick_column,
     quote_list,
 )
 from .registry import register
@@ -49,6 +50,11 @@ class FillDown(Step):
             },
         ),
     )
+
+    @classmethod
+    def suggest(cls, frame, context):
+        column = pick_column(frame, context)
+        return {"columns": [column]} if column else {}
 
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
         missing = [c for c in self.columns if c not in data_columns(lf)]

@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
-from .base import ColumnRef, Example, Step, is_blank
+from .base import ColumnRef, Example, Step, is_blank, pick_column
 from .registry import register
 
 TEXT_OPS = {
@@ -29,6 +29,8 @@ class _Condition(BaseModel):
 
 
 class TextCondition(_Condition):
+    model_config = ConfigDict(title="文字")
+
     op: Literal["equals", "not_equals", "contains", "not_contains", "starts_with", "ends_with"] = (
         Field(title="條件", json_schema_extra={"ui_labels": TEXT_OPS})
     )
@@ -54,6 +56,8 @@ class TextCondition(_Condition):
 
 
 class RegexCondition(_Condition):
+    model_config = ConfigDict(title="正規表示式")
+
     op: Literal["regex", "not_regex"] = Field(
         title="條件", json_schema_extra={"ui_labels": REGEX_OPS}
     )
@@ -68,6 +72,8 @@ class RegexCondition(_Condition):
 
 
 class EmptyCondition(_Condition):
+    model_config = ConfigDict(title="空白")
+
     op: Literal["is_empty", "is_not_empty"] = Field(
         title="條件", json_schema_extra={"ui_labels": EMPTY_OPS}
     )
@@ -81,6 +87,8 @@ class EmptyCondition(_Condition):
 
 
 class NumberCondition(_Condition):
+    model_config = ConfigDict(title="數值")
+
     op: Literal["gt", "ge", "lt", "le", "num_equals"] = Field(
         title="條件", json_schema_extra={"ui_labels": NUMBER_OPS}
     )
@@ -159,6 +167,17 @@ class Filter(Step):
             output={"門市": ["北區門市"], "金額": ["1,280"]},
         ),
     )
+
+    @classmethod
+    def suggest(cls, frame, context):
+        column = pick_column(frame, context)
+        if column is None:
+            return {}
+        value = context.get("value")
+        keep = {"keep": "non_matching"} if context.get("exclude") else {}
+        if value is None or value == "":
+            return {"conditions": [{"column": column, "op": "is_not_empty"}], **keep}
+        return {"conditions": [{"column": column, "op": "equals", "value": str(value)}], **keep}
 
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
         exprs = [c.expr().fill_null(False) for c in self.conditions]

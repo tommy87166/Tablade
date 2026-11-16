@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar
 
@@ -69,6 +70,12 @@ class Step(BaseModel):
     def type_name(cls) -> str:
         return cls.model_fields["type"].default
 
+    @classmethod
+    def suggest(cls, frame: pl.DataFrame, context: dict[str, Any]) -> dict[str, Any]:
+        """新增步驟時的建議參數。``frame`` 是這一步的輸入；``context`` 可能有使用者點的
+        ``column`` / ``value``。建議值不一定合法（例如還沒填的值），使用者會在表單裡補齊。"""
+        return {}
+
     def params(self) -> dict[str, Any]:
         return self.model_dump(mode="json", exclude={"id", "type", "enabled"})
 
@@ -108,6 +115,43 @@ def row_in_file() -> pl.Expr:
 
 def is_blank(expr: pl.Expr) -> pl.Expr:
     return expr.cast(pl.String).str.strip_chars().fill_null("") == ""
+
+
+def pick_column(
+    frame: pl.DataFrame, context: dict[str, Any], prefer: str | None = None
+) -> str | None:
+    """建議要操作的欄位：使用者點的欄 → 指定的偏好欄 → 第一個資料欄。"""
+    columns = [c for c in frame.columns if not c.startswith(SYSTEM_PREFIX)]
+    for candidate in (context.get("column"), prefer):
+        if candidate in columns:
+            return candidate
+    return columns[0] if columns else None
+
+
+def sample_values(frame: pl.DataFrame, column: str, n: int = 200) -> list[str | None]:
+    return frame.get_column(column).head(n).cast(pl.String).to_list()
+
+
+def guess_delimiter(
+    values: list[str | None], candidates: str = ",\t;|", quote: str | None = '"'
+) -> str:
+    """挑拆出來的欄數最一致（而且多於 1 欄）的分隔符號；``quote`` 不是 None 時會處理引號。"""
+    lines = [v for v in values if v]
+    best, best_score = candidates[0], 0.0
+    for d in candidates:
+        if quote:
+            counts = [len(next(csv.reader([v], delimiter=d, quotechar=quote), [])) for v in lines]
+        else:
+            counts = [v.count(d) + 1 for v in lines]
+        if not counts or max(counts) <= 1:
+            continue
+        common = max(set(counts), key=counts.count)
+        if common <= 1:
+            continue
+        score = counts.count(common) / len(counts)
+        if score > best_score:  # 分數相同時保留排在前面的候選
+            best, best_score = d, score
+    return best
 
 
 def quote_list(names: list[str], limit: int = 4) -> str:

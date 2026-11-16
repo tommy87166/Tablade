@@ -40,8 +40,8 @@
 > 測試資料一律由 `scripts/gen_fixtures.py` 產生；pre-commit hook 會擋下資料檔與疑似個資。
 > 詳見 [不讓真實資料進入 repo](#️-不讓真實資料進入-repo)。
 
-> **目前進度：M1 引擎。** recipe、8 種步驟、驗證器與命令列（`tablade run` / `validate` / `schema`）都已可用；
-> 一步一步操作的 UI 在 M2 加入。見 [路線圖](#️-路線圖)。
+> **目前進度：M2 步驟 UI。** 可以在視窗裡一步一步建立 recipe（套用的步驟、即時預覽、依步驟 schema 自動產生的表單），
+> 也可以用產生的 skill 讓 Microsoft 365 Copilot 撰寫，或從命令列執行。見 [路線圖](#️-路線圖)。
 
 ---
 
@@ -149,14 +149,31 @@ cli.py — `tablade run recipe.json` 不開 UI，跑同一套引擎
 
 ---
 
+## 🤖 讓 Microsoft 365 Copilot 寫 recipe
+
+Tablade 會從步驟 registry 產生 [Agent Skills](https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/agent-builder-add-skills)
+套件：`SKILL.md`、附範例的步驟目錄、recipe JSON Schema，以及只需要 Python 標準函式庫的單一檔案驗證器
+（Copilot 的沙箱不能安裝套件）。skill 的版本就是 recipe 格式的版本，所以 skill 寫出的 recipe 一定能用這版 Tablade 開啟。
+
+1. **取得 skill。** 在 Tablade 選 **Copilot → 下載 Copilot skill**，或執行 `tablade skill`。
+2. **加到 agent。** 在 Agent Builder：*Configure → Skills → Add*，上傳整個 zip。
+   （想先確認沙箱能做什麼，可以上傳 `tablade skill --probe` 產生的 probe，再說「執行 Tablade probe」。）
+3. **請 Copilot 寫。** 上傳資料（或 `tablade profile 資料.csv` 產生的摘要），描述要怎麼整理。
+   Copilot 會寫出 recipe，並用 `scripts/validate_recipe.py` 自我檢查。
+4. **用 Tablade 開啟。** 把 recipe 放在資料旁邊，選 **開啟 recipe**。Tablade 會驗證並用真實資料試跑每一步；
+   有問題時選 **Copilot → 檢查並複製錯誤報告**，把報告貼回給 Copilot。
+
+---
+
 ## 📊 測試結果
 
 | 項目 | 結果 |
 |---|---|
-| 單元測試（`pytest`） | 164 項通過（每種步驟文件裡的範例都當成測試跑） |
+| 單元測試（`pytest`） | 185 項通過（每種步驟文件裡的範例都當成測試跑；UI 背後的 session 照使用者的操作順序一步步測） |
 | 範例 recipe（`examples/sales_detail.recipe.json`，2 個 cp950 檔、94 行 → 70 列） | ✅ 輸出與預期完全一致；每一列的 `__line_no` 都指回原始檔的那一行 |
 | 打包後的自我檢測（產生 cp950 CSV → Parquet → 讀回比對 → Lazy 查詢 → Excel 引擎） | ✅ Windows x64（CI）與 macOS arm64 的 onefile、onedir |
-| 視窗 smoke test（開視窗、透過 JS bridge 跑自我檢測、關閉） | ✅ Windows x64（CI）與 macOS arm64 的 onefile、onedir |
+| 視窗 smoke test（開視窗、自我檢測、透過 JS bridge 載入範例、等表格畫出 70 列、關閉） | ✅ macOS arm64 的 onefile、onedir；Windows 由 CI 跑 |
+| 打包後的 App 產生 AI skill（`tablade skill`） | ✅ onefile、onedir |
 
 | 版本（macOS arm64） | 大小 | 啟動時間 |
 |---|---|---|
@@ -178,6 +195,7 @@ npm --prefix frontend run build                      # build 出 frontend/dist/i
 uv run pre-commit install                            # 安裝資料防護 hook（必做）
 uv run pytest                                        # 跑測試
 uv run tablade                                       # 從原始碼開啟視窗
+uv run python scripts/gen_frontend_dev_data.py       # 產生瀏覽器假 API 用的資料（不進版控）
 npm --prefix frontend run dev                        # Vite dev server（一般瀏覽器會用假 API）
 TABLADE_DEV_URL=http://localhost:5173 uv run tablade # 在真正的視窗裡熱更新
 uv run python scripts/gen_fixtures.py tmp/fixtures   # 產生假資料
@@ -195,6 +213,8 @@ tablade convert in.csv out.parquet [--encoding auto|utf-8|cp950|big5hkscs]
 tablade run recipe.json [--json]                 # 執行 recipe、寫出 Parquet、列出每一步的列數
 tablade validate recipe.json [--run] [--json]    # 驗證 recipe（--run：用真實資料試跑）
 tablade schema [--out spec.json]                 # 步驟目錄＋recipe JSON Schema
+tablade skill [--out x.zip] [--probe]            # 給 Microsoft 365 Copilot 的 AI skill（或沙箱 probe）
+tablade profile 資料.csv [--lines 30] [--mask]   # 給 AI 助理看的資料檔摘要
 tablade version
 ```
 
@@ -216,7 +236,10 @@ uv run tablade run examples/sales_detail.recipe.json
 src/tablade/
 ├─ app.py             pywebview 進入點；把 frontend/dist/index.html 讀成字串載入
 ├─ api.py             JS bridge：只做參數轉換與錯誤包裝
-├─ cli.py             命令列（gui / run / validate / schema / selftest / convert / version）
+├─ session.py         編輯中的 recipe：狀態、每一步的快取、undo / redo（UI 只跟它溝通）
+├─ skill.py           從 registry 產生 AI skill（SKILL.md、步驟目錄、schema、驗證器）
+├─ profile.py         給 AI 助理看的資料檔摘要
+├─ cli.py             命令列（gui / run / validate / schema / skill / profile / selftest / convert / version）
 ├─ selftest.py        用假資料檢測打包後的環境
 ├─ fixtures.py        決定性的假資料（測試、自我檢測、範例共用）
 ├─ recipe/            pydantic model、版本號、只用標準函式庫的驗證器、spec 與 schema lock
@@ -245,8 +268,8 @@ tablade.spec          PyInstaller 設定（以 TABLADE_BUILD 切換 onefile / on
 |---|---|---|
 | **M0 環境驗證** | 最小 pywebview + Polars 程式，onefile 與 onedir 打包 | 在權限受管控的 Windows 筆電上能開出視窗，並把 CSV 轉成 Parquet |
 | M1 引擎 | 有版本號的 recipe schema、步驟 registry、`text_lines` / `csv` 讀取、compiler、CLI（`run` / `validate` / `schema`）、前 8 種步驟 | `tablade run examples/sales_detail.recipe.json` 產出正確結果 ✅ |
-| M1.5 AI skill | 沙箱實測、`tablade profile`、skill 產生器、單一檔案驗證器 | Copilot 載入 skill 後能寫出通過驗證的 recipe |
-| M2 UI | 步驟清單（新增、排序、停用、刪除）、預覽表格、參數表單、匯入 recipe 與錯誤報告、下載 skill | 不寫 JSON 也能完成範例清洗流程 |
+| M1.5 AI skill | 沙箱實測、`tablade profile`、skill 產生器、單一檔案驗證器 | Copilot 載入 skill 後能寫出通過驗證的 recipe（已完成，等 Copilot 實測） |
+| M2 UI | 步驟清單（新增、排序、停用、刪除）、預覽表格、參數表單、匯入 recipe 與錯誤報告、下載 skill | 不寫 JSON 也能完成範例清洗流程 ✅ |
 | M3 在地格式與追溯 | `parse_number`、`parse_date`（民國）、`trim_clean`、manifest | 輸出附 manifest，警告附行號 |
 | M4 多檔與 Excel | glob、diagonal concat、Excel 讀取、`classify_rows`、`extract_regex` | 分段報表的範例可以完整攤平 |
 | M5 進階步驟 | join、group_by、unpivot、pivot、dedupe、匯出成 Python 腳本 | — |
@@ -255,7 +278,7 @@ tablade.spec          PyInstaller 設定（以 TABLADE_BUILD 切換 onefile / on
 
 ## ⚠️ 已知限制
 
-- **還沒有步驟 UI**（M2）：recipe 目前手寫、由 AI 助理撰寫，或用命令列執行。
+- **Copilot skill 還沒在 Agent Builder 實測**：skill 的 script 能不能讀到對話中上傳的檔案、沙箱的 Python 版本，要用 probe 確認。
 - **一個 recipe 只能有一個 input**；合併或附加多個 input 在 M5 加入。
 - **M1 會把檔案讀進記憶體、每一步 collect 一次**（換來便宜的列數與警告）。一般大小的檔案在 16 GB
   筆電上沒問題；之後改成 lazy 執行＋串流匯出，不必改步驟。

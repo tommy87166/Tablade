@@ -61,9 +61,14 @@ dist/
 node_modules/
 *.tsbuildinfo
 *.local
+# 前端開發用的假資料（scripts/gen_frontend_dev_data.py 產生）
+frontend/src/dev/
 
 # ── 編輯器與系統 ──────────────────────────────────────────────
 .DS_Store
 .idea/
 .vscode/
 *.swp
+
+# 本機的預覽設定
+.claude/launch.json

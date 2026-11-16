@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""產生前端開發用的假 API 資料（frontend/src/dev/sample.json，不進版控）。
+
+    uv run python scripts/gen_frontend_dev_data.py
+
+用假資料跑一次範例 recipe，把每一步的畫面狀態與前 200 列存起來。之後用一般瀏覽器跑
+``npm --prefix frontend run dev`` 時，``src/mock.ts`` 會用這份資料，畫面和真的一樣。
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+from tablade.api import Api
+from tablade.fixtures import write_all
+
+ROOT = Path(__file__).resolve().parents[1]
+TARGET = ROOT / "frontend" / "src" / "dev" / "sample.json"
+
+
+def main() -> int:
+    api = Api()
+    work = Path(tempfile.mkdtemp(prefix="tablade-dev-"))
+    try:
+        write_all(work / "data")
+        shutil.copy(
+            ROOT / "examples" / "sales_detail.recipe.json", work / "sales_detail.recipe.json"
+        )
+        api._session.load_recipe(work / "sales_detail.recipe.json")
+        ready = api.ready()
+        states, rows = {}, {}
+        for index in range(-1, len(api._session.steps)):
+            state = api.select_step(index)["state"]
+            state["recipe"]["path"] = "（開發用假資料）/sales_detail.recipe.json"
+            state["recipe"]["base_dir"] = None
+            states[str(index)] = state
+            rows[str(index)] = api.rows(index, 0, 200)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    TARGET.parent.mkdir(parents=True, exist_ok=True)
+    TARGET.write_text(
+        json.dumps({"ready": ready, "states": states, "rows": rows}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    print(f"已寫入 {TARGET.relative_to(ROOT)}（{TARGET.stat().st_size:,} bytes）")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

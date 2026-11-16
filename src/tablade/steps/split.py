@@ -16,7 +16,10 @@ from .base import (
     StepError,
     WarningCheck,
     data_columns,
+    guess_delimiter,
+    pick_column,
     quote_list,
+    sample_values,
 )
 from .registry import register
 
@@ -75,6 +78,19 @@ class SplitDelimited(Step):
             },
         ),
     )
+
+    @classmethod
+    def suggest(cls, frame, context):
+        column = pick_column(frame, context, prefer="line")
+        if column is None:
+            return {}
+        values = sample_values(frame, column)
+        delimiter = guess_delimiter(values)
+        return {
+            "column": column,
+            "delimiter": delimiter,
+            "columns": cls.suggest_columns(values, delimiter),
+        }
 
     @classmethod
     def suggest_columns(
@@ -167,6 +183,17 @@ class SplitColumn(Step):
             },
         ),
     )
+
+    @classmethod
+    def suggest(cls, frame, context):
+        column = pick_column(frame, context)
+        if column is None:
+            return {}
+        values = [v for v in sample_values(frame, column) if v]
+        delimiter = guess_delimiter(values, "|/;,-_ ", quote=None)
+        parts = max((v.count(delimiter) + 1 for v in values), default=2)
+        names = [f"{column}_{i}" for i in range(1, max(parts, 2) + 1)]
+        return {"column": column, "delimiter": delimiter, "names": names}
 
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
         if self.column not in data_columns(lf):

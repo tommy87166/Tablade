@@ -1,50 +1,63 @@
 /**
  * 開發用的假 API：用一般瀏覽器跑 `npm run dev` 時，沒有 pywebview 也能看畫面。
- * 只在 import.meta.env.DEV 時載入，不會進正式版。資料是虛構的門市銷售資料。
+ * 只在 import.meta.env.DEV 時載入，不會進正式版。
+ *
+ * 資料來自 `uv run python scripts/gen_frontend_dev_data.py` 產生的 src/dev/sample.json（不進版控）：
+ * 用假資料跑過範例 recipe 的真實畫面狀態。選取步驟會切換畫面；其他修改只回傳目前的狀態。
  */
-import type { Cell, TabladeApi } from './bridge'
+import type { Cell, ReadyInfo, RowsPage, TabladeApi, ViewState } from './bridge'
 
-const columns = ['日期', '門市', '品號', '品名', '備註', '金額']
-const stores = ['北區門市', '中區門市', '南區門市']
-const items: [string, string, number][] = [
-  ['A001', '原子筆', 25],
-  ['B020', '折疊傘', 320],
-  ['C100', '無線耳機', 1290],
-]
-
-const preview: Cell[][] = Array.from({ length: 40 }, (_, i) => {
-  const [code, name, price] = items[i % items.length]
-  const qty = i % 7 === 0 ? -2 : (i % 5) + 1
-  const amount = price * qty
-  return [
-    `115/01/${String((i % 28) + 1).padStart(2, '0')}`,
-    stores[i % stores.length],
-    code,
-    name,
-    i % 9 === 0 ? null : `網路|信用卡|單號 ${String(i + 1).padStart(4, '0')}`,
-    amount < 0 ? `(${(-amount).toLocaleString()})` : amount.toLocaleString(),
-  ]
-})
-
-const delay = <T,>(value: T, ms = 300) => new Promise<T>((r) => setTimeout(() => r(value), ms))
-
-export const mockApi: TabladeApi = {
-  ready: () => delay({ ok: true, version: '0.1.0', polars: '2.1.0', platform: 'Browser（假資料）', smoke: false }, 0),
-  selftest: () =>
-    delay({
-      ok: true,
-      result: {
-        ok: true,
-        checks: [
-          { name: '產生假資料 CSV', ok: true, detail: '12,205 bytes（cp950）' },
-          { name: '讀取 CSV（自動偵測編碼）', ok: true, detail: '200 列 × 6 欄，編碼 cp950' },
-          { name: '寫出 Parquet', ok: true, detail: '4,342 bytes' },
-        ],
-        versions: { tablade: '0.1.0', polars: '2.1.0' },
-      },
-    }),
-  smoke_done: () => delay({ ok: true }, 0),
-  open_csv: () =>
-    delay({ ok: true, cancelled: false, file: '明細_01.csv', encoding: 'cp950', bytes: 3081, rows: 200, columns, preview }),
-  export_parquet: () => delay({ ok: true, cancelled: false, file: '明細_01.parquet', rows: 200, bytes: 4342 }),
+interface Sample {
+  ready: { ok: true } & ReadyInfo
+  states: Record<string, ViewState>
+  rows: Record<string, { ok: true } & RowsPage>
 }
+
+const files = import.meta.glob<Sample>('./dev/sample.json', { eager: true, import: 'default' })
+const sample = Object.values(files)[0]
+
+const missing = '找不到 src/dev/sample.json：請先執行 uv run python scripts/gen_frontend_dev_data.py'
+let selected = sample ? sample.states[String(Math.max(...Object.keys(sample.states).map(Number)))].selected : -1
+
+const delay = <T,>(value: T, ms = 120) => new Promise<T>((r) => setTimeout(() => r(value), ms))
+const current = () => sample.states[String(selected)]
+const withState = <T extends object>(extra?: T) => delay({ ok: true as const, state: current(), ...(extra ?? ({} as T)) })
+const fail = () => delay({ ok: false as const, error: missing })
+
+export const mockApi: TabladeApi = sample
+  ? {
+      ready: () => delay({ ...sample.ready, platform: 'Browser（開發用假資料）' }, 0),
+      selftest: () =>
+        delay({ ok: true, result: { ok: true, checks: [{ name: '假的自我檢測', ok: true, detail: '開發模式' }], versions: { mode: 'dev' } } }),
+      smoke_done: () => delay({ ok: true }),
+      smoke_example: () => withState({ issues: [] }),
+      state: () => withState(),
+      rows: (step, offset, limit) => {
+        const page = sample.rows[String(step)]
+        return delay({ ...page, offset, rows: page.rows.slice(offset, offset + limit) as Cell[][] })
+      },
+      find_row: () => delay({ ok: true, row: 0 }),
+      new_recipe: () => withState(),
+      open_recipe: () => withState({ cancelled: true }),
+      save_recipe: () => withState({ cancelled: true }),
+      save_recipe_as: () => withState({ cancelled: true }),
+      open_data: () => withState({ cancelled: true }),
+      set_input: () => withState(),
+      set_output: () => withState(),
+      set_meta: () => withState(),
+      add_step: () => withState({ index: selected }),
+      update_step: () => withState(),
+      move_step: () => withState(),
+      toggle_step: () => withState(),
+      delete_step: () => withState(),
+      select_step: (index) => {
+        if (String(index) in sample.states) selected = index
+        return withState()
+      },
+      undo: () => withState(),
+      redo: () => withState(),
+      export_parquet: () => delay({ ok: true, cancelled: true }),
+      error_report: () => delay({ ok: true, text: 'Tablade 驗證結果（開發用假資料）\n\n沒有發現問題。' }),
+      download_skill: () => delay({ ok: true, cancelled: true }),
+    }
+  : (new Proxy({}, { get: (_, name) => (name === 'ready' ? fail : fail) }) as TabladeApi)

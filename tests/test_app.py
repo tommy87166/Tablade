@@ -4,14 +4,40 @@ import os
 import re
 from pathlib import Path
 
-import polars as pl
 import pytest
 
 from tablade import app
-from tablade.api import Api, _preview
+from tablade.api import Api
 
 FRONTEND = Path(__file__).resolve().parents[1] / "frontend"
-API_METHODS = {"ready", "selftest", "smoke_done", "open_csv", "export_parquet"}
+API_METHODS = {
+    "ready",
+    "selftest",
+    "smoke_done",
+    "smoke_example",
+    "state",
+    "rows",
+    "find_row",
+    "new_recipe",
+    "open_recipe",
+    "save_recipe",
+    "save_recipe_as",
+    "open_data",
+    "set_input",
+    "set_output",
+    "set_meta",
+    "add_step",
+    "update_step",
+    "move_step",
+    "toggle_step",
+    "delete_step",
+    "select_step",
+    "undo",
+    "redo",
+    "export_parquet",
+    "error_report",
+    "download_skill",
+}
 
 
 @pytest.fixture(scope="module")
@@ -86,24 +112,43 @@ def test_dev_url_only_accepts_localhost(monkeypatch):
 
 
 def test_bridge_wraps_errors():
-    api = Api()
-    res = api.export_parquet()
-    assert res == {"ok": False, "error": "RuntimeError: 請先開啟 CSV"}
+    res = Api().update_step(5, {})
+    assert res == {"ok": False, "error": "SessionError: 沒有第 5 步"}
 
 
-def test_ready_reports_versions():
+def test_ready_reports_versions_and_catalog():
     res = Api(smoke=True).ready()
     assert res["ok"] and res["smoke"] is True
-    assert res["polars"].startswith("2.")
+    assert res["polars"].startswith("2.") and res["recipe_version"] == "1.0"
+    assert next(c["type"] for c in res["catalog"]) == "remove_top_rows"
 
 
-def test_preview_shape():
-    frame = pl.DataFrame({"a": [str(i) for i in range(150)], "b": [None] * 150})
-    p = _preview(frame)
-    assert p["rows"] == 150
-    assert p["columns"] == ["a", "b"]
-    assert len(p["preview"]) == 100
-    assert p["preview"][0] == ["0", None]
+def test_smoke_example_runs_the_whole_flow_through_the_bridge():
+    assert Api().smoke_example()["ok"] is False  # 只有 --smoke 模式可以用
+    api = Api(smoke=True)
+    res = api.smoke_example()
+    assert res["ok"] and res["issues"] == []
+    steps = res["state"]["steps"]
+    assert [s["status"] for s in steps] == ["ok"] * 8 and steps[-1]["rows"] == 70
+    page = api.rows(7, 0, 3)
+    assert page["ok"] and page["total"] == 70 and len(page["rows"]) == 3
+    res = api.select_step(-1)
+    assert res["state"]["preview"]["rows"] == 94
+    res = api.undo()  # select 不算修改
+    assert res["state"]["can_undo"] is False
+    report = api.error_report()
+    assert "沒有發現問題" in report["text"]
+    api._smoke_dir and __import__("shutil").rmtree(api._smoke_dir, ignore_errors=True)
+
+
+def test_mutations_return_new_state():
+    api = Api()
+    res = api.add_step("remove_top_rows", {})
+    assert res["ok"] and res["index"] == 0 and len(res["state"]["steps"]) == 1
+    res = api.update_step(0, {"n": 3})
+    assert res["state"]["steps"][0]["params"]["n"] == 3
+    assert api.undo()["state"]["steps"][0]["params"]["n"] == 1
+    assert api.delete_step(0)["state"]["steps"] == []
 
 
 def test_bridge_does_not_expose_private_state():

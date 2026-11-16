@@ -104,6 +104,23 @@ def selftest(mode: str) -> bool:
     return proc.returncode == 0
 
 
+def skill_check(mode: str) -> bool:
+    """打包後的 App 也要能產生 AI skill（需要的原始碼與範例都有打包進去）。"""
+    import zipfile
+
+    exe = executable(mode)
+    out = DIST / f"skill-check-{mode}.zip"
+    out.unlink(missing_ok=True)
+    print(f"== 產生 AI skill {exe.relative_to(ROOT)}", flush=True)
+    proc = subprocess.run([str(exe), "skill", "--out", str(out)], timeout=120)
+    if proc.returncode != 0 or not out.is_file():
+        return False
+    with zipfile.ZipFile(out) as zf:
+        names = set(zf.namelist())
+    out.unlink()
+    return {"SKILL.md", "scripts/validate_recipe.py", "references/steps.md"} <= names
+
+
 def gui_smoke(mode: str) -> bool:
     exe = executable(mode)
     print(f"== 視窗 smoke test {exe.relative_to(ROOT)}", flush=True)
@@ -165,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
     for mode in args.modes:
         if not args.skip_build:
             build(mode)
-        if not selftest(mode):
+        if not selftest(mode) or not skill_check(mode):
             failed.append(mode)
             continue
         if args.gui_smoke and not gui_smoke(mode):
