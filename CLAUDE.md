@@ -33,7 +33,10 @@ uv run ruff check . && uv run ruff format --check .
 uv run tablade                  # 開視窗
 uv run tablade gui --smoke      # 開視窗、確認 JS bridge 正常後自動關閉
 uv run python scripts/build.py --gui-smoke   # 打包 onefile + onedir、自我檢測、壓縮到 dist/release/
+uv run --group icons python scripts/make_icons.py   # 改 assets/icon.svg 後重新產生圖示
 ```
+
+- README 有英文（README.md）與繁體中文（README.zh-TW.md）兩份，內容要同步修改。
 
 - 前端的 Content-Security-Policy 必須保留 `default-src 'none'`（擋掉所有對外連線）。`'unsafe-eval'` 是 pywebview 的 JS bridge 需要的，不要拿掉。
 - 前端寫入資料一律用 `textContent`，不用 `innerHTML`（這個頁面可以呼叫 Python）。

@@ -284,7 +284,7 @@
 
 ```
 tablade/
-├── README.md
+├── README.md                # 英文；README.zh-TW.md 為繁體中文
 ├── DESIGN.md                  # 本文件
 ├── CLAUDE.md                  # 給 AI coding 的規則（見 §14）
 ├── LICENSE                    # MIT
@@ -325,13 +325,16 @@ tablade/
 │   ├── index.html
 │   ├── app.js
 │   └── style.css
+├── assets/
+│   └── icon.svg               # 圖示原始檔（表格＋菜刀）；icon.ico / icon.icns / icon.png 由 make_icons.py 產生
 ├── examples/
 │   └── sales_report.recipe.json  # 搭配 gen_fixtures 產生的假資料
 ├── scripts/
 │   ├── gen_fixtures.py
 │   ├── check_no_data.py
 │   ├── check_code_policy.py
-│   └── build.py               # 打包 + 自我檢測 + 壓縮（本機與 CI 共用）
+│   ├── build.py               # 打包 + 自我檢測 + 壓縮（本機與 CI 共用）
+│   └── make_icons.py          # assets/icon.svg → ico / icns / png
 ├── tests/
 │   ├── test_ingest.py
 │   ├── test_steps_*.py

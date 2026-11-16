@@ -13,6 +13,8 @@ def test_load_html_inlines_assets():
     assert "pywebviewready" in html
     assert "--accent" in html
     assert "Content-Security-Policy" in html
+    assert 'src="../assets/icon.svg"' not in html
+    assert '<svg class="logo"' in html
 
 
 def test_csp_blocks_all_network_access():

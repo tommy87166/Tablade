@@ -13,17 +13,21 @@ from pathlib import Path
 from .api import Api
 
 SMOKE_TIMEOUT_SECONDS = 60
+_LOGO_TAG = '<img class="logo" src="../assets/icon.svg" alt="">'
 _INLINE = (
     ('<link rel="stylesheet" href="style.css">', "style.css", "style"),
     ('<script src="app.js"></script>', "app.js", "script"),
 )
 
 
-def frontend_dir() -> Path:
+def resource_dir() -> Path:
+    """打包後是 PyInstaller 的解壓目錄，開發時是 repo 根目錄。"""
     bundle = getattr(sys, "_MEIPASS", None)
-    if bundle:
-        return Path(bundle) / "frontend"
-    return Path(__file__).resolve().parents[2] / "frontend"
+    return Path(bundle) if bundle else Path(__file__).resolve().parents[2]
+
+
+def frontend_dir() -> Path:
+    return resource_dir() / "frontend"
 
 
 def load_html() -> str:
@@ -34,7 +38,11 @@ def load_html() -> str:
             raise RuntimeError(f"index.html 找不到 {tag}")
         content = (base / filename).read_text(encoding="utf-8")
         html = html.replace(tag, f"<{element}>\n{content}\n</{element}>")
-    return html
+    if _LOGO_TAG not in html:
+        raise RuntimeError(f"index.html 找不到 {_LOGO_TAG}")
+    logo = (resource_dir() / "assets" / "icon.svg").read_text(encoding="utf-8")
+    logo = logo.replace("<svg ", '<svg class="logo" aria-hidden="true" ', 1)
+    return html.replace(_LOGO_TAG, logo)
 
 
 def run(smoke: bool = False) -> int:

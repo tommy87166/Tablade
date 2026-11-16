@@ -15,11 +15,12 @@ MODE = os.environ.get("TABLADE_BUILD", "onefile")
 if MODE not in ("onefile", "onedir"):
     raise SystemExit(f"TABLADE_BUILD 必須是 onefile 或 onedir，收到 {MODE!r}")
 IS_MAC = sys.platform == "darwin"
+ICON = "assets/icon.icns" if IS_MAC else "assets/icon.ico"
 
 a = Analysis(
     ["src/tablade/__main__.py"],
     pathex=["src"],
-    datas=[("frontend", "frontend")],
+    datas=[("frontend", "frontend"), ("assets/icon.svg", "assets")],
     hiddenimports=[],
     excludes=["tkinter", "unittest", "pydoc", "pytest"],
     noarchive=False,
@@ -34,6 +35,7 @@ if MODE == "onefile":
         a.datas,
         [],
         name="tablade",
+        icon=ICON,
         console=IS_MAC,
         upx=False,
         runtime_tmpdir=None,
@@ -45,6 +47,7 @@ else:
         [],
         exclude_binaries=True,
         name="tablade",
+        icon=ICON,
         console=False,
         upx=False,
     )
@@ -53,6 +56,7 @@ else:
         app = BUNDLE(
             coll,
             name="Tablade.app",
+            icon=ICON,
             info_plist={
                 "CFBundleName": "Tablade",
                 "CFBundleDisplayName": "Tablade",
