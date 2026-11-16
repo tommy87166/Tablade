@@ -9,16 +9,13 @@ from pydantic import Field
 
 from .base import (
     ROW_INDEX,
-    SOURCE_FILE,
     Example,
     NewColumns,
     Step,
     StepError,
     WarningCheck,
-    by_file,
     collect_small,
     data_columns,
-    file_positions,
     quote_list,
 )
 from .registry import register
@@ -76,24 +73,22 @@ class PromoteHeaders(Step):
         if len(columns) != len(self.names):
             raise StepError(f"目前有 {len(columns)} 個資料欄，但 names 有 {len(self.names)} 個")
         order = self.output_order(lf)
-        indexed, position, _ = file_positions(lf)
-        # 每個檔案的第一列（很小的查詢），和 recipe 記錄的欄名不同的檔案要警告
-        first = collect_small(indexed.filter(position == 0).select(SOURCE_FILE, *columns))
-        expected = list(self.names)
-        differs = [
-            row[0]
-            for row in first.iter_rows()
-            if [("" if v is None else str(v).strip()) for v in row[1:]] != expected
-        ]
         flag = self.temp("mismatch")
-        mismatch = (position == 1) & by_file(dict.fromkeys(differs, True), pl.Boolean, False)
-        out = (
-            indexed.with_columns(mismatch.alias(flag))
-            .filter(position > 0)
-            .drop(ROW_INDEX)
-            .rename(dict(zip(columns, self.names, strict=True)))
-        )
-        return out.select([*order, flag])
+        # 這個檔的第一列（只讀開頭）和 recipe 記錄的欄名不同時，在下一列標記警告
+        first = collect_small(lf.select(columns).head(1))
+        differs = first.height > 0 and [
+            "" if v is None else str(v).strip() for v in first.row(0)
+        ] != list(self.names)
+        if differs:
+            out = (
+                lf.with_row_index(ROW_INDEX)
+                .with_columns((pl.col(ROW_INDEX) == 1).alias(flag))
+                .filter(pl.col(ROW_INDEX) > 0)
+                .drop(ROW_INDEX)
+            )
+        else:
+            out = lf.slice(1).with_columns(pl.lit(False).alias(flag))
+        return out.rename(dict(zip(columns, self.names, strict=True))).select([*order, flag])
 
     def warning_checks(self) -> list[WarningCheck]:
         return [

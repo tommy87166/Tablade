@@ -168,6 +168,39 @@ def write_report(
     return target
 
 
+def write_many(
+    directory: str | Path, count: int, rows: int = 20, seed: int = 0, encoding: str = "utf-8"
+) -> list[Path]:
+    """很多個同格式的凌亂匯出檔（明細_0001.csv …），測試多檔案用。"""
+    out = Path(directory)
+    width = max(4, len(str(count)))
+    return [
+        write_messy_export(
+            out / f"明細_{i + 1:0{width}d}.csv", n=rows, seed=seed + i, encoding=encoding
+        )
+        for i in range(count)
+    ]
+
+
+def write_big_messy_export(
+    path: str | Path, size: int, seed: int = 0, encoding: str = "utf-8"
+) -> Path:
+    """約 ``size`` bytes 的凌亂匯出檔（同一段明細重複寫入，分塊寫出，不佔記憶體），實測大檔用。"""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lines, _ = messy_export(5_000, seed)
+    head, body, tail = lines[:3], lines[3:-1], lines[-1:]
+    block = ("\r\n".join(body) + "\r\n").encode(encoding)
+    with target.open("wb") as f:
+        f.write(("\r\n".join(head) + "\r\n").encode(encoding))
+        written = 0
+        while written < size:
+            f.write(block)
+            written += len(block)
+        f.write(("\r\n".join(tail) + "\r\n").encode(encoding))
+    return target
+
+
 def write_all(directory: str | Path, seed: int = 0) -> list[Path]:
     """產生所有範例假資料到指定資料夾（examples/sales_detail.recipe.json 讀的是 明細_*.csv）。"""
     out = Path(directory)

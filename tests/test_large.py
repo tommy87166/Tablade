@@ -15,7 +15,7 @@ from tablade.engine.run import execute
 from tablade.fixtures import messy_export, write_all
 from tablade.ingest import sources
 from tablade.ingest.encoding import DecodeError
-from tablade.ingest.sources import prepare, sample, scan
+from tablade.ingest.sources import prepare, sample, scan, scan_parts
 from tablade.recipe.schema import load_json, parse_recipe
 from tablade.session import Session
 
@@ -92,8 +92,8 @@ def test_prepare_is_cached(tmp_path):
 def test_sample_takes_head_and_tail_of_each_file(tmp_path):
     for name in ("a.txt", "b.txt"):
         (tmp_path / name).write_text("\n".join(f"{name}{i}" for i in range(1, 11)) + "\n")
-    lf, files = scan("*.txt", "text_lines", "auto", tmp_path)
-    got = sample(lf, files, "text_lines", head=2, tail=1)
+    parts, files = scan_parts("*.txt", "text_lines", "auto", tmp_path)
+    got = sample(parts, files, "text_lines", head=2, tail=1)
     assert got["line"].to_list() == ["a.txt1", "a.txt2", "a.txt10", "b.txt1", "b.txt2", "b.txt10"]
 
 

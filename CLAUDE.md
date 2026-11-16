@@ -22,9 +22,9 @@ Tablade：本機執行、Power Query 式的資料清洗工具（Python + Polars 
 - `src/tablade/recipe/validator.py` 只能用 Python 標準函式庫、不能 import tablade（它會原封不動放進 AI skill），有測試檢查。
 - 步驟 `apply()` 必須是純函式：不讀寫檔案、不 print、不碰 UI。
 - **串流規則**（DESIGN.md §8；幾 GB 的檔案要在固定記憶體內跑完）：
-  - 讀檔時已依 `__source_file, __line_no` 排好，步驟**不要 sort**。
+  - **各檔分開處理**：引擎讓每個來源檔各自跑步驟，到「合併來源檔」或寫出前才接起來。`per_file = True` 的步驟 `apply()` 一次只會收到一個來源檔（或合併後的那一份），需要整檔資訊（例如列數）時用 `collect_small()` 做一次小聚合；要看整份資料的步驟（group_by、去重、排序、join）要做成 `combines = True` 的合併型步驟。
+  - 每個來源檔已依 `__line_no` 排好，步驟**不要 sort**。
   - 不用 window 函式（`.over()`）、`replace_strict`、`map_batches` 呼叫 Python：串流引擎不支援，會把整份資料放進記憶體。
-  - 每個來源檔的資訊用 `file_positions()` / `collect_small()` 先做一次小聚合，再用 `by_file()` 套回每一列。
   - 改了步驟後，用 `tests/test_large.py` 的 stream ＝ eager 測試確認結果一致；大改時用幾 GB 的假資料量一次記憶體。
 - 不使用 `eval` / `exec`；不加入任何網路連線程式碼（`scripts/check_code_policy.py` 會檢查 `src/`）。
 - 依賴版本固定在 `pyproject.toml` 與 `uv.lock`，不要擅自升級。

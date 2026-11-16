@@ -5,7 +5,8 @@
 - UTF-8 檔直接交給 Polars 的 ``scan_lines`` / ``scan_csv``（lazy、可串流）。
 - 其他編碼（cp950 等）或有單獨 ``\\r`` 換行的檔案，先分塊轉成 UTF-8 暫存檔再掃描。
   暫存檔放在暫存資料夾，依「路徑＋大小＋修改時間＋編碼」快取，程式結束時刪除。
-- 回傳的 LazyFrame 依來源檔（路徑排序）與行號排好；之後的步驟依賴這個順序，不再排序。
+- 每個來源檔各自一個 LazyFrame（``scan_parts``，依路徑排序、行號排好），欄位對齊成同一組；
+  引擎讓每個檔各自跑步驟，到「合併來源檔」或寫出前才接起來（DESIGN.md §8）。
 """
 
 from __future__ import annotations
@@ -32,10 +33,16 @@ SOURCE_FILE, LINE_NO = "__source_file", "__line_no"
 ORDER = (SOURCE_FILE, LINE_NO)
 CHUNK = 16 << 20
 Progress = Callable[[dict[str, Any]], None] | None
+Part = tuple[str, pl.LazyFrame]
+"""一個來源檔（或合併後的一份資料）：（名稱, LazyFrame）。"""
 
 
 class InputError(ValueError):
     pass
+
+
+class PartsMismatch(ValueError):
+    """要接起來的 parts 欄位不一樣。"""
 
 
 @dataclass(frozen=True)
@@ -89,7 +96,15 @@ def resolve(pattern: str, base_dir: Path) -> list[Path]:
     matches = sorted(Path(p) for p in glob.glob(full, recursive=True) if Path(p).is_file())
     if not matches:
         raise InputError(f"找不到符合「{pattern}」的檔案（相對於 {base_dir}）")
-    return matches
+    # 符號連結可能讓同一個檔出現兩次；每個實際的檔只留一次
+    seen: set[Path] = set()
+    unique = []
+    for path in matches:
+        real = path.resolve()
+        if real not in seen:
+            seen.add(real)
+            unique.append(path)
+    return unique
 
 
 def display_name(path: Path, base_dir: Path) -> str:
@@ -283,18 +298,71 @@ def _scan_one(prepared: Prepared, reader: str, name: str) -> tuple[pl.LazyFrame,
     raise InputError(f"不支援的讀取方式：{reader}")
 
 
-def scan(
+def _align(parts: list[Part]) -> list[Part]:
+    """csv 各檔欄位可能不同：補成同一組欄位（依第一次出現的順序），缺的欄是 null。"""
+    names = [lf.collect_schema().names() for _, lf in parts]
+    columns: list[str] = []
+    for found in names:
+        columns += [c for c in found if c not in ORDER and c not in columns]
+    if all(found == [*ORDER, *columns] for found in names):
+        return parts
+    return [
+        (
+            name,
+            lf.select(
+                pl.col(SOURCE_FILE),
+                pl.col(LINE_NO),
+                *[
+                    pl.col(c) if c in found else pl.lit(None, dtype=pl.String).alias(c)
+                    for c in columns
+                ],
+            ),
+        )
+        for (name, lf), found in zip(parts, names, strict=True)
+    ]
+
+
+def scan_parts(
     pattern: str, reader: str, encoding: str, base_dir: Path, progress: Progress = None
-) -> tuple[pl.LazyFrame, list[SourceFile]]:
-    frames, files = [], []
+) -> tuple[list[Part], list[SourceFile]]:
+    """每個來源檔一個 LazyFrame（依路徑排序），欄位對齊成同一組。"""
+    parts, files = [], []
     for path in resolve(pattern, base_dir):
         name = display_name(path, base_dir)
         prepared = prepare(path, encoding, progress)
         lf, rows = _scan_one(prepared, reader, name)
-        frames.append(lf)
+        parts.append((name, lf))
         files.append(SourceFile(name, prepared.bytes, prepared.sha256, prepared.encoding, rows))
-    combined = pl.concat(frames, how="diagonal_relaxed") if len(frames) > 1 else frames[0]
-    return combined, files
+    return _align(parts), files
+
+
+def _schema_text(schema: pl.Schema) -> str:
+    return "、".join(f"{name}（{dtype}）" for name, dtype in schema.items())
+
+
+def concat(parts: list[Part]) -> pl.LazyFrame:
+    """把 parts 依序接成一個 LazyFrame。欄位不一樣時丟出 ``PartsMismatch``（不要等到執行到一半才失敗）。"""
+    frames = [lf for _, lf in parts]
+    if len(frames) == 1:
+        return frames[0]
+    first_name, first = parts[0]
+    expected = first.collect_schema()
+    for name, lf in parts[1:]:
+        schema = lf.collect_schema()
+        if schema != expected:
+            raise PartsMismatch(
+                f"來源檔「{name}」的欄位（{_schema_text(schema)}）"
+                f"和「{first_name}」（{_schema_text(expected)}）不同"
+            )
+    return pl.concat(frames, how="vertical")
+
+
+def scan(
+    pattern: str, reader: str, encoding: str, base_dir: Path, progress: Progress = None
+) -> tuple[pl.LazyFrame, list[SourceFile]]:
+    """所有來源檔接成一個 LazyFrame（測試與小工具用；引擎用 ``scan_parts``）。"""
+    parts, files = scan_parts(pattern, reader, encoding, base_dir, progress)
+    return concat(parts), files
 
 
 def load(
@@ -306,18 +374,18 @@ def load(
 
 
 def sample(
-    lf: pl.LazyFrame, files: list[SourceFile], reader: str, head: int, tail: int
+    parts: list[Part], files: list[SourceFile], reader: str, head: int, tail: int
 ) -> pl.DataFrame:
-    """每個來源檔的前 ``head`` 行與最後 ``tail`` 行（預覽大檔用；一次串流掃描）。"""
+    """每個來源檔的前 ``head`` 行與最後 ``tail`` 行（預覽大檔用；每個檔串流掃描一次）。"""
     first = 2 if reader == "csv" else 1
-    keep = pl.lit(False)
-    for f in files:
-        last = first + f.rows - 1
-        in_file = pl.col(SOURCE_FILE) == f.path
-        keep = keep | (
-            in_file & ((pl.col(LINE_NO) < first + head) | (pl.col(LINE_NO) > last - tail))
+    rows = {f.path: f.rows for f in files}
+    kept = []
+    for name, lf in parts:
+        last = first + rows.get(name, 0) - 1
+        kept.append(
+            (name, lf.filter((pl.col(LINE_NO) < first + head) | (pl.col(LINE_NO) > last - tail)))
         )
-    return lf.filter(keep).collect(engine="streaming")
+    return concat(kept).collect(engine="streaming")
 
 
 def peek_columns(pattern: str, reader: str, encoding: str, base_dir: Path) -> list[str] | None:

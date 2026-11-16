@@ -116,8 +116,8 @@
 ### 5.3 多檔
 
 - `inputs[].pattern` 支援 glob（例如 `明細_*.csv`）。
-- 多檔用 `pl.concat(how="diagonal_relaxed")` 合併：欄位不一致時自動補 null。
-- 每一列都帶 `__source_file`。
+- 每個來源檔各自掃描成一個 LazyFrame（`scan_parts()`），欄位對齊成同一組：欄位不一致時缺的欄補 null（效果同 `diagonal_relaxed`）。
+- 每一列都帶 `__source_file`。各檔分開跑步驟，到「合併來源檔」或寫出前才依檔名順序接起來（§8）。
 
 ---
 
@@ -168,15 +168,15 @@ M1 已完成：`remove_top_rows`、`remove_bottom_rows`、`remove_blank_rows`、
 
 | 類型 | 說明 | Polars 實作方向 |
 |---|---|---|
-| `remove_top_rows` | 移除前 N 列 | 依 `__line_no` 篩選 |
-| `remove_bottom_rows` | 移除最後 N 列 | 依 `__line_no` 篩選（每個來源檔各自計算） |
+| `remove_top_rows` | 移除前 N 列 | 每個來源檔各自 `slice(n)` |
+| `remove_bottom_rows` | 移除最後 N 列 | 每個來源檔先數列數，再 `head(列數 − n)` |
 | `remove_blank_rows` | 移除空白列 | 依全部欄位都是 null 或空字串篩選 |
-| `promote_headers` | 指定某一列當欄名 | 建立步驟時讀取該列內容，寫死在 recipe |
+| `promote_headers` | 指定某一列當欄名 | 建立步驟時讀取該列內容，寫死在 recipe；執行時每個來源檔只讀開頭一列比對欄名 |
 | `split_delimited` | 把 `line` 依分隔符號拆成多欄（處理引號） | 用 Python `csv` 解析，或 `str.split` 加上引號處理 |
 | `split_column` | 某一欄依分隔符號再拆 | `str.split_exact(sep, n)` 後 `unnest` |
-| `fill_down` | 向下填滿 | 先依 `__line_no` 排序，再 `fill_null(strategy="forward")` |
+| `fill_down` | 向下填滿 | 每個來源檔各自 `forward_fill()`（各檔分開跑，不會填到別的檔） |
 | `filter` | 條件篩選（等於、包含、開頭是、正規表示式、空值、數值比較） | `filter(expr)`，條件用結構化參數組成，不接受任意字串運算式 |
-| `merge_files` | 依指定順序把所有來源檔接成一份；`__source_file` 改成同一個名稱、`__line_no` 從 1 重編，之後「前 N 列」等步驟改對整份計算 | 順序不變時只改系統欄位；要改順序時依檔案 `filter` 再 `concat`（串流執行，不排序） |
+| `merge_files` | 依指定順序把所有來源檔接成一份；`__source_file` 改成同一個名稱、`__line_no` 從 1 重編，之後「前 N 列」等步驟改對整份計算 | 合併型步驟（`combine()`）：照指定順序把各檔的流水線 `concat` 起來，每個檔只讀一次 |
 | `select_columns` | 保留、刪除、重新排序欄位 | `select` |
 | `rename_columns` | 重新命名欄位 | `rename` |
 | `trim_clean` | 修剪空白、全形轉半形（NFKC）、移除不可見字元 | `str.strip_chars`、`map_batches` 加 `unicodedata` |
@@ -211,11 +211,12 @@ M1 已完成：`remove_top_rows`、`remove_bottom_rows`、`remove_blank_rows`、
 - **預覽**：輸入不超過 `SAMPLE_THRESHOLD`（20 萬行）時整份讀進記憶體，每一步的列數是精確值；超過時只用**每個來源檔的前 10 萬行與最後 1,000 行**當樣本（一次串流掃描取得），步驟的列數標示為樣本的。結尾的頁尾、合計也在樣本裡，「移除後 N 列」的預覽仍然正確。
 - **快取**：以「輸入檔指紋＋前 k 步的 recipe 雜湊」當 key，快取每一步的預覽結果。修改第 k 步時，只需重算第 k 步之後的步驟。
 - **列順序**：讀檔時就依 `__source_file, __line_no` 排好，filter / with_columns 會保持順序，所以**步驟不排序**（排序在串流下會把整份資料放進記憶體）。Polars 2.x 的串流引擎在 join / group_by / unpivot 之後不保證順序，M5 加入這些步驟時要在步驟內恢復順序。
-- **串流規則**（新增步驟時必須遵守）：不用 window 函式（`.over()`）與 `replace_strict`，串流引擎不支援，會退回整份放進記憶體。每個來源檔的資訊（起點、列數、第一列、第一個有值的列）用 `file_positions()` / `collect_small()` 先做一次小聚合，再用 `by_file()`（when 對照表）套回每一列。`split_delimited` 用 Polars 原生正規表示式拆欄，不呼叫 Python。
+- **各檔分開處理**：資料在引擎裡是一串 part（每個來源檔一個 LazyFrame），每個檔各自一條流水線，到「合併來源檔」（`combines = True` 的步驟，`combine(parts)`）或寫出前才依序接起來。`per_file = True` 的步驟 `apply()` 一次只收到一個 part，不需要把每個檔的資訊套回每一列；需要整檔資訊（列數、第一列）時對這個 part 用 `collect_small()`。預覽（資料在記憶體裡）依 `__source_file` 把資料切成 parts，一列一列的步驟直接套在整張表上。以後要看整份資料的步驟（group_by、去重、排序、join）要做成合併型步驟。
+- **串流規則**（新增步驟時必須遵守）：不用 window 函式（`.over()`）與 `replace_strict`，串流引擎不支援，會退回整份放進記憶體。`split_delimited` 用 Polars 原生正規表示式拆欄，不呼叫 Python。
 - **完整執行**（`engine/run.py`）：小資料整份讀進記憶體、每步 `collect()`（`eager`）；大資料整條 lazy 查詢用串流引擎寫成暫存 Parquet，再寫出最後結果（`stream`）。試跑（`validate --run`、錯誤報告）在大資料時用樣本（`sample`）。
   - 警告：步驟用 `warning_checks()` 宣告「輸出上哪些列要警告」，可以引用自己留下的 `__w_<步驟id>_*` 暫存欄位。eager / sample 模式每一步收集一次；stream 模式暫存欄位一路保留到最後才收集，所以**只算最後還留著的列**。
   - stream 模式不提供每一步的列數（要多跑好幾遍資料）；每一步的列數看預覽或試跑。
-  - 實測（macOS arm64）：5 GB UTF-8 文字檔（8,560 萬行）開啟並產生預覽 20 秒、峰值記憶體 1.9 GB；串流匯出 62 秒、峰值 2.5 GB。2 GB cp950 檔轉碼約 22 秒（Python codec 約 100 MB/秒），峰值記憶體不隨檔案大小成長。改寫前 1 GB 檔就要 10 GB 記憶體。
+  - 實測（macOS arm64）：5 GB UTF-8 文字檔（8,560 萬行）開啟並產生預覽 20 秒、峰值記憶體 1.9 GB；串流匯出 62 秒、峰值 2.5 GB（各檔分開處理之前測的）。各檔分開處理後（範例 Recipe、串流執行）：2 個 1.5 GB 的檔 29 秒、峰值 2.4 GB（之前 51 秒、3.2 GB）；200 個 10 MB 的檔 23 秒（之前 57 秒）；1000 個 100 KB 的檔 15 秒（之前 106 秒）；19 個 10 MB 的檔合併並改順序 2 秒（之前 31 秒）。很多個檔時峰值記憶體略高（200 個檔 1.3 GB，之前 1.1 GB），約 100 個檔以上就持平。2 GB cp950 檔轉碼約 22 秒（Python codec 約 100 MB/秒），峰值記憶體不隨檔案大小成長。改寫前 1 GB 檔就要 10 GB 記憶體。
 - **錯誤與警告**：轉型失敗、段數超出預期、新出現的欄位等等，集中顯示在 UI 的警告區，每一則都附上來源檔名和行號。
 
 ---

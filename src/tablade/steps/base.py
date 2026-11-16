@@ -8,12 +8,19 @@
 - ``effect``：欄位效果樣板，``$參數名`` 會換成參數值；Tablade 與驗證器都用它推算欄位
 - ``examples``：輸入、參數、預期輸出；同時是單元測試，也會寫進 AI skill 的步驟目錄
 
-**串流規則**（幾 GB 的檔案也要在固定記憶體內跑完，DESIGN.md §8）：
-- 資料讀進來時已經依 ``__source_file, __line_no`` 排好，filter / with_columns 都會保持順序，
+**各檔分開處理**（DESIGN.md §8）：引擎把資料當成一串 part（``Part``＝（名稱, LazyFrame）），
+每個 part 是同一個 ``__source_file`` 的一段連續資料，名稱不重複。
+- ``per_file = True`` 的步驟，``apply()`` 一次**只收到一個 part**（一個來源檔，或合併後的那一份），
+  直接把整個 lf 當成一個檔處理；需要整檔資訊（例如列數、第一列）時用 ``collect_small()``。
+- ``per_file = False`` 的步驟一列一列處理，可能收到任意切法的資料（預覽時是整張表）。
+- ``combines = True`` 的步驟（合併來源檔）由引擎呼叫 ``combine(parts)``，不呼叫 ``apply()``；
+  以後要看整份資料的步驟（group_by、去重、排序、join）也要做成這種。
+
+**串流規則**（幾 GB 的檔案也要在固定記憶體內跑完）：
+- 每個 part 已經依 ``__line_no`` 排好，filter / with_columns 都會保持順序，
   所以步驟**不要再 sort**（排序會把整份資料放進記憶體）。
-- 不要用 window 函式（``.over()``）與 ``replace_strict``：串流引擎不支援，會退回整份放進記憶體。
-  每個來源檔的資訊（起點、列數、第一列）改用 ``file_positions()`` 先做一次小聚合，
-  再用 ``by_file()`` 的 when 對照表套回每一列。
+- 不要用 window 函式（``.over()``）、``replace_strict``、呼叫 Python 的 ``map_batches``：
+  串流引擎不支援，會退回整份放進記憶體。
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ from typing import Annotated, Any, ClassVar
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from tablade.ingest.sources import Part
 from tablade.recipe.validator import apply_effect, resolve_effect
 
 SOURCE_FILE = "__source_file"
@@ -78,6 +86,8 @@ class Step(BaseModel):
     False：一列一列處理，結果與來源檔怎麼分檔無關（有測試檢查）。"""
     scope_note: ClassVar[str] = ""
     """不是單純「分別處理／無關」時，畫面上改顯示這句（例如合併來源檔）。"""
+    combines: ClassVar[bool] = False
+    """True：把所有 part 接成新的 part（引擎呼叫 ``combine()``，不呼叫 ``apply()``）。"""
 
     @classmethod
     def type_name(cls) -> str:
@@ -105,6 +115,10 @@ class Step(BaseModel):
         return self.model_dump(mode="json", exclude={"id", "type", "enabled"})
 
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
+        raise NotImplementedError
+
+    def combine(self, parts: list[Part]) -> list[Part]:
+        """``combines = True`` 的步驟：把所有 part 接成新的 part。"""
         raise NotImplementedError
 
     def describe(self) -> str:
@@ -138,36 +152,9 @@ def data_columns(lf: pl.LazyFrame) -> list[str]:
     return [c for c in lf.collect_schema().names() if not c.startswith(SYSTEM_PREFIX)]
 
 
-def by_file(values: dict[str, Any], dtype: pl.DataType, default: Any = None) -> pl.Expr:
-    """每個來源檔對應一個值（when 對照表；串流引擎不支援 ``replace_strict``）。"""
-    branches = [
-        pl.when(pl.col(SOURCE_FILE) == name).then(pl.lit(v, dtype=dtype))
-        for name, v in values.items()
-    ]
-    return pl.coalesce([*branches, pl.lit(default, dtype=dtype)])
-
-
 def collect_small(lf: pl.LazyFrame) -> pl.DataFrame:
-    """執行只會產生少量結果的查詢（每個來源檔一列之類）。"""
+    """執行只會產生少量結果的查詢（列數、第一列之類）。"""
     return lf.collect(engine="streaming")
-
-
-def file_positions(lf: pl.LazyFrame) -> tuple[pl.LazyFrame, pl.Expr, pl.Expr]:
-    """回傳（加上全域列號的 lf、每列在來源檔內的位置（0 起）、該檔目前的列數）。
-
-    先用一次 min / len 聚合算出每個檔案的起點與列數，都是串流原生支援的操作。
-    用完記得 ``.drop(ROW_INDEX)``。
-    """
-    lf = lf.with_row_index(ROW_INDEX)
-    stats = collect_small(
-        lf.group_by(SOURCE_FILE).agg(
-            pl.col(ROW_INDEX).min().alias("start"), pl.len().alias("count")
-        )
-    )
-    dtype = lf.collect_schema()[ROW_INDEX]
-    start = by_file(dict(zip(stats[SOURCE_FILE], stats["start"], strict=True)), dtype)
-    count = by_file(dict(zip(stats[SOURCE_FILE], stats["count"], strict=True)), dtype, 0)
-    return lf, (pl.col(ROW_INDEX).cast(pl.Int64) - start.cast(pl.Int64)), count.cast(pl.Int64)
 
 
 def is_blank(expr: pl.Expr) -> pl.Expr:

@@ -38,7 +38,7 @@ from .engine.run import (
     execute,
 )
 from .ingest.encoding import DecodeError
-from .ingest.sources import InputError, Progress, SourceFile, sample, scan
+from .ingest.sources import InputError, Progress, SourceFile, concat, sample, scan_parts
 from .recipe.schema import RECIPE_VERSION, RecipeError, load_json, parse_recipe, pydantic_issues
 from .steps import all_steps, get
 from .steps.base import SOURCE_FILE, SYSTEM_PREFIX, Step
@@ -395,7 +395,7 @@ class Session:
             error = "還沒有開啟資料"
         else:
             try:
-                lf, files = scan(
+                parts, files = scan_parts(
                     self.input["pattern"],
                     self.input["reader"],
                     self.input["encoding"],
@@ -403,10 +403,10 @@ class Session:
                     self.progress,
                 )
                 if sum(f.rows for f in files) <= SAMPLE_THRESHOLD:
-                    frame = lf.collect(engine="streaming")
+                    frame = concat(parts).collect(engine="streaming")
                 else:
                     self._report("讀取預覽樣本")
-                    frame = sample(lf, files, self.input["reader"], SAMPLE_HEAD, SAMPLE_TAIL)
+                    frame = sample(parts, files, self.input["reader"], SAMPLE_HEAD, SAMPLE_TAIL)
             except (InputError, DecodeError, LookupError, pl.exceptions.PolarsError) as err:
                 error = str(err)
         self._source = (key, frame, files, error)

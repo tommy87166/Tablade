@@ -93,10 +93,11 @@ Five needs drove this tool:
 | `excel` | XLSX / XLS, one sheet | `__source_file`, `__sheet`, `__line_no`, columns | M4 |
 
 - Columns starting with `__` are system columns: hidden in the UI by default, optional on export.
-- Multiple files (glob) are combined with `diagonal_relaxed` concat — mismatched columns become null.
-- Row order is fixed at read time (`__source_file`, then `__line_no`) and every step keeps it, so
-  steps never sort; per-file steps (fill down, remove top/bottom rows) work file by file without
-  window functions, which keeps memory flat on multi-GB inputs.
+- Multiple files (glob) each get their own pipeline and are joined in file-name order at a
+  "merge source files" step or before writing — mismatched columns become null.
+- Each file's row order is fixed at read time (`__line_no`) and every step keeps it, so steps never
+  sort; per-file steps (fill down, remove top/bottom rows) work file by file without window
+  functions, which keeps memory flat on multi-GB inputs.
 
 ### Data flow
 
@@ -197,6 +198,9 @@ The skill's version is the recipe format version, so a skill always writes recip
 | 5 GB UTF-8 text, 85.6 M lines — open + preview (sample of 101,000 lines) | 20 s | 1.9 GB |
 | same — streaming export of all lines | 62 s | 2.5 GB |
 | 2 GB cp950 text — transcode | 22 s | flat |
+| 2 × 1.5 GB UTF-8 files — example recipe, streaming run | 29 s | 2.4 GB |
+| 200 × 10 MB files — same | 23 s | 1.3 GB |
+| 1,000 × 100 KB files — same | 15 s | 0.7 GB |
 | before the streaming rewrite: 1 GB cp950 | 96 s | 10.2 GB |
 
 Windows (CI): onefile 68.5 MB zipped, onedir 69.2 MB zipped. Start-up times on a locked-down Windows laptop are still to be measured (M0's acceptance test).

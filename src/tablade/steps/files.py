@@ -7,26 +7,10 @@ from typing import Literal
 import polars as pl
 from pydantic import Field
 
-from .base import (
-    LINE_NO,
-    ROW_INDEX,
-    SOURCE_FILE,
-    Example,
-    NonEmpty,
-    Step,
-    collect_small,
-)
+from tablade.ingest.sources import Part, concat
+
+from .base import LINE_NO, ROW_INDEX, SOURCE_FILE, Example, NonEmpty, Step
 from .registry import register
-
-
-def file_order(lf: pl.LazyFrame) -> list[str]:
-    """目前的來源檔順序（依每個檔第一列的位置；只做一次小聚合）。"""
-    stats = collect_small(
-        lf.with_row_index(ROW_INDEX)
-        .group_by(SOURCE_FILE)
-        .agg(pl.col(ROW_INDEX).min().alias("start"))
-    )
-    return stats.sort("start")[SOURCE_FILE].to_list()
 
 
 @register
@@ -45,6 +29,7 @@ class MergeFiles(Step):
     label = "合併來源檔"
     category = "列"
     per_file = True
+    combines = True
     scope_note = "之後的步驟不再分來源檔"
     ai_notes = (
         "多個來源檔要當成一份連續的資料處理時使用（例如分成好幾個檔匯出的同一份報表）。"
@@ -65,15 +50,15 @@ class MergeFiles(Step):
     def suggest(cls, frame, context):
         return {}
 
-    def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
+    def combine(self, parts: list[Part]) -> list[Part]:
+        names = [name for name, _ in parts]
+        wanted = [f for f in dict.fromkeys(self.order) if f in names]
+        order = wanted + [f for f in names if f not in wanted]
+        frames = dict(parts)
+        # 照指定的順序把每個檔接起來：每個檔只讀一次，不排序
+        lf = concat([(f, frames[f]) for f in order])
         schema = lf.collect_schema()
-        current = file_order(lf)
-        wanted = [f for f in dict.fromkeys(self.order) if f in current]
-        order = wanted + [f for f in current if f not in wanted]
-        if order != current:
-            # 依檔案拆開再依序接起來（串流執行，不排序）
-            lf = pl.concat([lf.filter(pl.col(SOURCE_FILE) == f) for f in order])
-        return (
+        merged = (
             lf.with_row_index(ROW_INDEX, offset=1)
             .with_columns(
                 pl.lit(self.name, dtype=schema[SOURCE_FILE]).alias(SOURCE_FILE),
@@ -81,6 +66,11 @@ class MergeFiles(Step):
             )
             .drop(ROW_INDEX)
         )
+        return [(self.name, merged)]
+
+    def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
+        """單獨套在一份資料上：只改名稱、重編行號（引擎會用 ``combine``）。"""
+        return self.combine([("", lf)])[0][1]
 
     def describe(self) -> str:
         how = f"依「{'、'.join(self.order)}」的順序" if self.order else "依原本的順序"

@@ -6,7 +6,8 @@
 - ``stream``：資料很大時的完整執行。整條 lazy 查詢用串流引擎寫成暫存 Parquet（記憶體用量固定），
   再從暫存檔取出警告、寫出最後的結果。每一步的列數只在 eager / sample 模式提供。
 
-步驟本身都是 LazyFrame → LazyFrame，三種模式共用。
+三種模式都「各檔分開處理」：資料是一串 part（每個來源檔一個），分檔的步驟一次只套在一個 part 上，
+到「合併來源檔」（``combines``）或寫出前才接起來（DESIGN.md §8）。
 """
 
 from __future__ import annotations
@@ -19,7 +20,16 @@ from typing import Any, Literal
 import polars as pl
 
 from tablade.export.parquet import write_parquet
-from tablade.ingest.sources import Progress, SourceFile, sample, scan, staging_dir
+from tablade.ingest.sources import (
+    Part,
+    PartsMismatch,
+    Progress,
+    SourceFile,
+    concat,
+    sample,
+    scan_parts,
+    staging_dir,
+)
 from tablade.recipe.schema import Recipe
 from tablade.recipe.validator import EffectError
 from tablade.steps.base import LINE_NO, SOURCE_FILE, SYSTEM_PREFIX, TEMP_PREFIX, Step, StepError
@@ -82,13 +92,52 @@ def _data_columns(names: list[str]) -> list[str]:
     return [c for c in names if not c.startswith(SYSTEM_PREFIX)]
 
 
-def _apply(step: Step, lf: pl.LazyFrame) -> pl.LazyFrame:
+def _apply(step: Step, lf: pl.LazyFrame, source: str = "") -> pl.LazyFrame:
+    where = f"（來源檔 {source}）" if source else ""
     try:
         return step.apply(lf)
     except (StepError, EffectError) as err:
-        raise RunError(step, str(err)) from None
+        raise RunError(step, f"{err}{where}") from None
     except pl.exceptions.PolarsError as err:
-        raise RunError(step, f"{type(err).__name__}: {err}") from None
+        raise RunError(step, f"{type(err).__name__}: {err}{where}") from None
+
+
+def split_parts(frame: pl.DataFrame) -> list[Part]:
+    """把讀進記憶體的資料依 ``__source_file`` 切成 parts（每段連續的同一個來源檔；不複製資料）。"""
+    if frame.height == 0 or SOURCE_FILE not in frame.columns:
+        return [("", frame.lazy())]
+    parts, offset = [], 0
+    for length, name in frame.get_column(SOURCE_FILE).rle().struct.unnest().iter_rows():
+        parts.append((name, frame.slice(offset, length).lazy()))
+        offset += length
+    return parts
+
+
+def concat_parts(parts: list[Part], step: Step | None = None) -> pl.LazyFrame:
+    """把 parts 接成一個 LazyFrame；欄位不一樣時指出是哪一步。"""
+    try:
+        return concat(parts)
+    except PartsMismatch as err:
+        if step is None:
+            raise
+        raise RunError(step, str(err)) from None
+
+
+def apply_parts(step: Step, parts: list[Part], progress: Progress = None) -> list[Part]:
+    """套用一個步驟：合併型步驟接起所有 part，其他步驟每個 part 各自套用。"""
+    if step.combines:
+        try:
+            return step.combine(parts)
+        except (StepError, EffectError, PartsMismatch) as err:
+            raise RunError(step, str(err)) from None
+        except pl.exceptions.PolarsError as err:
+            raise RunError(step, f"{type(err).__name__}: {err}") from None
+    out = []
+    for i, (name, lf) in enumerate(parts):
+        if progress is not None and len(parts) > 1:
+            progress({"stage": f"準備 {step.id}", "file": name, "done": i, "total": len(parts)})
+        out.append((name, _apply(step, lf, name if len(parts) > 1 else "")))
+    return out
 
 
 def _warnings(
@@ -119,9 +168,16 @@ def _warnings(
 def apply_step(
     step: Step, frame: pl.DataFrame, limit: int = MAX_WARNINGS_PER_CHECK
 ) -> tuple[pl.DataFrame, int, list[RowWarning]]:
-    """套用一個步驟（eager），回傳（移除暫存欄位後的結果、警告總數、前幾則警告）。"""
+    """套用一個步驟（eager），回傳（移除暫存欄位後的結果、警告總數、前幾則警告）。
+
+    分檔與合併型步驟依來源檔切開再套用；一列一列的步驟直接套在整張表上（結果一樣，比較快）。
+    """
     try:
-        out = _apply(step, frame.lazy()).collect(engine="streaming")
+        if step.per_file or step.combines:
+            lf = concat_parts(apply_parts(step, split_parts(frame)), step)
+        else:
+            lf = _apply(step, frame.lazy())
+        out = lf.collect(engine="streaming")
     except pl.exceptions.PolarsError as err:
         raise RunError(step, f"{type(err).__name__}: {err}") from None
     total, warnings = _warnings(step, out, limit)
@@ -149,7 +205,7 @@ def execute(
 ) -> tuple[pl.DataFrame | None, RunReport]:
     """執行 recipe。``stream`` 模式不回傳 DataFrame（結果直接寫到檔案）。"""
     source = recipe.inputs[0]
-    lf, files = scan(source.pattern, source.reader, source.encoding, base_dir, progress)
+    parts, files = scan_parts(source.pattern, source.reader, source.encoding, base_dir, progress)
     input_rows = sum(f.rows for f in files)
     mode = choose_mode(files, write_output, mode)
     if write_output and output is None:
@@ -157,12 +213,12 @@ def execute(
     if mode == "stream":
         if output is None:
             raise ValueError("stream 模式一定會寫出檔案")
-        return None, _execute_stream(recipe, lf, files, input_rows, output, limit, progress)
+        return None, _execute_stream(recipe, parts, files, input_rows, output, limit, progress)
 
     frame = (
-        lf.collect(engine="streaming")
+        concat(parts).collect(engine="streaming")
         if mode == "eager"
-        else sample(lf, files, source.reader, SAMPLE_HEAD, SAMPLE_TAIL)
+        else sample(parts, files, source.reader, SAMPLE_HEAD, SAMPLE_TAIL)
     )
     sample_rows = frame.height if mode == "sample" else None
     reports = []
@@ -206,7 +262,7 @@ def execute(
 
 def _execute_stream(
     recipe: Recipe,
-    lf: pl.LazyFrame,
+    parts: list[Part],
     files: list[SourceFile],
     input_rows: int,
     target: Path,
@@ -217,10 +273,13 @@ def _execute_stream(
         if progress is not None:
             progress({"stage": stage, "file": "", "done": 0, "total": 0})
 
-    enabled = recipe.enabled_steps()
-    for step in enabled:
+    last = None
+    for step in recipe.enabled_steps():
         report(f"準備 {step.id}")
-        lf = _apply(step, lf)  # 暫存欄位（__w_）一路保留到最後，才能取出警告
+        # 每個檔各自一條流水線；暫存欄位（__w_）一路保留到最後，才能取出警告
+        parts = apply_parts(step, parts, progress)
+        last = step
+    lf = concat_parts(parts, last)
 
     staged = staging_dir() / f"run-{uuid.uuid4().hex}.parquet"
     try:
