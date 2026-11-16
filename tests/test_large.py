@@ -3,6 +3,7 @@
 這裡用小檔，把門檻調低來模擬；實際的大檔量測記錄在 README 的測試結果。
 """
 
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -13,7 +14,7 @@ import pytest
 from tablade.engine import run as engine_run
 from tablade.engine.run import execute
 from tablade.fixtures import messy_export, write_all
-from tablade.ingest import sources
+from tablade.ingest import sources, transcode
 from tablade.ingest.encoding import DecodeError
 from tablade.ingest.sources import prepare, sample, scan, scan_parts
 from tablade.recipe.schema import load_json, parse_recipe
@@ -49,8 +50,14 @@ def test_scan_keeps_blank_lines_and_line_numbers(tmp_path):
     assert lines == ["第一", "", "三", "四"] and info.encoding == "utf-8-sig" and info.rows == 4
 
 
+def small_chunks(monkeypatch, size: int) -> None:
+    """讀檔（檢查編碼）和轉碼都改用很小的區塊，讓多位元組字元與 \r\n 跨區塊。"""
+    monkeypatch.setattr(sources, "CHUNK", size)
+    monkeypatch.setattr(transcode, "CHUNK", size)
+
+
 def test_scan_transcodes_cp950_in_chunks(tmp_path, monkeypatch):
-    monkeypatch.setattr(sources, "CHUNK", 7)  # 讓多位元組字元與 \r\n 跨區塊
+    small_chunks(monkeypatch, 7)
     raw = "甲乙丙\r\n\r\n丁戊\r\n己\r\n".encode("cp950")
     lines, info = lines_of(tmp_path, "c.txt", raw)
     assert lines == ["甲乙丙", "", "丁戊", "己"] and info.encoding == "cp950"
@@ -58,7 +65,7 @@ def test_scan_transcodes_cp950_in_chunks(tmp_path, monkeypatch):
 
 
 def test_scan_normalizes_lone_carriage_returns(tmp_path, monkeypatch):
-    monkeypatch.setattr(sources, "CHUNK", 3)
+    small_chunks(monkeypatch, 3)
     lines, _ = lines_of(tmp_path, "r.txt", b"a\rb\r\nc\rd")
     assert lines == ["a", "b", "c", "d"]
 
@@ -181,3 +188,100 @@ def test_session_previews_a_sample_and_exports_everything(workdir, monkeypatch, 
         pl.read_parquet(tmp_path / "out.parquet").drop("__source_file", "__line_no").to_dicts()
         == EXPECTED
     )
+
+
+# ── 暫存資料夾的清理 ────────────────────────────────────────────
+
+
+def test_sweep_removes_only_unused_staging_folders(tmp_path):
+    """當掉或被強制結束時留下的轉碼副本，下次啟動時清掉；另一個開著的 Tablade 正在用的不動。"""
+    old = tmp_path / "tablade-stage-old"  # 沒有鎖檔
+    old.mkdir()
+    (old / "copy.txt").write_text("轉碼副本", encoding="utf-8")
+    crashed = tmp_path / "tablade-stage-crashed"  # 有鎖檔，但沒有人鎖著
+    crashed.mkdir()
+    (crashed / sources.LOCK_NAME).write_bytes(b"")
+    busy = tmp_path / "tablade-stage-busy"
+    busy.mkdir()
+    holder = (busy / sources.LOCK_NAME).open("a+b")
+    assert sources._try_lock(holder)  # 模擬另一個還開著的 Tablade
+    unrelated = tmp_path / "other-folder"
+    unrelated.mkdir()
+    try:
+        removed = sources.sweep_stale_staging(tmp_path)
+    finally:
+        holder.close()
+    assert sorted(p.name for p in removed) == ["tablade-stage-crashed", "tablade-stage-old"]
+    assert busy.exists() and unrelated.exists()
+
+
+def test_own_staging_folder_is_locked_and_cleared(tmp_path, monkeypatch):
+    import tempfile
+
+    sources.clear_staging()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    folder = sources.staging_dir()
+    assert folder.parent == tmp_path and (folder / sources.LOCK_NAME).exists()
+    assert sources.sweep_stale_staging(tmp_path) == []  # 自己正在用的不會被清掉
+    sources.clear_staging()  # 關閉視窗時呼叫
+    assert not folder.exists()
+
+
+# ── 平行轉碼：結果要和單核心完全相同 ──────────────────────────────────
+
+
+def both_ways(src: Path, encoding: str, tmp_path: Path):
+    """同一個檔用單核心與平行（切成很小的段，強迫走平行）各轉一次。"""
+    single, parallel = tmp_path / "single.txt", tmp_path / "parallel.txt"
+    a = sources._transcode_single(src, encoding, single, None)
+    b = sources._transcode(src, encoding, parallel, None, parallel_min=0, segment=1024)
+    return (a, single.read_bytes()), (b, parallel.read_bytes())
+
+
+def test_parallel_transcode_matches_single_core(tmp_path):
+    from tablade.fixtures import write_big_messy_export
+
+    src = write_big_messy_export(tmp_path / "明細.csv", 200_000, encoding="cp950")
+    single, parallel = both_ways(src, "cp950", tmp_path)
+    assert parallel == single
+    assert single[0] == hashlib.sha256(src.read_bytes()).hexdigest()
+
+
+def test_parallel_transcode_keeps_crlf_bom_and_lone_cr(tmp_path):
+    lines = ["第一行\r\n", "第二\r第三\n", "x\r\n"] * 400 + ["結尾\r"]
+    src = tmp_path / "mixed.txt"
+    src.write_bytes(b"\xef\xbb\xbf" + "".join(lines).encode("utf-8"))
+    single, parallel = both_ways(src, "utf-8-sig", tmp_path)
+    assert parallel == single
+    assert not parallel[1].startswith(b"\xef\xbb\xbf") and b"\r\n" in parallel[1]
+
+
+def test_parallel_transcode_reports_the_first_error(tmp_path):
+    good = ("115/01/05,北區門市,原子筆\r\n" * 300).encode("cp950")
+    src = tmp_path / "bad.csv"
+    src.write_bytes(good + b"\xff\xff bad\r\n" + good + b"\xff again\r\n" + good)
+    errors = []
+    for convert in (
+        lambda: sources._transcode_single(src, "cp950", tmp_path / "a.txt", None),
+        lambda: sources._transcode(
+            src, "cp950", tmp_path / "b.txt", None, parallel_min=0, segment=512
+        ),
+    ):
+        with pytest.raises(DecodeError) as err:
+            convert()
+        errors.append(str(err.value))
+    assert errors[0] == errors[1] and "第 301 行" in errors[0]
+    assert not list(tmp_path.glob("*.part*"))  # 暫存的段都清掉了
+
+
+def test_parallel_transcode_falls_back_to_single_core(tmp_path, monkeypatch):
+    from tablade.fixtures import write_big_messy_export
+
+    def no_pool():
+        raise OSError("不能開新程序")
+
+    monkeypatch.setattr(sources, "_get_pool", no_pool)
+    src = write_big_messy_export(tmp_path / "明細.csv", 50_000, encoding="cp950")
+    out = tmp_path / "out.txt"
+    sources._transcode(src, "cp950", out, None, parallel_min=0, segment=1024)
+    assert out.read_bytes() == src.read_bytes().decode("cp950").encode("utf-8")

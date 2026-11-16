@@ -33,6 +33,8 @@ interface Props {
   /** 內容改變時換一個值，表格會丟掉快取重新載入 */
   resetKey: string
   showSystem: boolean
+  /** 最大的行號（所有來源檔的總行數），決定行號欄的寬度 */
+  maxLine?: number | null
   onAddStep: (request: AddStepRequest) => void
   onLoaded?: (total: number) => void
   ref?: Ref<GridHandle>
@@ -50,7 +52,7 @@ function widthFor(name: string, sample: Cell[]): number {
   return Math.ceil(Math.min(Math.max(longest + 20, 64), 360))
 }
 
-export function PreviewGrid({ api, preview, resetKey, showSystem, onAddStep, onLoaded, ref }: Props) {
+export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAddStep, onLoaded, ref }: Props) {
   const scroller = useRef<HTMLDivElement>(null)
   const [pages, setPages] = useState<Map<number, Cell[][]>>(new Map())
   const [columns, setColumns] = useState<string[]>([])
@@ -116,7 +118,10 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, onAddStep, onL
     const sample = pages.get(0) ?? []
     return visible.map(({ name, i }) => widthFor(name, sample.slice(0, 50).map((r) => r[i])))
   }, [visible, pages])
-  const template = `56px ${widths.map((w) => `${w}px`).join(' ')}`
+  // 行號欄依最大行號的位數加寬（大檔的行號可能有 8、9 位數）
+  const lineDigits = String(Math.max(maxLine ?? 0, preview.rows ?? 0, 1)).length
+  const lineWidth = Math.max(56, lineDigits * 7.5 + 22)
+  const template = `${lineWidth}px ${widths.map((w) => `${w}px`).join(' ')}`
 
   if (preview.rows === null) {
     return <div className="flex h-full items-center justify-center text-sm text-muted-foreground">沒有可預覽的資料</div>
@@ -181,7 +186,7 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, onAddStep, onL
                     style={{ gridTemplateColumns: template, height: ROW_HEIGHT, transform: `translateY(${item.start}px)`, width: '100%' }}
                   >
                     <div
-                      className="px-2 py-1 text-right text-xs text-muted-foreground"
+                      className="truncate px-2 py-1 text-right text-xs text-muted-foreground"
                       title={row && fileIndex >= 0 ? String(row[fileIndex]) : undefined}
                     >
                       {row && lineIndex >= 0 ? String(row[lineIndex]) : item.index + 1}

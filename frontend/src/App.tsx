@@ -545,6 +545,7 @@ export default function App() {
                         preview={state.preview}
                         resetKey={previewKey}
                         showSystem={showSystem}
+                        maxLine={state.input.total_rows}
                         onAddStep={(r) => void addStep(r.type, r.context)}
                         onLoaded={onGridLoaded}
                       />

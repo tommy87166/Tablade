@@ -175,7 +175,7 @@ Tablade 會從步驟 registry 產生 [Agent Skills](https://learn.microsoft.com/
 |---|---|
 | 單元測試（`pytest`） | 244 項通過（每種步驟文件裡的範例都當成測試跑；UI 背後的 session 照使用者的操作順序一步步測） |
 | 範例 recipe（`examples/sales_detail.recipe.json`，2 個 cp950 檔、94 行 → 70 列） | ✅ 輸出與預期完全一致；每一列的 `__line_no` 都指回原始檔的那一行 |
-| 打包後的自我檢測（產生 cp950 CSV → Parquet → 讀回比對 → Lazy 查詢 → Excel 引擎 → 完整執行範例 recipe：轉碼、各檔分開處理、合併來源檔、串流匯出） | ✅ Windows x64（CI）與 macOS arm64 的 onefile、onedir（「完整執行範例 recipe」這項：macOS 已驗證，Windows 待 CI） |
+| 打包後的自我檢測（產生 cp950 CSV → Parquet → 讀回比對 → Lazy 查詢 → Excel 引擎 → 多核心轉碼 → 完整執行範例 recipe：轉碼、各檔分開處理、合併來源檔、串流匯出） | ✅ Windows x64（CI）與 macOS arm64 的 onefile、onedir（「多核心轉碼」與「完整執行範例 recipe」這兩項：macOS 已驗證，Windows 待 CI） |
 | 視窗 smoke test（開視窗、自我檢測、透過 JS bridge 載入範例、等表格畫出 70 列、關閉） | ✅ macOS arm64 的 onefile、onedir；Windows 由 CI 跑 |
 | 打包後的 App 產生 AI skill（`tablade skill`） | ✅ onefile、onedir |
 
@@ -188,7 +188,7 @@ Tablade 會從步驟 registry 產生 [Agent Skills](https://learn.microsoft.com/
 |---|---|---|
 | 5 GB UTF-8 文字檔、8,560 萬行：開啟並產生預覽（取樣 101,000 行） | 20 秒 | 1.9 GB |
 | 同上：串流匯出全部 | 62 秒 | 2.5 GB |
-| 2 GB cp950 文字檔：轉碼 | 22 秒 | 不隨檔案成長 |
+| 2 GB cp950 文字檔：轉碼（多核心，8 個工作程序） | 3 秒（單核心 9 秒） | 每個程序約 70 MB，不隨檔案成長 |
 | 2 個 1.5 GB UTF-8 檔：範例 Recipe 串流執行 | 29 秒 | 2.4 GB |
 | 200 個 10 MB 的檔：同上 | 23 秒 | 1.3 GB |
 | 1000 個 100 KB 的檔：同上 | 15 秒 | 0.7 GB |
@@ -296,7 +296,7 @@ tablade.spec          PyInstaller 設定（以 TABLADE_BUILD 切換 onefile / on
 - **一個 recipe 只能有一個 input**；合併或附加多個 input 在 M5 加入。
 - **大檔的預覽是樣本。** 超過 20 萬行時，預覽只用每個檔案的前 10 萬行與最後 1,000 行，UI 上每一步的列數是樣本的；
   匯出時會串流處理全部資料。串流匯出只回報最後的列數，警告也只算最後還留著的列。
-- **非 UTF-8 的檔案會先轉成 UTF-8 暫存檔**（cp950 約每秒 100 MB，需要約原檔 1.5 倍的暫存空間），Tablade 結束時刪除。
+- **非 UTF-8 的檔案會先轉成 UTF-8 暫存檔**（cp950 單核心約每秒 230 MB；64 MB 以上的檔用多個程序同時轉，最多 8 個，結果和單核心相同；需要約原檔 1.5 倍的暫存空間），關閉視窗時刪除；當掉或被強制結束時留下的副本，下次啟動 Tablade 時清掉。
 - **`csv` 模式的行號假設沒有跨行欄位**；有跨行欄位的檔案請用 `text_lines`。
 - **onefile 啟動較慢**：每次啟動都要先解壓縮；部分防毒軟體或 AppLocker 會擋暫存資料夾裡的程式，這時請改用 onedir 版。
 - **執行檔未簽章**：macOS 會出現 Gatekeeper、Windows 會出現 SmartScreen 提示。

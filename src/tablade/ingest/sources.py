@@ -4,7 +4,8 @@
 - **不把整個檔案讀進記憶體。** 以 16 MB 為單位分塊讀取，同時算 SHA-256、檢查是不是 UTF-8。
 - UTF-8 檔直接交給 Polars 的 ``scan_lines`` / ``scan_csv``（lazy、可串流）。
 - 其他編碼（cp950 等）或有單獨 ``\\r`` 換行的檔案，先分塊轉成 UTF-8 暫存檔再掃描。
-  暫存檔放在暫存資料夾，依「路徑＋大小＋修改時間＋編碼」快取，程式結束時刪除。
+  暫存檔放在暫存資料夾，依「路徑＋大小＋修改時間＋編碼」快取，關閉視窗或程式結束時刪除；
+  當掉或被強制結束時留下的資料夾，下次啟動時清掉（資料夾裡的鎖檔沒有人鎖著，就代表沒人在用）。
 - 每個來源檔各自一個 LazyFrame（``scan_parts``，依路徑排序、行號排好），欄位對齊成同一組；
   引擎讓每個檔各自跑步驟，到「合併來源檔」或寫出前才接起來（DESIGN.md §8）。
 """
@@ -16,11 +17,15 @@ import codecs
 import glob
 import hashlib
 import io
+import multiprocessing
+import os
 import re
 import shutil
 import tempfile
 import threading
 from collections.abc import Callable
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,10 +33,10 @@ from typing import Any
 import polars as pl
 
 from .encoding import AUTO_ORDER, SUPPORTED, DecodeError
+from .transcode import CHUNK, decode_range, segment_bounds, transcode_segment
 
 SOURCE_FILE, LINE_NO = "__source_file", "__line_no"
 ORDER = (SOURCE_FILE, LINE_NO)
-CHUNK = 16 << 20
 Progress = Callable[[dict[str, Any]], None] | None
 Part = tuple[str, pl.LazyFrame]
 """一個來源檔（或合併後的一份資料）：（名稱, LazyFrame）。"""
@@ -69,22 +74,66 @@ class Prepared:
 _cache: dict[tuple[str, int, int, str], Prepared] = {}
 _lock = threading.Lock()
 _staging: Path | None = None
+_staging_lock: Any = None
+"""暫存資料夾裡鎖檔的檔案代號；開著並鎖住，代表這個程序還在用這個資料夾。"""
+STAGING_PREFIX = "tablade-stage-"
+LOCK_NAME = ".in-use"
+
+
+def _try_lock(handle: Any) -> bool:
+    """不等待地鎖住檔案；別的程序已經鎖著就回傳 False。"""
+    try:
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def sweep_stale_staging(root: Path | None = None) -> list[Path]:
+    """刪掉沒有人在用的暫存資料夾（上次當掉或被強制結束時留下的轉碼副本）。"""
+    removed = []
+    for folder in Path(root or tempfile.gettempdir()).glob(f"{STAGING_PREFIX}*"):
+        if not folder.is_dir() or folder == _staging:
+            continue
+        try:
+            with (folder / LOCK_NAME).open("a+b") as handle:
+                if not _try_lock(handle):
+                    continue  # 另一個 Tablade 還開著，正在用
+        except OSError:
+            continue
+        shutil.rmtree(folder, ignore_errors=True)
+        removed.append(folder)
+    return removed
 
 
 def staging_dir() -> Path:
-    global _staging
+    global _staging, _staging_lock
     with _lock:
         if _staging is None or not _staging.is_dir():
-            _staging = Path(tempfile.mkdtemp(prefix="tablade-stage-"))
-            atexit.register(shutil.rmtree, _staging, True)
+            sweep_stale_staging()
+            _staging = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX))
+            _staging_lock = (_staging / LOCK_NAME).open("a+b")
+            _try_lock(_staging_lock)
+            atexit.register(clear_staging)
         return _staging
 
 
 def clear_staging() -> None:
-    """刪除所有暫存檔（暫存檔是原始資料的副本，不要留在電腦上）。"""
-    global _staging
+    """刪除所有暫存檔（暫存檔是原始資料的副本，不要留在電腦上）。關閉視窗與程式結束時都會呼叫。"""
+    global _staging, _staging_lock
     with _lock:
         _cache.clear()
+        if _staging_lock is not None:
+            _staging_lock.close()  # 先放開鎖檔，Windows 才刪得掉
+            _staging_lock = None
         if _staging is not None:
             shutil.rmtree(_staging, ignore_errors=True)
             _staging = None
@@ -188,45 +237,144 @@ def _check_utf8(path: Path, progress: Progress) -> tuple[str, bool, bool, str | 
     return digest.hexdigest(), bom, lone_cr, error
 
 
-_LONE_CR_TEXT = re.compile("\r(?!\n)")
+PARALLEL_MIN = 64 << 20
+"""檔案至少這麼大才平行轉碼（小檔開工作程序反而比較慢）。"""
+SEGMENT = 32 << 20
+"""平行轉碼時每一段的大小。"""
+_pool: ProcessPoolExecutor | None = None
+_pool_failed = False
+"""開工作程序失敗過一次，這次執行就都用單核心，不再重試。"""
 
 
-def _transcode(path: Path, encoding: str, target: Path, progress: Progress) -> str:
-    """分塊轉成 UTF-8；回傳 sha256。解碼失敗丟出 DecodeError。
+def _workers() -> int:
+    """平行轉碼用幾個工作程序：留一個核心給畫面，最多 8 個；核心太少或開不了程序就不平行。"""
+    cores = os.cpu_count() or 1
+    return min(8, cores - 1) if cores > 2 and not _pool_failed else 0
 
-    \\r\\n 原樣保留（scan_lines 會處理），只有單獨的 \\r 換行才改成 \\n。
-    """
-    digest = hashlib.sha256()
-    decoder = codecs.getincrementaldecoder(encoding)()
-    total, done, newlines, carry = path.stat().st_size, 0, 0, ""
-    with path.open("rb") as f, target.open("wb") as out:
-        while chunk := f.read(CHUNK):
-            digest.update(chunk)
-            try:
-                text = carry + decoder.decode(chunk)
-            except UnicodeDecodeError as err:
-                pos = min(max(err.start, 0), len(chunk) - 1)
-                message = _failure(
-                    encoding, done + pos, newlines + chunk.count(b"\n", 0, pos), chunk[pos]
-                )
-                raise DecodeError(message) from None
-            carry = ""
-            if text.endswith("\r"):  # 可能是跨兩塊的 \r\n，留到下一塊再處理
-                text, carry = text[:-1], "\r"
-            if "\r" in text and _LONE_CR_TEXT.search(text):
-                text = _LONE_CR_TEXT.sub("\n", text)
-            out.write(text.encode("utf-8"))
-            newlines += chunk.count(b"\n")
+
+def _get_pool() -> ProcessPoolExecutor:
+    global _pool
+    if _pool is None:
+        # spawn：各平台行為一致，打包後的 App 也能用（__main__.py 呼叫了 freeze_support）
+        _pool = ProcessPoolExecutor(_workers(), mp_context=multiprocessing.get_context("spawn"))
+        atexit.register(_shutdown_pool)
+    return _pool
+
+
+def _shutdown_pool() -> None:
+    global _pool
+    if _pool is not None:
+        _pool.shutdown(wait=False, cancel_futures=True)
+        _pool = None
+
+
+def _line_of(path: Path, offset: int) -> int:
+    """offset 之前有幾個換行（只在解碼失敗、要寫錯誤訊息時才算）。"""
+    count, done = 0, 0
+    with path.open("rb") as f:
+        while done < offset and (chunk := f.read(min(CHUNK, offset - done))):
+            count += chunk.count(b"\n")
             done += len(chunk)
-            _report(progress, "轉碼", path.name, done, total)
-        try:
-            tail = carry + decoder.decode(b"", final=True)
-        except UnicodeDecodeError:
-            raise DecodeError(
-                f"{encoding} 在檔案結尾（第 {newlines + 1} 行）有不完整的字元"
-            ) from None
-        out.write(_LONE_CR_TEXT.sub("\n", tail).encode("utf-8"))
+    return count
+
+
+def _decode_error(path: Path, encoding: str, failure: tuple[int, int]) -> DecodeError:
+    offset, byte = failure
+    newlines = _line_of(path, offset)
+    if byte < 0:
+        return DecodeError(f"{encoding} 在檔案結尾（第 {newlines + 1} 行）有不完整的字元")
+    return DecodeError(_failure(encoding, offset, newlines, byte))
+
+
+def _transcode_single(path: Path, encoding: str, target: Path, progress: Progress) -> str:
+    digest = hashlib.sha256()
+    total, done = path.stat().st_size, 0
+
+    def on_chunk(chunk: bytes) -> None:
+        nonlocal done
+        digest.update(chunk)
+        done += len(chunk)
+        _report(progress, "轉碼", path.name, done, total)
+
+    with path.open("rb") as f, target.open("wb") as out:
+        failure = decode_range(f, out, encoding, on_chunk=on_chunk)
+    if failure is not None:
+        raise _decode_error(path, encoding, failure)
     return digest.hexdigest()
+
+
+def _transcode_parallel(
+    path: Path, encoding: str, target: Path, progress: Progress, segment: int
+) -> str | None:
+    """在換行處切段、多個程序同時轉碼，再依序接起來；切不出兩段時回傳 None（改用單核心）。"""
+    total = path.stat().st_size
+    cuts = segment_bounds(str(path), total, segment)
+    if len(cuts) <= 2:
+        return None
+    # 中間的段不是檔案開頭：utf-8-sig 不能在那裡拿掉 BOM
+    middle = "utf-8" if encoding == "utf-8-sig" else encoding
+    parts = [target.with_name(f"{target.name}.part{i}") for i in range(len(cuts) - 1)]
+    jobs = [
+        (str(path), encoding if i == 0 else middle, cuts[i], cuts[i + 1], str(parts[i]))
+        for i in range(len(parts))
+    ]
+    digest = hashlib.sha256()  # SHA-256 一定要從頭讀到尾：主程序另外用一條執行緒算
+
+    def hash_file() -> None:
+        with path.open("rb") as f:
+            while chunk := f.read(CHUNK):
+                digest.update(chunk)
+
+    hasher = threading.Thread(target=hash_file, daemon=True)
+    hasher.start()
+    try:
+        futures = [_get_pool().submit(transcode_segment, job) for job in jobs]
+        done = 0
+        for i, future in enumerate(futures):  # 依序等：第一個失敗的就是檔案裡最前面的錯誤
+            failure = future.result()
+            if failure is not None:
+                for rest in futures[i + 1 :]:
+                    rest.cancel()
+                raise _decode_error(path, encoding, failure)
+            done += cuts[i + 1] - cuts[i]
+            _report(progress, "轉碼", path.name, done, total)
+        with target.open("wb") as out:
+            for part in parts:
+                with part.open("rb") as f:
+                    shutil.copyfileobj(f, out, CHUNK)
+                part.unlink()
+    finally:
+        for part in parts:
+            part.unlink(missing_ok=True)
+        hasher.join()
+    return digest.hexdigest()
+
+
+def _transcode(
+    path: Path,
+    encoding: str,
+    target: Path,
+    progress: Progress,
+    *,
+    parallel_min: int | None = None,
+    segment: int | None = None,
+) -> str:
+    """轉成 UTF-8 暫存檔；回傳原檔的 sha256。解碼失敗丟出 DecodeError。
+
+    大檔用多個程序同時轉（結果和單核心完全相同）；開不了工作程序時改用單核心。
+    \r\n 原樣保留（scan_lines 會處理），只有單獨的 \r 換行才改成 \n。
+    """
+    minimum = PARALLEL_MIN if parallel_min is None else parallel_min
+    if _workers() and path.stat().st_size >= minimum:
+        try:
+            digest = _transcode_parallel(path, encoding, target, progress, segment or SEGMENT)
+            if digest is not None:
+                return digest
+        except (OSError, RuntimeError, BrokenProcessPool):  # 例如公司電腦不讓開新程序
+            global _pool_failed
+            _pool_failed = True
+            _shutdown_pool()
+    return _transcode_single(path, encoding, target, progress)
 
 
 def _count_lines(path: Path) -> int:

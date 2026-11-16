@@ -193,7 +193,7 @@ The skill's version is the recipe format version, so a skill always writes recip
 |---|---|
 | Unit tests (`pytest`) | 244 passed (every step's documented examples run as tests; the UI's session is driven step by step like a user) |
 | Example recipe (`examples/sales_detail.recipe.json`, 2 cp950 files, 94 lines → 70 rows) | ✅ output matches the expected rows; every row's `__line_no` points to its physical line |
-| Self-test inside the packaged app (generated cp950 CSV → Parquet → read back → lazy query → Excel engine → full run of the example recipe: transcode, per-file processing, merge source files, streaming export) | ✅ onefile and onedir on Windows x64 (CI) and macOS arm64 (the full example-recipe check: verified on macOS, Windows pending CI) |
+| Self-test inside the packaged app (generated cp950 CSV → Parquet → read back → lazy query → Excel engine → multi-core transcode → full run of the example recipe: transcode, per-file processing, merge source files, streaming export) | ✅ onefile and onedir on Windows x64 (CI) and macOS arm64 (the multi-core transcode and full example-recipe checks: verified on macOS, Windows pending CI) |
 | Window smoke test (open window, self-test, load the example through the JS bridge, wait for the grid to render 70 rows, close) | ✅ onefile and onedir on macOS arm64; Windows runs in CI |
 | AI skill from the packaged app (`tablade skill`) | ✅ onefile and onedir |
 
@@ -206,7 +206,7 @@ The skill's version is the recipe format version, so a skill always writes recip
 |---|---|---|
 | 5 GB UTF-8 text, 85.6 M lines — open + preview (sample of 101,000 lines) | 20 s | 1.9 GB |
 | same — streaming export of all lines | 62 s | 2.5 GB |
-| 2 GB cp950 text — transcode | 22 s | flat |
+| 2 GB cp950 text — transcode (multi-core, 8 worker processes) | 3 s (single core 9 s) | ~70 MB per process, flat |
 | 2 × 1.5 GB UTF-8 files — example recipe, streaming run | 29 s | 2.4 GB |
 | 200 × 10 MB files — same | 23 s | 1.3 GB |
 | 1,000 × 100 KB files — same | 15 s | 0.7 GB |
@@ -314,8 +314,10 @@ tablade.spec          PyInstaller config (onefile / onedir via TABLADE_BUILD)
   100,000 and last 1,000 lines of each file, so per-step row counts in the UI are sample counts;
   export streams through everything. Streaming export reports only the final row count, and its
   warnings cover the rows that are still in the output.
-- **Non-UTF-8 files are transcoded to a temporary UTF-8 copy first** (about 100 MB/s for cp950, and
-  roughly 1.5× the file size in free temp space); the copy is deleted when Tablade exits.
+- **Non-UTF-8 files are transcoded to a temporary UTF-8 copy first** (about 230 MB/s per core for cp950;
+  files of 64 MB or more are split and transcoded by up to 8 processes at once, with the same result as a
+  single core; needs roughly 1.5× the file size in free temp space); the copy is deleted when the window closes, and copies left by a crash are
+  removed the next time Tablade starts.
 - **`csv` reader line numbers assume no multi-line fields**; use `text_lines` for such files.
 - **onefile starts slowly** because it unpacks itself on every launch, and some antivirus or
   AppLocker setups block programs running from the temp folder — use the onedir build then.

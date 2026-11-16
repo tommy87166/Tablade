@@ -92,6 +92,20 @@ def run_selftest() -> dict[str, Any]:
 
             return f"fastexcel {getattr(fastexcel, '__version__', '?')}"
 
+        def parallel_transcode() -> str:
+            # 打包後的 App 能不能開工作程序同時轉碼（切成很小的段，強迫走平行）
+            from .fixtures import write_big_messy_export
+            from .ingest import sources
+
+            src = write_big_messy_export(Path(tmp) / "平行.csv", 300_000, encoding="cp950")
+            single, parallel = Path(tmp) / "single.txt", Path(tmp) / "parallel.txt"
+            sources._transcode_single(src, "cp950", single, None)
+            sources._transcode(src, "cp950", parallel, None, parallel_min=0, segment=16_384)
+            assert parallel.read_bytes() == single.read_bytes(), "平行轉碼的結果和單核心不同"
+            if sources._pool_failed:
+                return "這台電腦不能開工作程序，改用單核心轉碼（結果正確）"
+            return f"{sources._workers()} 個工作程序同時轉碼，結果與單核心相同"
+
         def full_recipe() -> str:
             # 跟按「處理並匯出資料」同一條路：轉碼成暫存檔、各檔分開處理、8 個步驟、串流匯出；
             # 最後再臨時加上「合併來源檔」（02 排前面），連合併也一起檢查（範例 recipe 本身不動）
@@ -126,6 +140,7 @@ def run_selftest() -> dict[str, Any]:
             ("讀回 Parquet 並比對", "寫出的內容完全正確", read_back),
             ("Lazy 查詢", "Polars 的查詢引擎正常", lazy),
             ("Excel 引擎", "讀 Excel 的元件存在、能載入", excel_engine),
+            ("多核心轉碼", "大檔可以用多個程序同時轉碼，結果和單核心相同", parallel_transcode),
             (
                 "完整執行範例 Recipe",
                 "轉碼、各檔分開處理、8 個步驟、合併來源檔、串流匯出整條流程正常",

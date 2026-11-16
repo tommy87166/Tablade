@@ -47,7 +47,7 @@ def test_cli_selftest_writes_json(tmp_path, capsys):
 def test_selftest_reports_each_check():
     result = run_selftest()
     assert result["ok"], result
-    assert len(result["checks"]) == 7
+    assert len(result["checks"]) == 8
     assert all(c["purpose"] and c["ran"] for c in result["checks"])
     assert result["checks"][-1]["detail"] == "2 個 cp950 檔 → 合併成 70 列，與預期一致"
     assert result["versions"]["polars"].startswith("2.")
@@ -61,7 +61,7 @@ def test_selftest_marks_checks_after_a_failure_as_not_run(monkeypatch):
 
     monkeypatch.setattr(selftest, "write_simple_csv", broken)
     result = run_selftest()
-    assert not result["ok"] and len(result["checks"]) == 7
+    assert not result["ok"] and len(result["checks"]) == 8
     assert result["checks"][0]["ran"] and not result["checks"][0]["ok"]
     assert not any(c["ran"] for c in result["checks"][1:])
 

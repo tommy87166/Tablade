@@ -15,6 +15,7 @@ import threading
 from pathlib import Path
 
 from .api import Api
+from .ingest.sources import clear_staging, sweep_stale_staging
 
 SMOKE_TIMEOUT_SECONDS = 60
 DEV_URL_ENV = "TABLADE_DEV_URL"
@@ -70,6 +71,10 @@ def run(smoke: bool = False) -> int:
         **content,
     )
     api._attach(window)
+    # 暫存的轉碼副本：視窗一關就刪（macOS 關視窗時不一定會跑到 Python 的結束程序）；
+    # 上次當掉或被強制結束時留下的，現在先清掉
+    window.events.closed += clear_staging
+    sweep_stale_staging()
 
     if smoke:
 
@@ -80,4 +85,5 @@ def run(smoke: bool = False) -> int:
         threading.Thread(target=watchdog, daemon=True).start()
 
     webview.start(private_mode=True)
+    clear_staging()
     return api._exit_code

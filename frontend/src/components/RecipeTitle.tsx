@@ -2,15 +2,19 @@
  * 標題列上的 recipe 名稱：直接點了就能改（Enter 或離開輸入框時送出，Esc 取消）。
  * 游標在輸入框裡時不讓 Python 的值蓋掉正在打的字；其他時候一律以 Python 的值為準（新增、開啟、undo）。
  */
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 
-/** 估算文字寬度：中日韓字元約 15px，其他約 8px（15px 字型）。 */
-function textWidth(text: string): number {
-  let width = 0
-  for (const ch of text) width += ch.codePointAt(0)! >= 0x2e80 ? 15 : 8
-  return width
+let canvas: HTMLCanvasElement | null = null
+
+/** 用輸入框實際的字型量文字寬度（大寫英文、數字、中文都準）。 */
+function measure(text: string, el: HTMLElement): number {
+  const ctx = (canvas ??= document.createElement('canvas')).getContext('2d')
+  if (!ctx) return text.length * 15
+  const style = getComputedStyle(el)
+  ctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`
+  return ctx.measureText(text).width
 }
 
 interface Props {
@@ -36,13 +40,18 @@ export function RecipeTitle({ name, path, onCommit }: Props) {
   }
 
   const placeholder = '未命名 Recipe'
-  const width = Math.min(Math.max(textWidth(draft || placeholder) + 20, 80), 360)
+  const input = useRef<HTMLInputElement>(null)
+  const [width, setWidth] = useState(120)
+  useLayoutEffect(() => {
+    if (input.current) setWidth(Math.min(Math.ceil(measure(draft || placeholder, input.current)) + 22, 420))
+  }, [draft])
 
   return (
     <div className="flex min-w-0 items-center">
       <Tooltip>
         <TooltipTrigger asChild>
           <input
+            ref={input}
             aria-label="Recipe 名稱"
             value={draft}
             placeholder={placeholder}
