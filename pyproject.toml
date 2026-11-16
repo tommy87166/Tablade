@@ -1,0 +1,59 @@
+[project]
+name = "tablade"
+dynamic = ["version"]
+description = "本機執行、Power Query 式的資料清洗工具，輸出 Parquet"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Programming Language :: Python :: 3",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+]
+# 版本固定在小版本，升級前要先跑完整測試與打包（CLAUDE.md）
+dependencies = [
+    "polars==2.1.*",
+    "fastexcel==0.21.*",
+    "pydantic==2.14.*",
+    "pywebview==6.2.*",
+]
+
+[project.scripts]
+tablade = "tablade.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest==9.2.*",
+    "ruff==0.17.*",
+    "pre-commit==4.7.*",
+    "pyinstaller==6.22.*",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/tablade/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tablade"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+    "E501",   # 行長交給 ruff format；中文長字串不強制換行
+    "RUF001", # 全形標點在中文字串裡是正常的
+    "RUF002",
+    "RUF003",
+]

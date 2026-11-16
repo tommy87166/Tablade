@@ -1,0 +1,21 @@
+# 安裝：uv run pre-commit install
+repos:
+  - repo: local
+    hooks:
+      - id: check-no-data
+        name: 擋下資料檔與疑似真實資料
+        entry: python scripts/check_no_data.py
+        language: python
+        types: [file]
+      - id: check-code-policy
+        name: 禁止網路連線與 eval/exec
+        entry: python scripts/check_code_policy.py src
+        language: python
+        pass_filenames: false
+        files: ^src/
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.5
+    hooks:
+      - id: ruff-check
+      - id: ruff-format

@@ -1,0 +1,64 @@
+# ── 資料檔：一律不進版控（DESIGN.md §11）──────────────────────
+*.csv
+*.tsv
+*.txt
+*.xlsx
+*.xls
+*.xlsm
+*.xlsb
+*.ods
+*.numbers
+*.parquet
+*.feather
+*.arrow
+*.ipc
+*.db
+*.sqlite
+*.sqlite3
+*.duckdb
+*.accdb
+*.mdb
+*.sav
+*.dta
+*.sas7bdat
+*.pdf
+*.doc
+*.docx
+*.zip
+*.7z
+*.rar
+*.manifest.json
+*.recipe.json
+recipes/
+data/
+output/
+tmp/
+
+# 本機私有封鎖清單（人名、公司名稱、專案代號等），絕不 commit
+.tablade-denylist
+
+# 例外：只允許範例 recipe 與文件
+!examples/**/*.recipe.json
+!docs/**/*.txt
+!requirements*.txt
+
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# ── 打包 ──────────────────────────────────────────────────────
+build/
+dist/
+
+# ── 編輯器與系統 ──────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
