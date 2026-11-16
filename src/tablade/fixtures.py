@@ -68,6 +68,67 @@ def write_simple_csv(path: str | Path, n: int = 50, seed: int = 0, encoding: str
     return target
 
 
+EXPORT_COLUMNS = ("日期", "門市", "品號", "品名", "通路", "付款方式", "單號", "金額")
+
+
+def _csv_line(values: list[str]) -> str:
+    buf = io.StringIO()
+    csv.writer(buf, lineterminator="").writerow(values)
+    return buf.getvalue()
+
+
+def messy_export(n: int = 30, seed: int = 0) -> tuple[list[str], list[dict[str, str]]]:
+    """凌亂的匯出檔，回傳（檔案的各行, 用範例 recipe 清洗後預期的資料列）。
+
+    兩行標題雜訊 → 標題列 → 依門市分組（只有每組第一列寫門市）→ 組間空行 → 結尾「共 N 筆」。
+    預期結果：補齊門市、備註拆成通路／付款方式／單號、排除退貨（金額有括號）。
+    """
+    rng = random.Random(seed)
+    rows = simple_rows(n, seed)
+    lines = [
+        "門市銷售明細（假資料）",
+        f"匯出時間：115/02/01 09:{rng.randint(10, 59)}",
+        _csv_line(list(SIMPLE_HEADER)),
+    ]
+    expected: list[dict[str, str]] = []
+    for store in STORES:
+        group = [r for r in rows if r["門市"] == store]
+        if not group:
+            continue
+        for j, row in enumerate(group):
+            values = [row[c] for c in SIMPLE_HEADER]
+            if j > 0:
+                values[SIMPLE_HEADER.index("門市")] = ""
+            lines.append(_csv_line(values))
+            if not row["金額"].startswith("("):
+                channel, payment, order = (part.strip() for part in row["備註"].split("|"))
+                expected.append(
+                    {
+                        "日期": row["日期"],
+                        "門市": store,
+                        "品號": row["品號"],
+                        "品名": row["品名"],
+                        "通路": channel,
+                        "付款方式": payment,
+                        "單號": order,
+                        "金額": row["金額"],
+                    }
+                )
+        lines.append("")
+    lines.append(f"共 {n} 筆")
+    return lines, expected
+
+
+def write_messy_export(
+    path: str | Path, n: int = 30, seed: int = 0, encoding: str = "cp950"
+) -> Path:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lines, _ = messy_export(n, seed)
+    target.write_bytes(("\r\n".join(lines) + "\r\n").encode(encoding))
+    return target
+
+
 def report_lines(seed: int = 0, sections: int = 3, entries: int = 6) -> list[str]:
     """分段報表：標題雜訊、每個門市一段（段落標題、欄位標題、明細、小計）、段落間空行。"""
     rng = random.Random(seed)
@@ -108,11 +169,12 @@ def write_report(
 
 
 def write_all(directory: str | Path, seed: int = 0) -> list[Path]:
-    """產生所有範例假資料到指定資料夾。"""
+    """產生所有範例假資料到指定資料夾（examples/sales_detail.recipe.json 讀的是 明細_*.csv）。"""
     out = Path(directory)
     return [
-        write_simple_csv(out / "明細_01.csv", n=50, seed=seed),
-        write_simple_csv(out / "明細_02.csv", n=30, seed=seed + 1),
-        write_simple_csv(out / "明細_utf8.csv", n=20, seed=seed + 2, encoding="utf-8-sig"),
+        write_messy_export(out / "明細_01.csv", n=50, seed=seed),
+        write_messy_export(out / "明細_02.csv", n=30, seed=seed + 1),
+        write_simple_csv(out / "乾淨_01.csv", n=20, seed=seed + 3),
+        write_simple_csv(out / "乾淨_utf8.csv", n=20, seed=seed + 2, encoding="utf-8-sig"),
         write_report(out / "銷售報表.txt", seed=seed),
     ]

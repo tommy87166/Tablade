@@ -163,6 +163,8 @@
 
 ### 7.1 MVP（第一版）
 
+M1 已完成：`remove_top_rows`、`remove_bottom_rows`、`remove_blank_rows`、`promote_headers`、`split_delimited`、`split_column`、`fill_down`、`filter`。
+
 | 類型 | 說明 | Polars 實作方向 |
 |---|---|---|
 | `remove_top_rows` | 移除前 N 列 | 依 `__line_no` 篩選 |
@@ -207,6 +209,8 @@
 - **快取**：以「輸入檔指紋＋前 k 步的 recipe 雜湊」當 key，快取每一步的預覽結果。修改第 k 步時，只需重算第 k 步之後的步驟。
 - **列順序**：Polars 2.x 預設的串流引擎在 join / group_by / unpivot 之後**不保證列順序**。凡是依賴順序的步驟（填滿、移除前後 N 列），一律先依 `__source_file, __line_no` 排序，不依賴實際執行時的順序。
 - **完整執行**：匯出時才跑全部資料，盡量用 `sink_parquet` 串流寫出。
+  - M1 的做法：每一步 `collect()` 一次，換來每步列數、警告與行號都很便宜。步驟本身仍是 LazyFrame → LazyFrame 的純函式，之後改成整條 lazy 查詢加串流匯出時不必改步驟。
+  - 警告：步驟用 `warning_checks()` 宣告「輸出上哪些列要警告」，可以引用自己留下的 `__w_<步驟id>_*` 暫存欄位；engine 收集警告（附 `__source_file`、`__line_no`）後移除暫存欄位。
 - **錯誤與警告**：轉型失敗、段數超出預期、新出現的欄位等等，集中顯示在 UI 的警告區，每一則都附上來源檔名和行號。
 
 ---
@@ -304,24 +308,30 @@ tablade/
 │   ├── cli.py                 # tablade run recipe.json
 │   ├── fixtures.py            # 假資料產生器（測試、selftest 共用）
 │   ├── recipe/
-│   │   ├── schema.py          # pydantic models
-│   │   └── io.py              # 讀寫 recipe、計算雜湊
+│   │   ├── schema.py          # pydantic models、RECIPE_VERSION、步驟的 discriminated union
+│   │   ├── validator.py       # 只用標準函式庫的驗證器（Tablade 與 AI skill 共用）
+│   │   ├── spec.py            # 從 registry 產生步驟規格；schema lock
+│   │   └── recipe-schema.lock.json
 │   ├── ingest/
 │   │   ├── encoding.py
 │   │   ├── text_lines.py
 │   │   ├── csv_reader.py
-│   │   └── excel_reader.py
+│   │   ├── sources.py         # glob、轉碼、讀取、多檔合併
+│   │   └── excel_reader.py    # M4
 │   ├── engine/
-│   │   ├── compiler.py        # recipe → LazyFrame
-│   │   ├── preview.py         # head + 快取
-│   │   └── warnings.py
-│   ├── steps/                 # 每種步驟一個檔案，註冊到 registry
+│   │   ├── run.py             # 依序套用步驟、每步列數、附行號的警告、寫出 Parquet
+│   │   ├── check.py           # 驗證器 → pydantic → 選擇性試跑
+│   │   └── preview.py         # M2：head + 快取
+│   ├── steps/                 # 每類步驟一個模組，以 @register 登錄；steps/__init__.py 的匯入順序就是顯示順序
+│   │   ├── base.py            # Step 基底類別、Example、WarningCheck、欄位型別
 │   │   ├── registry.py
-│   │   ├── remove_rows.py
-│   │   ├── split.py
+│   │   ├── remove_rows.py     # remove_top_rows、remove_bottom_rows、remove_blank_rows
+│   │   ├── split.py           # split_delimited、split_column
+│   │   ├── headers.py         # promote_headers
 │   │   ├── fill_down.py
-│   │   ├── classify.py
-│   │   ├── parse_tw.py        # 民國日期、括號負數、全形半形
+│   │   ├── filter.py
+│   │   ├── classify.py        # M4
+│   │   ├── parse_tw.py        # M3：民國日期、括號負數、全形半形
 │   │   └── ...
 │   └── export/
 │       ├── parquet.py
@@ -339,12 +349,14 @@ tablade/
 ├── assets/
 │   └── icon.svg               # 圖示原始檔（置中表格＋🔪）；icon.ico / icon.icns / icon.png 由 make_icons.py 產生
 ├── examples/
-│   └── sales_report.recipe.json  # 搭配 gen_fixtures 產生的假資料
+│   ├── sales_detail.recipe.json  # M1：凌亂的匯出檔（用到 8 種步驟）
+│   └── sales_report.recipe.json  # M4：分段報表
 ├── scripts/
 │   ├── gen_fixtures.py
 │   ├── check_no_data.py
 │   ├── check_code_policy.py
 │   ├── build.py               # 打包 + 自我檢測 + 壓縮（本機與 CI 共用）
+│   ├── update_schema_lock.py  # 升 RECIPE_VERSION 後更新 schema lock
 │   └── make_icons.py          # assets/icon.svg → ico / icns / png
 ├── tests/
 │   ├── test_ingest.py
@@ -363,7 +375,7 @@ tablade/
 | 階段 | 內容 | 完成標準 |
 |---|---|---|
 | **M0 環境驗證** | 最小 pywebview + Polars 程式，用 onefile 和 onedir 各打包一次 | **在目標 Windows 筆電（權限受管控的公司電腦）上能開出視窗，並讀一個 CSV 寫出 Parquet** |
-| M1 引擎 | recipe schema（版本 `MAJOR.MINOR`、schema lock）、registry（含 §7.3 的 8 件事）、ingest（text_lines / csv）、compiler、CLI（`run` / `validate` / `schema`）、MVP 中的 8 種步驟 | `tablade run examples/sales_report.recipe.json` 產出正確結果，測試全過 |
+| M1 引擎 | recipe schema（版本 `MAJOR.MINOR`、schema lock）、registry（含 §7.3 的 8 件事）、ingest（text_lines / csv）、compiler、CLI（`run` / `validate` / `schema`）、MVP 中的 8 種步驟 | `tablade run examples/sales_detail.recipe.json` 產出正確結果，測試全過（✅ 完成） |
 | M1.5 AI skill | probe skill 實測沙箱、`tablade profile`、skill 產生器、單一檔案驗證器（§17） | Copilot 載入 skill 後，能依描述寫出通過驗證的範例 recipe |
 | M2 UI | 步驟清單（新增、排序、停用、刪除）、預覽表格、參數表單、匯入 recipe（版本檢查、錯誤報告）、下載 AI skill | 不寫 JSON，也能在 UI 完成範例整理流程 |
 | M3 台灣格式與留痕 | parse_number、parse_date（民國）、trim_clean、manifest | 輸出附 manifest，警告附行號 |

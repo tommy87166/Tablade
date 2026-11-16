@@ -29,8 +29,55 @@ def build_parser() -> argparse.ArgumentParser:
     convert.add_argument("output", type=Path)
     convert.add_argument("--encoding", default="auto", choices=SUPPORTED)
 
+    run = sub.add_parser("run", help="執行 recipe，輸出 Parquet")
+    run.add_argument("recipe", type=Path)
+    run.add_argument("--json", action="store_true", help="以 JSON 輸出結果")
+
+    validate = sub.add_parser("validate", help="驗證 recipe（結束代碼 0 表示通過）")
+    validate.add_argument("recipe", type=Path)
+    validate.add_argument("--run", action="store_true", help="另外用真實資料試跑（不寫出檔案）")
+    validate.add_argument("--json", action="store_true", help="以 JSON 輸出結果")
+
+    schema = sub.add_parser("schema", help="輸出步驟規格與 recipe JSON Schema")
+    schema.add_argument("--out", type=Path, help="寫到檔案（預設印出）")
+
     sub.add_parser("version", help="顯示版本")
     return parser
+
+
+def _print_json(data: object) -> None:
+    print(json.dumps(data, ensure_ascii=False, indent=2, default=str))
+
+
+def _check(args: argparse.Namespace, *, dry_run: bool) -> int:
+    from .engine.check import check_recipe_file, format_issues, format_report
+    from .engine.run import RunError, execute
+
+    result = check_recipe_file(args.recipe, dry_run=dry_run)
+    writing = args.command == "run" and result.ok and result.recipe is not None
+    if writing:
+        try:
+            _, result.report = execute(result.recipe, args.recipe.parent)
+        except RunError as err:
+            result.issues.append({"path": "steps", "error": str(err), "severity": "error"})
+    if args.json:
+        _print_json(
+            {
+                "ok": result.ok,
+                "issues": result.issues,
+                "report": result.report.to_dict() if result.report else None,
+            }
+        )
+    else:
+        if result.issues:
+            errors = sum(1 for i in result.issues if i["severity"] == "error")
+            print(f"recipe 有 {errors} 個錯誤：" if errors else "recipe 通過驗證，有提醒：")
+            print(format_issues(result.issues))
+        elif not result.report:
+            print("recipe 通過驗證")
+        if result.report:
+            print(format_report(result.report))
+    return 0 if result.ok else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -61,6 +108,20 @@ def main(argv: list[str] | None = None) -> int:
             f"{args.input.name}（{result.encoding}）→ {args.output.name}："
             f"{result.frame.height:,} 列 × {result.frame.width} 欄"
         )
+        return 0
+
+    if command in ("run", "validate"):
+        return _check(args, dry_run=command == "validate" and args.run)
+
+    if command == "schema":
+        from .recipe.spec import build_spec
+
+        text = json.dumps(build_spec(), ensure_ascii=False, indent=2)
+        if args.out:
+            args.out.write_text(text + "\n", encoding="utf-8")
+            print(f"已寫入 {args.out}")
+        else:
+            print(text)
         return 0
 
     if command == "version":

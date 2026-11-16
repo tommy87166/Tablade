@@ -1,0 +1,255 @@
+"""recipe：驗證器（結構＋語意）、與 pydantic 一致、版本號、schema lock。"""
+
+import ast
+import copy
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from tablade.recipe import validator
+from tablade.recipe.schema import RECIPE_VERSION, RecipeError, parse_recipe
+from tablade.recipe.spec import LOCK_PATH, build_spec, lock_content, read_lock
+
+ROOT = Path(__file__).resolve().parents[1]
+EXAMPLE = ROOT / "examples" / "sales_detail.recipe.json"
+SPEC = build_spec()
+
+
+def example() -> dict:
+    return json.loads(EXAMPLE.read_text(encoding="utf-8"))
+
+
+def paths(issues: list[dict]) -> list[str]:
+    return [i["path"] for i in issues]
+
+
+def check(recipe: dict, columns: dict | None = None) -> list[dict]:
+    return validator.validate(recipe, SPEC, columns)
+
+
+def test_example_recipe_passes_both():
+    assert check(example()) == []
+    assert len(parse_recipe(example()).steps) == 8
+
+
+# ── 結構：驗證器與 pydantic 必須一致 ─────────────────────────────
+
+
+def mutate(fn):
+    data = example()
+    fn(data)
+    return data
+
+
+STRUCTURAL_CASES = {
+    "unknown step type": lambda d: d["steps"][0].update(type="remove_top_row"),
+    "missing required": lambda d: d["steps"][0].pop("n"),
+    "wrong type": lambda d: d["steps"][0].update(n="2"),
+    "negative": lambda d: d["steps"][0].update(n=-1),
+    "bool is not int": lambda d: d["steps"][0].update(n=True),
+    "extra field": lambda d: d["steps"][1].update(nn=1),
+    "bad enum": lambda d: d["steps"][6].update(on_extra="ignore"),
+    "empty names": lambda d: d["steps"][6].update(names=[]),
+    "empty name item": lambda d: d["steps"][6].update(names=["a", ""]),
+    "bad condition op": lambda d: d["steps"][7]["conditions"][0].update(op="startswith"),
+    "condition missing value": lambda d: d["steps"][7]["conditions"][0].pop("value"),
+    "number condition with text": lambda d: d["steps"][7]["conditions"].append(
+        {"column": "金額", "op": "gt", "value": "5"}
+    ),
+    "regex condition without pattern": lambda d: d["steps"][7]["conditions"].append(
+        {"column": "金額", "op": "regex"}
+    ),
+    "bad step id": lambda d: d["steps"][0].update(id="s 1"),
+    "two inputs": lambda d: d["inputs"].append(dict(d["inputs"][0], id="b")),
+    "no inputs": lambda d: d.update(inputs=[]),
+    "bad reader": lambda d: d["inputs"][0].update(reader="excel"),
+    "missing output": lambda d: d.pop("output"),
+    "bad output format": lambda d: d["output"].update(format="csv"),
+    "unknown top-level": lambda d: d.update(author="x"),
+    "steps not a list": lambda d: d.update(steps={}),
+    "newer minor": lambda d: d.update(tablade_recipe="1.9"),
+    "other major": lambda d: d.update(tablade_recipe="2.0"),
+    "bad version": lambda d: d.update(tablade_recipe="1"),
+}
+
+
+@pytest.mark.parametrize("name", STRUCTURAL_CASES)
+def test_validator_agrees_with_pydantic(name):
+    data = mutate(STRUCTURAL_CASES[name])
+    issues = check(data)
+    assert issues, f"驗證器沒抓到：{name}"
+    with pytest.raises(RecipeError):
+        parse_recipe(data)
+
+
+def test_structural_messages_are_actionable():
+    issues = check(mutate(STRUCTURAL_CASES["unknown step type"]))
+    assert issues[0]["path"] == "steps[0].type"
+    assert issues[0]["hint"] == "是不是「remove_top_rows」？"
+    issues = check(mutate(STRUCTURAL_CASES["extra field"]))
+    assert (issues[0]["path"], issues[0]["error"]) == ("steps[1].nn", "不認得的欄位")
+    issues = check(mutate(STRUCTURAL_CASES["bad condition op"]))
+    assert (
+        issues[0]["path"] == "steps[7].conditions[0].op"
+        and issues[0]["hint"] == "是不是「starts_with」？"
+    )
+
+
+def test_version_rules():
+    assert validator.check_version("1.0", "1.4") is None
+    assert "比這裡支援的" in validator.check_version("1.5", "1.4")["error"]
+    assert "不相容" in validator.check_version("2.0", "1.4")["error"]
+    assert validator.check_version(1, "1.4")["path"] == "tablade_recipe"
+
+
+# ── 語意 ──────────────────────────────────────────────────────
+
+
+def test_unknown_column_with_hint():
+    data = mutate(lambda d: d["steps"][5].update(columns=["門"]))
+    issues = check(data)
+    assert paths(issues) == ["steps[5].columns[0]"]
+    assert "是不是「門市」？" in issues[0]["hint"]
+    parse_recipe(data)  # 語意問題只有驗證器抓得到
+
+
+def test_column_refs_inside_filter_conditions():
+    data = mutate(lambda d: d["steps"][7]["conditions"][0].update(column="價格"))
+    assert paths(check(data)) == ["steps[7].conditions[0].column"]
+
+
+def test_column_flow_follows_disabled_steps_and_defaults():
+    # s7 停用 → 「備註」沒被拆開，filter 引用「通路」就不存在
+    data = mutate(
+        lambda d: (
+            d["steps"][6].update(enabled=False),
+            d["steps"][7]["conditions"][0].update(column="通路"),
+        )
+    )
+    assert paths(check(data)) == ["steps[7].conditions[0].column"]
+    # split_delimited 省略 column 時預設是 line
+    data = mutate(lambda d: d["steps"][3].pop("column"))
+    assert check(data) == []
+
+
+def test_new_column_problems():
+    dup = mutate(lambda d: d["steps"][6].update(names=["通路", "門市"]))
+    assert "和現有欄位重複" in check(dup)[0]["error"]
+    system = mutate(lambda d: d["steps"][6].update(names=["__x"]))
+    assert "不能以 __ 開頭" in check(system)[0]["error"]
+    count = mutate(lambda d: d["steps"][4].update(names=["日期", "門市"]))
+    assert check(count)[0]["error"] == "目前有 6 個資料欄，但列了 2 個欄名"
+
+
+def test_duplicate_step_ids_and_system_columns():
+    data = mutate(lambda d: d["steps"][1].update(id="s1"))
+    assert check(data)[0]["error"] == "步驟 id「s1」和 steps[0] 重複"
+    ok = mutate(
+        lambda d: d["steps"][7]["conditions"].append(
+            {"column": "__line_no", "op": "gt", "value": 3}
+        )
+    )
+    assert check(ok) == []
+    bad = mutate(
+        lambda d: d["steps"][7]["conditions"].append({"column": "__nope", "op": "is_empty"})
+    )
+    assert "沒有系統欄位" in check(bad)[0]["error"]
+
+
+def test_csv_input_columns_are_checked_when_known():
+    data = mutate(
+        lambda d: (
+            d["inputs"][0].update(reader="csv"),
+            d.update(steps=[{"id": "f", "type": "fill_down", "columns": ["門巿"]}]),
+        )
+    )
+    assert check(data) == []  # 不知道 CSV 有哪些欄位時不檢查
+    issues = check(data, {"src": ["日期", "門市"]})
+    assert paths(issues) == ["steps[0].columns[0]"]
+
+
+def test_structural_error_stops_column_flow_without_cascading():
+    data = mutate(lambda d: d["steps"][3].update(columns="欄1"))
+    assert paths(check(data)) == ["steps[3].columns"]
+
+
+# ── 驗證器只用標準函式庫（AI skill 的沙箱不能安裝套件）──────────────
+
+
+def test_validator_is_stdlib_only():
+    tree = ast.parse(Path(validator.__file__).read_text(encoding="utf-8"))
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported |= {a.name.split(".")[0] for a in node.names}
+        elif isinstance(node, ast.ImportFrom):
+            assert node.level == 0, "驗證器不能用相對 import"
+            imported.add(node.module.split(".")[0])
+    assert imported <= set(sys.stdlib_module_names) | {"__future__"}, imported
+
+
+def test_validator_runs_standalone(tmp_path):
+    """複製到別的地方、不裝 tablade 也能執行（模擬 AI skill 的沙箱）。"""
+    script = tmp_path / "validate_recipe.py"
+    script.write_text(Path(validator.__file__).read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "spec.json").write_text(json.dumps(SPEC, ensure_ascii=False), encoding="utf-8")
+    good = tmp_path / "good.recipe.json"
+    good.write_text(json.dumps(example(), ensure_ascii=False), encoding="utf-8")
+    bad = tmp_path / "bad.recipe.json"
+    bad.write_text(
+        json.dumps(mutate(STRUCTURAL_CASES["unknown step type"]), ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    def run(*args):
+        return subprocess.run(
+            [sys.executable, "-I", str(script), *args, "--spec", str(tmp_path / "spec.json")],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+        )
+
+    ok = run(str(good))
+    assert ok.returncode == 0, ok.stderr
+    assert "通過驗證" in ok.stdout
+    failed = run(str(bad), "--json")
+    assert failed.returncode == 1
+    result = json.loads(failed.stdout)
+    assert result["ok"] is False and result["issues"][0]["path"] == "steps[0].type"
+
+
+def test_validator_reads_csv_header_from_data(tmp_path):
+    data_file = tmp_path / "x.csv"
+    data_file.write_bytes("日期,門市\r\n1,2\r\n".encode("cp950"))
+    assert validator.csv_header(data_file) == ["日期", "門市"]
+
+
+# ── schema lock：步驟定義變了就要升版本 ──────────────────────────
+
+
+def test_schema_lock_matches_current_steps():
+    lock = read_lock()
+    current = lock_content()
+    if lock["spec"] != current["spec"]:
+        if lock["recipe_version"] == RECIPE_VERSION:
+            pytest.fail(
+                f"步驟定義有結構性變更，但 RECIPE_VERSION 仍是 {RECIPE_VERSION}。"
+                "請升版本（相容的變更升 minor，不相容的升 major），"
+                "再執行 uv run python scripts/update_schema_lock.py"
+            )
+        pytest.fail("RECIPE_VERSION 已升級：請執行 uv run python scripts/update_schema_lock.py")
+    assert lock["recipe_version"] == RECIPE_VERSION, "請執行 scripts/update_schema_lock.py"
+
+
+def test_lock_ignores_human_text():
+    spec = copy.deepcopy(SPEC)
+    spec["steps"]["filter"]["label"] = "改個名字"
+    spec["schema"]["$defs"]["Filter"]["properties"]["match"]["title"] = "改標題"
+    from tablade.recipe.spec import structural
+
+    assert structural(spec) == structural(SPEC)
+    assert LOCK_PATH.name == "recipe-schema.lock.json"

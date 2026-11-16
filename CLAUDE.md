@@ -14,7 +14,12 @@ Tablade：本機執行、Power Query 式的資料清洗工具（Python + Polars 
 ## 程式規則
 
 - 使用 Polars **2.x 的 Python API**。不使用已移除的 API（例如 `melt` 改用 `unpivot`）；不確定時先查官方文件或實際跑一次。
-- 新增步驟時，必須同時完成：pydantic 參數 model、`apply()`、`describe()`、`infer_schema()`（視需要）、單元測試（假資料）。
+- 新增步驟（DESIGN.md §7.3、§17.5）：
+  1. 在 `src/tablade/steps/` 寫一個 `Step` 子類別並加上 `@register`：`type: Literal[...]`、參數欄位（`title`、引用欄位用 `ColumnRef` / `ColumnRefs`、新欄名用 `NewColumns`）、`label`、`category`、docstring、`ai_notes`、`effect`（欄位效果）、至少一個 `examples`（同時是測試）。
+  2. 實作 `apply()`（純函式）、`describe()`，需要時加 `warning_checks()` 與建立步驟時用的 `suggest_*()`。
+  3. 新模組要加進 `steps/__init__.py`（匯入順序＝顯示順序），並在 `tests/test_steps.py` 補邊界情況的測試。
+  4. 結構有變（新增步驟或參數、改預設值）就升 `RECIPE_VERSION`（相容升 minor），再執行 `uv run python scripts/update_schema_lock.py`；只改說明文字不用升。
+- `src/tablade/recipe/validator.py` 只能用 Python 標準函式庫、不能 import tablade（它會原封不動放進 AI skill），有測試檢查。
 - 步驟 `apply()` 必須是純函式：不讀寫檔案、不 print、不碰 UI。
 - 依賴列順序的操作，一律先依 `__source_file, __line_no` 排序。
 - 不使用 `eval` / `exec`；不加入任何網路連線程式碼（`scripts/check_code_policy.py` 會檢查 `src/`）。
@@ -43,6 +48,9 @@ TABLADE_DEV_URL=http://localhost:5173 uv run tablade   # 真正的視窗＋熱�
 uv run pytest
 uv run python scripts/check_no_data.py --all
 uv run python scripts/check_code_policy.py
+uv run tablade run examples/sales_detail.recipe.json      # 先 uv run python scripts/gen_fixtures.py examples/data
+uv run tablade validate recipe.json --run                 # 驗證＋用真實資料試跑
+uv run python scripts/update_schema_lock.py              # 升 RECIPE_VERSION 後
 uv run ruff check . && uv run ruff format --check .
 uv run tablade                  # 開視窗
 uv run tablade gui --smoke      # 開視窗、確認 JS bridge 正常後自動關閉

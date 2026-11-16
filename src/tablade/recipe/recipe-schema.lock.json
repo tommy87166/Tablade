@@ -1,0 +1,687 @@
+{
+  "recipe_version": "1.0",
+  "spec": {
+    "readers": {
+      "csv": {
+        "columns": null
+      },
+      "text_lines": {
+        "columns": [
+          "line"
+        ]
+      }
+    },
+    "recipe_version": "1.0",
+    "schema": {
+      "$defs": {
+        "EmptyCondition": {
+          "additionalProperties": false,
+          "properties": {
+            "column": {
+              "minLength": 1,
+              "type": "string",
+              "ui": "column"
+            },
+            "op": {
+              "enum": [
+                "is_empty",
+                "is_not_empty"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "column",
+            "op"
+          ],
+          "type": "object"
+        },
+        "FillDown": {
+          "additionalProperties": false,
+          "properties": {
+            "blank_as_null": {
+              "default": true,
+              "type": "boolean"
+            },
+            "columns": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "ui": "columns"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "type": {
+              "const": "fill_down",
+              "default": "fill_down",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "columns"
+          ],
+          "type": "object"
+        },
+        "Filter": {
+          "additionalProperties": false,
+          "properties": {
+            "conditions": {
+              "items": {
+                "discriminator": {
+                  "mapping": {
+                    "contains": "#/$defs/TextCondition",
+                    "ends_with": "#/$defs/TextCondition",
+                    "equals": "#/$defs/TextCondition",
+                    "ge": "#/$defs/NumberCondition",
+                    "gt": "#/$defs/NumberCondition",
+                    "is_empty": "#/$defs/EmptyCondition",
+                    "is_not_empty": "#/$defs/EmptyCondition",
+                    "le": "#/$defs/NumberCondition",
+                    "lt": "#/$defs/NumberCondition",
+                    "not_contains": "#/$defs/TextCondition",
+                    "not_equals": "#/$defs/TextCondition",
+                    "not_regex": "#/$defs/RegexCondition",
+                    "num_equals": "#/$defs/NumberCondition",
+                    "regex": "#/$defs/RegexCondition",
+                    "starts_with": "#/$defs/TextCondition"
+                  },
+                  "propertyName": "op"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/TextCondition"
+                  },
+                  {
+                    "$ref": "#/$defs/RegexCondition"
+                  },
+                  {
+                    "$ref": "#/$defs/EmptyCondition"
+                  },
+                  {
+                    "$ref": "#/$defs/NumberCondition"
+                  }
+                ]
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "keep": {
+              "default": "matching",
+              "enum": [
+                "matching",
+                "non_matching"
+              ],
+              "type": "string"
+            },
+            "match": {
+              "default": "all",
+              "enum": [
+                "all",
+                "any"
+              ],
+              "type": "string"
+            },
+            "type": {
+              "const": "filter",
+              "default": "filter",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "conditions"
+          ],
+          "type": "object"
+        },
+        "Input": {
+          "additionalProperties": false,
+          "properties": {
+            "encoding": {
+              "default": "auto",
+              "enum": [
+                "auto",
+                "utf-8",
+                "utf-8-sig",
+                "cp950",
+                "big5hkscs"
+              ],
+              "type": "string"
+            },
+            "id": {
+              "default": "src",
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "pattern": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "reader": {
+              "default": "text_lines",
+              "enum": [
+                "text_lines",
+                "csv"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "pattern"
+          ],
+          "type": "object"
+        },
+        "NumberCondition": {
+          "additionalProperties": false,
+          "properties": {
+            "column": {
+              "minLength": 1,
+              "type": "string",
+              "ui": "column"
+            },
+            "op": {
+              "enum": [
+                "gt",
+                "ge",
+                "lt",
+                "le",
+                "num_equals"
+              ],
+              "type": "string"
+            },
+            "value": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "column",
+            "op",
+            "value"
+          ],
+          "type": "object"
+        },
+        "Output": {
+          "additionalProperties": false,
+          "properties": {
+            "format": {
+              "const": "parquet",
+              "default": "parquet",
+              "type": "string"
+            },
+            "keep_system_columns": {
+              "default": true,
+              "type": "boolean"
+            },
+            "path": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "PromoteHeaders": {
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "names": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "ui": "new_columns"
+            },
+            "type": {
+              "const": "promote_headers",
+              "default": "promote_headers",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "names"
+          ],
+          "type": "object"
+        },
+        "RegexCondition": {
+          "additionalProperties": false,
+          "properties": {
+            "column": {
+              "minLength": 1,
+              "type": "string",
+              "ui": "column"
+            },
+            "op": {
+              "enum": [
+                "regex",
+                "not_regex"
+              ],
+              "type": "string"
+            },
+            "pattern": {
+              "minLength": 1,
+              "type": "string",
+              "ui": "regex"
+            }
+          },
+          "required": [
+            "column",
+            "op",
+            "pattern"
+          ],
+          "type": "object"
+        },
+        "RemoveBlankRows": {
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "type": {
+              "const": "remove_blank_rows",
+              "default": "remove_blank_rows",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "type": "object"
+        },
+        "RemoveBottomRows": {
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "n": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "remove_bottom_rows",
+              "default": "remove_bottom_rows",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "n"
+          ],
+          "type": "object"
+        },
+        "RemoveTopRows": {
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "n": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "remove_top_rows",
+              "default": "remove_top_rows",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "n"
+          ],
+          "type": "object"
+        },
+        "SplitColumn": {
+          "additionalProperties": false,
+          "properties": {
+            "column": {
+              "minLength": 1,
+              "type": "string",
+              "ui": "column"
+            },
+            "delimiter": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "keep_source": {
+              "default": false,
+              "type": "boolean"
+            },
+            "names": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "ui": "new_columns"
+            },
+            "on_extra": {
+              "default": "warn",
+              "enum": [
+                "warn",
+                "merge"
+              ],
+              "type": "string"
+            },
+            "trim": {
+              "default": true,
+              "type": "boolean"
+            },
+            "type": {
+              "const": "split_column",
+              "default": "split_column",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "column",
+            "delimiter",
+            "names"
+          ],
+          "type": "object"
+        },
+        "SplitDelimited": {
+          "additionalProperties": false,
+          "properties": {
+            "column": {
+              "default": "line",
+              "minLength": 1,
+              "type": "string",
+              "ui": "column"
+            },
+            "columns": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "ui": "new_columns"
+            },
+            "delimiter": {
+              "default": ",",
+              "maxLength": 1,
+              "minLength": 1,
+              "type": "string"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "keep_source": {
+              "default": false,
+              "type": "boolean"
+            },
+            "on_extra": {
+              "default": "warn",
+              "enum": [
+                "warn",
+                "merge"
+              ],
+              "type": "string"
+            },
+            "quote": {
+              "default": "\"",
+              "maxLength": 1,
+              "type": "string"
+            },
+            "type": {
+              "const": "split_delimited",
+              "default": "split_delimited",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "columns"
+          ],
+          "type": "object"
+        },
+        "TextCondition": {
+          "additionalProperties": false,
+          "properties": {
+            "column": {
+              "minLength": 1,
+              "type": "string",
+              "ui": "column"
+            },
+            "ignore_case": {
+              "default": false,
+              "type": "boolean"
+            },
+            "op": {
+              "enum": [
+                "equals",
+                "not_equals",
+                "contains",
+                "not_contains",
+                "starts_with",
+                "ends_with"
+              ],
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "column",
+            "op",
+            "value"
+          ],
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "inputs": {
+          "items": {
+            "$ref": "#/$defs/Input"
+          },
+          "maxItems": 1,
+          "minItems": 1,
+          "type": "array"
+        },
+        "name": {
+          "default": "",
+          "type": "string"
+        },
+        "output": {
+          "$ref": "#/$defs/Output"
+        },
+        "steps": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "fill_down": "#/$defs/FillDown",
+                "filter": "#/$defs/Filter",
+                "promote_headers": "#/$defs/PromoteHeaders",
+                "remove_blank_rows": "#/$defs/RemoveBlankRows",
+                "remove_bottom_rows": "#/$defs/RemoveBottomRows",
+                "remove_top_rows": "#/$defs/RemoveTopRows",
+                "split_column": "#/$defs/SplitColumn",
+                "split_delimited": "#/$defs/SplitDelimited"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/RemoveTopRows"
+              },
+              {
+                "$ref": "#/$defs/RemoveBottomRows"
+              },
+              {
+                "$ref": "#/$defs/RemoveBlankRows"
+              },
+              {
+                "$ref": "#/$defs/SplitDelimited"
+              },
+              {
+                "$ref": "#/$defs/SplitColumn"
+              },
+              {
+                "$ref": "#/$defs/PromoteHeaders"
+              },
+              {
+                "$ref": "#/$defs/FillDown"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "type": "array"
+        },
+        "tablade_recipe": {
+          "pattern": "^\\d+\\.\\d+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tablade_recipe",
+        "inputs",
+        "output"
+      ],
+      "type": "object"
+    },
+    "steps": {
+      "fill_down": {
+        "effect": {
+          "kind": "keep"
+        },
+        "schema_ref": "FillDown"
+      },
+      "filter": {
+        "effect": {
+          "kind": "keep"
+        },
+        "schema_ref": "Filter"
+      },
+      "promote_headers": {
+        "effect": {
+          "kind": "rename_data",
+          "names": "$names"
+        },
+        "schema_ref": "PromoteHeaders"
+      },
+      "remove_blank_rows": {
+        "effect": {
+          "kind": "keep"
+        },
+        "schema_ref": "RemoveBlankRows"
+      },
+      "remove_bottom_rows": {
+        "effect": {
+          "kind": "keep"
+        },
+        "schema_ref": "RemoveBottomRows"
+      },
+      "remove_top_rows": {
+        "effect": {
+          "kind": "keep"
+        },
+        "schema_ref": "RemoveTopRows"
+      },
+      "split_column": {
+        "effect": {
+          "keep_source": "$keep_source",
+          "kind": "split",
+          "names": "$names",
+          "source": "$column"
+        },
+        "schema_ref": "SplitColumn"
+      },
+      "split_delimited": {
+        "effect": {
+          "keep_source": "$keep_source",
+          "kind": "split",
+          "names": "$columns",
+          "source": "$column"
+        },
+        "schema_ref": "SplitDelimited"
+      }
+    },
+    "system_columns": [
+      "__source_file",
+      "__line_no",
+      "__sheet",
+      "__row_type"
+    ]
+  }
+}

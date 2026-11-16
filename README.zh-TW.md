@@ -40,8 +40,8 @@
 > 測試資料一律由 `scripts/gen_fixtures.py` 產生；pre-commit hook 會擋下資料檔與疑似個資。
 > 詳見 [不讓真實資料進入 repo](#️-不讓真實資料進入-repo)。
 
-> **目前進度：M0 環境驗證。** 視窗、Python ↔ JS bridge、CSV → Parquet、單一執行檔打包都已可用；
-> 步驟引擎在 M1 加入。見 [路線圖](#️-路線圖)。
+> **目前進度：M1 引擎。** recipe、8 種步驟、驗證器與命令列（`tablade run` / `validate` / `schema`）都已可用；
+> 一步一步操作的 UI 在 M2 加入。見 [路線圖](#️-路線圖)。
 
 ---
 
@@ -153,16 +153,17 @@ cli.py — `tablade run recipe.json` 不開 UI，跑同一套引擎
 
 | 項目 | 結果 |
 |---|---|
-| 單元測試（`pytest`） | 66 項通過 |
-| 打包後的自我檢測（產生 cp950 CSV → Parquet → 讀回比對 → Lazy 查詢 → Excel 引擎） | ✅ onefile 與 `.app`（macOS arm64） |
-| 視窗 smoke test（開視窗、透過 JS bridge 跑自我檢測、關閉） | ✅ onefile 與 `.app`（macOS arm64） |
+| 單元測試（`pytest`） | 164 項通過（每種步驟文件裡的範例都當成測試跑） |
+| 範例 recipe（`examples/sales_detail.recipe.json`，2 個 cp950 檔、94 行 → 70 列） | ✅ 輸出與預期完全一致；每一列的 `__line_no` 都指回原始檔的那一行 |
+| 打包後的自我檢測（產生 cp950 CSV → Parquet → 讀回比對 → Lazy 查詢 → Excel 引擎） | ✅ Windows x64（CI）與 macOS arm64 的 onefile、onedir |
+| 視窗 smoke test（開視窗、透過 JS bridge 跑自我檢測、關閉） | ✅ Windows x64（CI）與 macOS arm64 的 onefile、onedir |
 
 | 版本（macOS arm64） | 大小 | 啟動時間 |
 |---|---|---|
 | onefile | 65 MB | 約 4 秒（每次啟動都要解壓到暫存資料夾） |
 | onedir `.app` | 解壓後 191 MB / 壓縮 62 MB（Polars runtime 佔 148 MB） | 約 1.5 秒 |
 
-Windows 的數據會在 CI 版本於權限受管控的電腦上驗證後補上。
+Windows（CI）：onefile 壓縮後 68.5 MB、onedir 壓縮後 69.2 MB。在權限受管控的 Windows 筆電上的啟動時間還要實測（M0 的完成標準）。
 
 ---
 
@@ -191,7 +192,17 @@ tablade                              # 開啟視窗
 tablade selftest [--out result.json] # 用假資料自我檢測（結束代碼 0 表示通過）
 tablade gui --smoke                  # 開視窗、自我檢測後關閉
 tablade convert in.csv out.parquet [--encoding auto|utf-8|cp950|big5hkscs]
+tablade run recipe.json [--json]                 # 執行 recipe、寫出 Parquet、列出每一步的列數
+tablade validate recipe.json [--run] [--json]    # 驗證 recipe（--run：用真實資料試跑）
+tablade schema [--out spec.json]                 # 步驟目錄＋recipe JSON Schema
 tablade version
+```
+
+跑一次範例：
+
+```bash
+uv run python scripts/gen_fixtures.py examples/data
+uv run tablade run examples/sales_detail.recipe.json
 ```
 
 若有不能出現在 repo 的字詞（人名、公司名稱、專案代號等），寫進 repo 根目錄的 `.tablade-denylist`
@@ -205,10 +216,13 @@ tablade version
 src/tablade/
 ├─ app.py             pywebview 進入點；把 frontend/dist/index.html 讀成字串載入
 ├─ api.py             JS bridge：只做參數轉換與錯誤包裝
-├─ cli.py             命令列（gui / selftest / convert / version）
+├─ cli.py             命令列（gui / run / validate / schema / selftest / convert / version）
 ├─ selftest.py        用假資料檢測打包後的環境
 ├─ fixtures.py        決定性的假資料（測試、自我檢測、範例共用）
-├─ ingest/            編碼偵測、CSV 讀取
+├─ recipe/            pydantic model、版本號、只用標準函式庫的驗證器、spec 與 schema lock
+├─ steps/             每類步驟一個模組，登錄到 registry.py
+├─ engine/            執行 recipe（每步列數、附行號的警告）；check = 驗證＋試跑
+├─ ingest/            編碼偵測、text_lines / csv 讀取、glob 與多檔合併
 └─ export/            原子寫入的 Parquet 輸出
 frontend/             Vite + React + TypeScript + shadcn/ui；bridge.ts 與 api.py 對應
 assets/               icon.svg（原始檔）、icon.ico、icon.icns、icon.png
@@ -230,7 +244,7 @@ tablade.spec          PyInstaller 設定（以 TABLADE_BUILD 切換 onefile / on
 | 階段 | 內容 | 完成標準 |
 |---|---|---|
 | **M0 環境驗證** | 最小 pywebview + Polars 程式，onefile 與 onedir 打包 | 在權限受管控的 Windows 筆電上能開出視窗，並把 CSV 轉成 Parquet |
-| M1 引擎 | 有版本號的 recipe schema、步驟 registry、`text_lines` / `csv` 讀取、compiler、CLI（`run` / `validate` / `schema`）、前 8 種步驟 | `tablade run examples/sales_report.recipe.json` 產出正確結果 |
+| M1 引擎 | 有版本號的 recipe schema、步驟 registry、`text_lines` / `csv` 讀取、compiler、CLI（`run` / `validate` / `schema`）、前 8 種步驟 | `tablade run examples/sales_detail.recipe.json` 產出正確結果 ✅ |
 | M1.5 AI skill | 沙箱實測、`tablade profile`、skill 產生器、單一檔案驗證器 | Copilot 載入 skill 後能寫出通過驗證的 recipe |
 | M2 UI | 步驟清單（新增、排序、停用、刪除）、預覽表格、參數表單、匯入 recipe 與錯誤報告、下載 skill | 不寫 JSON 也能完成範例清洗流程 |
 | M3 在地格式與追溯 | `parse_number`、`parse_date`（民國）、`trim_clean`、manifest | 輸出附 manifest，警告附行號 |
@@ -241,8 +255,11 @@ tablade.spec          PyInstaller 設定（以 TABLADE_BUILD 切換 onefile / on
 
 ## ⚠️ 已知限制
 
-- **M0 只能把單一 CSV 轉成 Parquet。** 系統欄位（`__source_file`、`__line_no`）、recipe 與步驟在 M1 加入。
-- **M0 會把整個檔案讀進記憶體**（先轉碼再解析）。一般大小的檔案在 16 GB 筆電上沒問題；串流處理隨引擎一起加入。
+- **還沒有步驟 UI**（M2）：recipe 目前手寫、由 AI 助理撰寫，或用命令列執行。
+- **一個 recipe 只能有一個 input**；合併或附加多個 input 在 M5 加入。
+- **M1 會把檔案讀進記憶體、每一步 collect 一次**（換來便宜的列數與警告）。一般大小的檔案在 16 GB
+  筆電上沒問題；之後改成 lazy 執行＋串流匯出，不必改步驟。
+- **`csv` 模式的行號假設沒有跨行欄位**；有跨行欄位的檔案請用 `text_lines`。
 - **onefile 啟動較慢**：每次啟動都要先解壓縮；部分防毒軟體或 AppLocker 會擋暫存資料夾裡的程式，這時請改用 onedir 版。
 - **執行檔未簽章**：macOS 會出現 Gatekeeper、Windows 會出現 SmartScreen 提示。
 - **macOS 版只支援 Apple Silicon（arm64）。**

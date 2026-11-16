@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-import tempfile
+import secrets
 from pathlib import Path
 
 import polars as pl
@@ -12,9 +12,8 @@ import polars as pl
 def write_parquet(frame: pl.DataFrame, path: str | Path) -> Path:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
-    os.close(fd)
-    tmp = Path(tmp_name)
+    # 不用 mkstemp：它建立的檔案權限是 600，改名後輸出檔就只有自己能讀
+    tmp = target.with_name(f".{target.name}.{secrets.token_hex(4)}.tmp")
     try:
         frame.write_parquet(tmp)
         os.replace(tmp, target)

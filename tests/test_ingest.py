@@ -73,3 +73,55 @@ def test_read_csv_keeps_all_columns_as_text(tmp_path, encoding):
     assert result.frame.columns == list(SIMPLE_HEADER)
     assert all(dtype == pl.String for dtype in result.frame.dtypes)
     assert result.frame.to_dicts() == simple_rows(25, seed=3)
+
+
+# ── text_lines 與多檔（M1）──────────────────────────────────────
+
+from tablade.ingest.sources import InputError, load, peek_columns, resolve  # noqa: E402
+from tablade.ingest.text_lines import lines_frame, split_lines  # noqa: E402
+
+
+def test_split_lines_only_breaks_on_real_newlines():
+    assert split_lines("a\r\nb\nc\rd") == ["a", "b", "c", "d"]
+    assert split_lines("a\x0cb c\n") == ["a\x0cb c"]
+    assert split_lines("a\n\n") == ["a", ""]
+    assert split_lines("") == []
+
+
+def test_lines_frame_keeps_blank_lines_and_numbers():
+    df = lines_frame("x\n\ny\n", "f.txt")
+    assert df.to_dicts() == [
+        {"__source_file": "f.txt", "__line_no": 1, "line": "x"},
+        {"__source_file": "f.txt", "__line_no": 2, "line": ""},
+        {"__source_file": "f.txt", "__line_no": 3, "line": "y"},
+    ]
+
+
+def test_load_multiple_files_in_order_with_detected_encodings(tmp_path):
+    (tmp_path / "d").mkdir()
+    (tmp_path / "d" / "b.txt").write_bytes("第二\n".encode("cp950"))
+    (tmp_path / "d" / "a.txt").write_bytes("第一\n二\n".encode())
+    df, files = load("d/*.txt", "text_lines", "auto", tmp_path)
+    assert df["line"].to_list() == ["第一", "二", "第二"]
+    assert [(f.path, f.encoding, f.rows) for f in files] == [
+        ("d/a.txt", "utf-8", 2),
+        ("d/b.txt", "cp950", 1),
+    ]
+    assert len(files[0].sha256) == 64
+
+
+def test_load_csv_with_different_columns_and_line_numbers(tmp_path):
+    (tmp_path / "1.csv").write_text("a,b\n1,2\n3,4\n", encoding="utf-8")
+    (tmp_path / "2.csv").write_text("a,c\n5,6\n", encoding="utf-8")
+    df, _ = load("*.csv", "csv", "auto", tmp_path)
+    assert df.columns == ["__source_file", "__line_no", "a", "b", "c"]
+    assert df["__line_no"].to_list() == [2, 3, 2]
+    assert df["c"].to_list() == [None, None, "6"]
+
+
+def test_resolve_and_peek(tmp_path):
+    with pytest.raises(InputError, match="找不到符合"):
+        resolve("nothing_*.csv", tmp_path)
+    (tmp_path / "x.csv").write_bytes("\ufeff日期,門市\n1,2\n".encode("utf-8"))
+    assert peek_columns("x.csv", "csv", "auto", tmp_path) == ["日期", "門市"]
+    assert peek_columns("x.csv", "text_lines", "auto", tmp_path) == ["line"]

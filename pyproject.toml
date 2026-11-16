@@ -61,4 +61,6 @@ ignore = [
     "RUF001", # 全形標點在中文字串裡是正常的
     "RUF002",
     "RUF003",
+    "RUF005", # 路徑串接（path + [name]）比解包好讀
+    "RUF012", # 步驟的 effect / examples 是 ClassVar（宣告在 Step 基底類別）
 ]
