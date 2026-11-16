@@ -8,20 +8,20 @@ import polars as pl
 from pydantic import Field
 
 from .base import (
-    ORDER,
+    ROW_INDEX,
     SOURCE_FILE,
     Example,
     NewColumns,
     Step,
     StepError,
     WarningCheck,
+    by_file,
+    collect_small,
     data_columns,
+    file_positions,
     quote_list,
-    row_in_file,
 )
 from .registry import register
-
-_RN = "__rn"
 
 
 @register
@@ -52,7 +52,7 @@ class PromoteHeaders(Step):
         columns = [c for c in frame.columns if not c.startswith("__")]
         if not columns or frame.height == 0:
             return {"names": columns}
-        first = frame.sort(ORDER).select(columns).row(0)
+        first = frame.select(columns).row(0)
         return {"names": cls.suggest_names(list(first))}
 
     @classmethod
@@ -74,23 +74,25 @@ class PromoteHeaders(Step):
         columns = data_columns(lf)
         if len(columns) != len(self.names):
             raise StepError(f"目前有 {len(columns)} 個資料欄，但 names 有 {len(self.names)} 個")
+        order = self.output_order(lf)
+        indexed, position, _ = file_positions(lf)
+        # 每個檔案的第一列（很小的查詢），和 recipe 記錄的欄名不同的檔案要警告
+        first = collect_small(indexed.filter(position == 0).select(SOURCE_FILE, *columns))
+        expected = list(self.names)
+        differs = [
+            row[0]
+            for row in first.iter_rows()
+            if [("" if v is None else str(v).strip()) for v in row[1:]] != expected
+        ]
         flag = self.temp("mismatch")
-        differs = pl.any_horizontal(
-            [
-                pl.col(c).first().over(SOURCE_FILE).cast(pl.String).str.strip_chars().fill_null("")
-                != name
-                for c, name in zip(columns, self.names, strict=True)
-            ]
-        )
+        mismatch = (position == 1) & by_file(dict.fromkeys(differs, True), pl.Boolean, False)
         out = (
-            lf.sort(ORDER)
-            .with_columns(row_in_file().alias(_RN))
-            .with_columns((differs & (pl.col(_RN) == 1)).alias(flag))
-            .filter(pl.col(_RN) > 0)
-            .drop(_RN)
+            indexed.with_columns(mismatch.alias(flag))
+            .filter(position > 0)
+            .drop(ROW_INDEX)
             .rename(dict(zip(columns, self.names, strict=True)))
         )
-        return out.select([*self.output_order(lf), flag])
+        return out.select([*order, flag])
 
     def warning_checks(self) -> list[WarningCheck]:
         return [

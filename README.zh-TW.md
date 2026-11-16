@@ -89,8 +89,8 @@
 
 - `__` 開頭的是系統欄位：UI 預設隱藏，匯出時可選擇是否保留。
 - 多檔（glob）以 `diagonal_relaxed` 合併：欄位不一致時自動補 null。
-- 依賴列順序的操作（向下填滿、移除前後 N 列）一律先依 `__source_file, __line_no` 排序，
-  不依賴實際執行順序。
+- 讀檔時就依 `__source_file`、`__line_no` 排好，每個步驟都保持這個順序，所以步驟不排序；
+  依檔案計算的步驟（向下填滿、移除前後 N 列）不用 window 函式，幾 GB 的檔案記憶體用量也固定。
 
 ### 資料流
 
@@ -179,6 +179,13 @@ Tablade 會從步驟 registry 產生 [Agent Skills](https://learn.microsoft.com/
 |---|---|---|
 | onefile | 65 MB | 約 4 秒（每次啟動都要解壓到暫存資料夾） |
 | onedir `.app` | 解壓後 191 MB / 壓縮 62 MB（Polars runtime 佔 148 MB） | 約 1.5 秒 |
+
+| 大檔（macOS arm64，假資料） | 時間 | 峰值記憶體 |
+|---|---|---|
+| 5 GB UTF-8 文字檔、8,560 萬行：開啟並產生預覽（取樣 101,000 行） | 20 秒 | 1.9 GB |
+| 同上：串流匯出全部 | 62 秒 | 2.5 GB |
+| 2 GB cp950 文字檔：轉碼 | 22 秒 | 不隨檔案成長 |
+| 改寫前：1 GB cp950 | 96 秒 | 10.2 GB |
 
 Windows（CI）：onefile 壓縮後 68.5 MB、onedir 壓縮後 69.2 MB。在權限受管控的 Windows 筆電上的啟動時間還要實測（M0 的完成標準）。
 
@@ -280,8 +287,9 @@ tablade.spec          PyInstaller 設定（以 TABLADE_BUILD 切換 onefile / on
 
 - **Copilot skill 還沒在 Agent Builder 實測**：skill 的 script 能不能讀到對話中上傳的檔案、沙箱的 Python 版本，要用 probe 確認。
 - **一個 recipe 只能有一個 input**；合併或附加多個 input 在 M5 加入。
-- **M1 會把檔案讀進記憶體、每一步 collect 一次**（換來便宜的列數與警告）。一般大小的檔案在 16 GB
-  筆電上沒問題；之後改成 lazy 執行＋串流匯出，不必改步驟。
+- **大檔的預覽是樣本。** 超過 20 萬行時，預覽只用每個檔案的前 10 萬行與最後 1,000 行，UI 上每一步的列數是樣本的；
+  匯出時會串流處理全部資料。串流匯出只回報最後的列數，警告也只算最後還留著的列。
+- **非 UTF-8 的檔案會先轉成 UTF-8 暫存檔**（cp950 約每秒 100 MB，需要約原檔 1.5 倍的暫存空間），Tablade 結束時刪除。
 - **`csv` 模式的行號假設沒有跨行欄位**；有跨行欄位的檔案請用 `text_lines`。
 - **onefile 啟動較慢**：每次啟動都要先解壓縮；部分防毒軟體或 AppLocker 會擋暫存資料夾裡的程式，這時請改用 onedir 版。
 - **執行檔未簽章**：macOS 會出現 Gatekeeper、Windows 會出現 SmartScreen 提示。

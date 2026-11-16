@@ -77,7 +77,10 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b px-3 py-2 text-xs font-medium tracking-wide text-muted-foreground">套用的步驟</div>
+      <div className="flex items-center justify-between border-b px-3 py-2 text-xs font-medium tracking-wide text-muted-foreground">
+        套用的步驟
+        {state.input.sampled ? <span className="font-normal text-amber-700 dark:text-amber-400">列數為預覽樣本</span> : null}
+      </div>
       <ol className="flex-1 space-y-1 overflow-auto p-2">
         <li>
           <button
@@ -92,7 +95,9 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
                 {input.error ?? `${input.pattern}（${input.files.length} 個檔案）`}
               </span>
             </span>
-            {input.rows !== null ? <span className="text-xs text-muted-foreground tabular-nums">{input.rows.toLocaleString()} 列</span> : null}
+            {input.total_rows !== null ? (
+              <span className="text-xs text-muted-foreground tabular-nums">{input.total_rows.toLocaleString()} 行</span>
+            ) : null}
           </button>
         </li>
         {state.steps.map((step) => {

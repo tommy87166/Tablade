@@ -1,5 +1,8 @@
 """編輯中的 recipe：狀態由 Python 管理，前端只送指令、顯示畫面狀態（DESIGN.md §16.4）。
 
+- 資料很大時（超過 ``SAMPLE_THRESHOLD`` 行），預覽只用每個來源檔的前幾行與最後幾行，
+  匯出時才串流處理全部資料（DESIGN.md §8）。
+
 - 步驟以原始 dict 保存：參數還不完整（剛新增、正在填）的步驟也能留在清單裡，顯示錯誤，
   預覽算到它的前一步為止，跟 Power Query 的步驟錯誤一樣。
 - 每一步的結果依「input ＋ 到這一步為止的步驟」的內容快取；改了第 k 步，k 之前的結果直接沿用。
@@ -24,10 +27,17 @@ from pydantic import ValidationError
 
 from . import __version__
 from .engine.check import check_recipe, format_issues, format_report
-from .engine.run import RowWarning, RunError, apply_step, execute
-from .export.parquet import write_parquet
+from .engine.run import (
+    SAMPLE_HEAD,
+    SAMPLE_TAIL,
+    SAMPLE_THRESHOLD,
+    RowWarning,
+    RunError,
+    apply_step,
+    execute,
+)
 from .ingest.encoding import DecodeError
-from .ingest.sources import InputError, SourceFile, load
+from .ingest.sources import InputError, Progress, SourceFile, sample, scan
 from .recipe.schema import RECIPE_VERSION, RecipeError, load_json, parse_recipe, pydantic_issues
 from .steps import all_steps, get
 from .steps.base import SYSTEM_PREFIX, Step
@@ -94,6 +104,8 @@ class Session:
         self._undo: list[dict[str, Any]] = []
         self._redo: list[dict[str, Any]] = []
         self._source: tuple[str, pl.DataFrame | None, list[SourceFile], str | None] | None = None
+        self.progress: Progress = None
+        """讀檔、轉碼、匯出時的進度回報（api.py 會把它推給前端）。"""
         self._computed: list[_Computed] = []
 
     # ── 快照與 undo / redo ─────────────────────────────────────
@@ -147,9 +159,15 @@ class Session:
             "output": self.output,
         }
 
+    def _reset(self) -> None:
+        """回到空白狀態（保留進度回報的接線）。"""
+        progress = self.progress
+        self.__init__()
+        self.progress = progress
+
     def new(self) -> None:
         with self._lock:
-            self.__init__()
+            self._reset()
 
     def load_recipe(self, path: Path) -> list[dict[str, Any]]:
         """開啟 recipe 檔；回傳驗證問題（有問題仍會載入，讓使用者在 UI 修正）。"""
@@ -160,7 +178,7 @@ class Session:
             if any(i["path"] == "tablade_recipe" for i in result.issues):
                 raise RecipeError([i for i in result.issues if i["path"] == "tablade_recipe"])
             inputs = data.get("inputs") if isinstance(data.get("inputs"), list) else []
-            self.__init__()
+            self._reset()
             self.recipe_path, self.base_dir = path, path.parent
             self.meta = {
                 "name": str(data.get("name", "")),
@@ -361,17 +379,27 @@ class Session:
             error = "還沒有開啟資料"
         else:
             try:
-                frame, files = load(
+                lf, files = scan(
                     self.input["pattern"],
                     self.input["reader"],
                     self.input["encoding"],
                     self.base_dir,
+                    self.progress,
                 )
+                if sum(f.rows for f in files) <= SAMPLE_THRESHOLD:
+                    frame = lf.collect(engine="streaming")
+                else:
+                    self._report("讀取預覽樣本")
+                    frame = sample(lf, files, self.input["reader"], SAMPLE_HEAD, SAMPLE_TAIL)
             except (InputError, DecodeError, LookupError, pl.exceptions.PolarsError) as err:
                 error = str(err)
         self._source = (key, frame, files, error)
         self._computed = []
         return frame, files, error
+
+    def _report(self, stage: str) -> None:
+        if self.progress is not None:
+            self.progress({"stage": stage, "file": "", "done": 0, "total": 0})
 
     def _compute(self) -> list[_Computed]:
         """依序計算每一步（有快取）。遇到參數不合法或執行失敗的步驟，之後的步驟都不算。"""
@@ -507,6 +535,9 @@ class Session:
                 "input": {
                     **self.input,
                     "error": source_error,
+                    "total_rows": sum(f.rows for f in files) if files else None,
+                    "sampled": bool(files) and sum(f.rows for f in files) > SAMPLE_THRESHOLD,
+                    "sample": {"head": SAMPLE_HEAD, "tail": SAMPLE_TAIL},
                     "rows": source.height if source is not None else None,
                     "columns": _data_columns(source) if source is not None else None,
                     "files": [f.__dict__ for f in files],
@@ -565,13 +596,13 @@ class Session:
                 raise SessionError("還沒有開啟資料")
             recipe = parse_recipe(self.recipe_dict())
             path = target or (self.base_dir / self.output["path"])
-            frame, report = execute(recipe, self.base_dir, write_output=False)
-            write_parquet(frame, path)
+            _, report = execute(recipe, self.base_dir, output=path, progress=self.progress)
             return {
                 "path": str(path),
-                "rows": frame.height,
+                "rows": report.rows,
                 "columns": len(report.columns),
                 "warnings": report.warning_count,
+                "mode": report.mode,
             }
 
     def error_report(self) -> str:

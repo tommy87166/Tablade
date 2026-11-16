@@ -27,6 +27,25 @@ OnExtra = Literal["warn", "merge"]
 ON_EXTRA_LABELS = {"warn": "產生警告並捨棄多的段", "merge": "多的段併入最後一欄"}
 
 
+_REGEX_META = set("\\.^$|?*+()[]{}-/#&~")
+
+
+def _escape(ch: str) -> str:
+    if ch == "\t":
+        return "\\t"
+    return "\\" + ch if ch in _REGEX_META else ch
+
+
+def field_pattern(delimiter: str, quote: str) -> str:
+    """分隔符號＋一個 CSV 欄位：引號欄位（引號後的多餘字元也算進來）或一般欄位。
+
+    每一行前面會先補一個分隔符號，所以每個欄位都以分隔符號開頭，不會有長度為 0 的比對
+    （行首的空欄位如果靠 ``^`` 比對成空字串，下一個比對會跳過第一個分隔符號，少一欄）。
+    """
+    d, q = _escape(delimiter), _escape(quote)
+    return f"{d}({q}(?:[^{q}]|{q}{q})*{q}[^{d}]*|[^{d}]*)"
+
+
 def _parse_line(line: str | None, delimiter: str, quote: str) -> list[str]:
     if line is None:
         return []
@@ -100,34 +119,47 @@ class SplitDelimited(Step):
         width = max((len(_parse_line(v, delimiter, quote)) for v in lines), default=1)
         return [f"欄{i}" for i in range(1, max(width, 1) + 1)]
 
+    def fields(self) -> pl.Expr:
+        """每一行拆成欄位的 list（Polars 原生正規表示式，可以串流處理幾 GB 的檔案）。
+
+        引號內的分隔符號不拆，兩個連續引號代表一個引號（和 CSV 相同）；空行沒有欄位。
+        引號不成對時，引號會保留在值裡（Python 的 csv 會把後面整行併成一欄）。
+        """
+        col = pl.col(self.column).cast(pl.String)
+        if self.quote:
+            q, item = self.quote, pl.element()
+            prefixed = pl.concat_str([pl.lit(self.delimiter), col])
+            parts = prefixed.str.extract_all(field_pattern(self.delimiter, q)).list.eval(
+                item.str.slice(1)
+            )
+            quoted = item.str.starts_with(q) & item.str.ends_with(q) & (item.str.len_chars() >= 2)
+            inner = item.str.slice(1, item.str.len_chars() - 2).str.replace_all(
+                q + q, q, literal=True
+            )
+            parts = parts.list.eval(pl.when(quoted).then(inner).otherwise(item))
+        else:
+            parts = col.str.split(self.delimiter)
+        return pl.when(col == "").then(None).otherwise(parts)
+
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
         names = list(self.columns)
-        count_name = self.temp("fields")
-        dtype = pl.Struct(
-            [pl.Field(n, pl.String) for n in names] + [pl.Field(count_name, pl.Int64)]
+        n = len(names)
+        order = self.output_order(lf)
+        parts_name, count_name = self.temp("parts"), self.temp("fields")
+        out = lf.with_columns(self.fields().alias(parts_name)).with_columns(
+            pl.col(parts_name).list.len().fill_null(0).cast(pl.Int64).alias(count_name)
         )
-        delimiter, quote, merge = self.delimiter, self.quote, self.on_extra == "merge"
-
-        def parse(series: pl.Series) -> pl.Series:
-            data: dict[str, list] = {n: [] for n in names}
-            counts = []
-            for value in series.to_list():
-                fields = _parse_line(value, delimiter, quote)
-                counts.append(len(fields))
-                if merge and len(fields) > len(names):
-                    fields = fields[: len(names) - 1] + [delimiter.join(fields[len(names) - 1 :])]
-                for i, n in enumerate(names):
-                    data[n].append(fields[i] if i < len(fields) else None)
-            schema = {**dict.fromkeys(names, pl.String), count_name: pl.Int64}
-            frame = pl.DataFrame({**data, count_name: counts}, schema=schema)
-            return frame.to_struct(series.name)
-
-        struct_name = self.temp("struct")
-        out = lf.with_columns(
-            pl.col(self.column).map_batches(parse, return_dtype=dtype).alias(struct_name)
-        )
-        out = out.unnest(struct_name)
-        return out.select([*self.output_order(lf), count_name])
+        parts = pl.col(parts_name)
+        exprs = [parts.list.get(i, null_on_oob=True).alias(name) for i, name in enumerate(names)]
+        if self.on_extra == "merge":
+            rest = parts.list.slice(n - 1).list.join(self.delimiter)
+            exprs[-1] = (
+                pl.when(pl.col(count_name) > n)
+                .then(rest)
+                .otherwise(parts.list.get(n - 1, null_on_oob=True))
+                .alias(names[-1])
+            )
+        return out.with_columns(exprs).select([*order, count_name])
 
     def warning_checks(self) -> list[WarningCheck]:
         if self.on_extra == "merge":

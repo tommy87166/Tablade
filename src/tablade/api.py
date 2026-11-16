@@ -9,11 +9,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import platform
 import shutil
 import tempfile
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -32,13 +34,15 @@ PARQUET_TYPES = ("Parquet (*.parquet)",)
 
 def _wrap(fn: Callable[..., dict[str, Any]]) -> Callable[..., dict[str, Any]]:
     @functools.wraps(fn)
-    def wrapper(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    def wrapper(self: Api, *args: Any, **kwargs: Any) -> dict[str, Any]:
         try:
-            return {"ok": True, **fn(*args, **kwargs)}
+            return {"ok": True, **fn(self, *args, **kwargs)}
         except RecipeError as exc:
             return {"ok": False, "error": str(exc), "issues": exc.issues}
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        finally:
+            self._push_progress(None)
 
     return wrapper
 
@@ -59,9 +63,24 @@ class Api:
         self._exit_code = 1 if smoke else 0
         self._done = threading.Event()
         self._smoke_dir: Path | None = None
+        self._progress_at = 0.0
+        self._progress_stage: str | None = None
+        self._session.progress = self._push_progress
 
     def _attach(self, window: Any) -> None:
         self._window = window
+
+    def _push_progress(self, progress: dict[str, Any] | None) -> None:
+        """讀檔、轉碼、匯出的進度推給前端（pywebview 的 window.state；最多每 0.2 秒一次）。"""
+        if self._window is None:
+            return
+        now = time.monotonic()
+        stage = None if progress is None else f"{progress['stage']}:{progress['file']}"
+        if progress is not None and stage == self._progress_stage and now - self._progress_at < 0.2:
+            return
+        self._progress_at, self._progress_stage = now, stage
+        with contextlib.suppress(Exception):  # 視窗關閉中
+            self._window.state.progress = progress
 
     def _dialog(self, kind: str, **kwargs: Any) -> list[Path]:
         import webview

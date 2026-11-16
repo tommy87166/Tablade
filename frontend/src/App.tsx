@@ -30,7 +30,17 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { waitForApi, type Issue, type ReadyInfo, type Result, type SelftestResult, type TabladeApi, type ViewState } from './bridge'
+import {
+  onProgress,
+  waitForApi,
+  type Issue,
+  type Progress,
+  type ReadyInfo,
+  type Result,
+  type SelftestResult,
+  type TabladeApi,
+  type ViewState,
+} from './bridge'
 import { StepForm } from './components/form/StepForm'
 import { PreviewGrid, type AddStepRequest, type GridHandle } from './components/PreviewGrid'
 import { ReportDialog } from './components/ReportDialog'
@@ -39,6 +49,38 @@ import { StepsPanel } from './components/StepsPanel'
 
 type Status = { text: string; error?: boolean }
 const SMOKE_TIMEOUT_MS = 30_000
+
+function formatBytes(n: number) {
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(0)} MB`
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
+/** 讀檔、轉碼、匯出時的進度（大檔可能要好幾分鐘）。 */
+function ProgressBar({ progress }: { progress: Progress }) {
+  const ratio = progress.total > 0 ? Math.min(progress.done / progress.total, 1) : null
+  return (
+    <div className="border-b bg-primary/5 px-3 py-1.5 text-xs">
+      <div className="flex items-center gap-2">
+        <span className="font-medium">{progress.stage}</span>
+        <span className="min-w-0 flex-1 truncate text-muted-foreground">{progress.file}</span>
+        {ratio !== null ? (
+          <span className="tabular-nums text-muted-foreground">
+            {formatBytes(progress.done)} / {formatBytes(progress.total)}（{Math.round(ratio * 100)}%）
+          </span>
+        ) : (
+          <span className="text-muted-foreground">處理中…</span>
+        )}
+      </div>
+      <div className="mt-1 h-1 overflow-hidden rounded bg-primary/15">
+        <div
+          className={`h-full bg-primary transition-[width] ${ratio === null ? 'w-1/3 animate-pulse' : ''}`}
+          style={ratio === null ? undefined : { width: `${ratio * 100}%` }}
+        />
+      </div>
+    </div>
+  )
+}
 
 function ToolButton({ label, onClick, disabled, children }: { label: string; onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
   return (
@@ -62,6 +104,7 @@ export default function App() {
   const [showSystem, setShowSystem] = useState(false)
   const [report, setReport] = useState<{ open: boolean; issues: Issue[]; text: string }>({ open: false, issues: [], text: '' })
   const [selftest, setSelftest] = useState<SelftestResult | null>(null)
+  const [progress, setProgress] = useState<Progress | null>(null)
   const grid = useRef<GridHandle>(null)
   const gridLoaded = useRef<((total: number) => void) | null>(null)
 
@@ -114,6 +157,7 @@ export default function App() {
       }
       setApi(target)
       setInfo(ready)
+      onProgress(setProgress)
       const first = await target.state()
       if (first.ok) setState(first.state)
       setStatus({ text: '就緒。先「開啟資料」，再從左下角新增步驟。' })
@@ -150,7 +194,8 @@ export default function App() {
       const res = await call('匯出 Parquet', () => api.export_parquet())
       if (res && !res.cancelled) {
         const warn = res.warnings ? `，警告 ${res.warnings.toLocaleString()} 則` : ''
-        setStatus({ text: `已匯出 ${res.path}：${res.rows?.toLocaleString()} 列 × ${res.columns} 欄${warn}` })
+        const how = res.mode === 'stream' ? '（串流處理全部資料）' : ''
+        setStatus({ text: `已匯出 ${res.path}：${res.rows?.toLocaleString()} 列 × ${res.columns} 欄${warn}${how}` })
       }
     },
     downloadSkill: async () => {
@@ -294,6 +339,7 @@ export default function App() {
             </DropdownMenu>
           </div>
         </header>
+        {busy && progress ? <ProgressBar progress={progress} /> : null}
 
         <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
           <ResizablePanel defaultSize="22" minSize={220}>
@@ -319,6 +365,20 @@ export default function App() {
                       <span className="text-muted-foreground tabular-nums">
                         {state.preview.rows.toLocaleString()} 列 × {state.preview.columns.filter((c) => !c.system).length} 欄
                       </span>
+                    ) : null}
+                    {state.input.sampled ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Badge variant="outline" className="border-amber-500/50 text-amber-700 dark:text-amber-400">
+                            預覽樣本
+                          </Badge>
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-80">
+                          資料共 {state.input.total_rows?.toLocaleString()} 行，預覽只用每個檔案的前{' '}
+                          {state.input.sample.head.toLocaleString()} 行與最後 {state.input.sample.tail.toLocaleString()} 行，
+                          步驟的列數也是樣本的。匯出時會處理全部資料。
+                        </TooltipContent>
+                      </Tooltip>
                     ) : null}
                     {state.preview.step !== state.preview.requested ? (
                       <Badge variant="destructive">

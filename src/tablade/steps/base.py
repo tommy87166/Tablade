@@ -1,4 +1,4 @@
-"""步驟的共同介面（DESIGN.md §7.3、§17.5）。
+"""步驟的共同介面（DESIGN.md §7.3、§8、§17.5）。
 
 每種步驟是一個 pydantic model：欄位就是參數，類別屬性是給 UI、驗證器與 AI skill 的中繼資料。
 
@@ -7,6 +7,13 @@
 - ``warning_checks()``：要對輸出檢查的警告條件（可引用 ``__w_<id>_*`` 暫存欄位，engine 會在下一步前移除）
 - ``effect``：欄位效果樣板，``$參數名`` 會換成參數值；Tablade 與驗證器都用它推算欄位
 - ``examples``：輸入、參數、預期輸出；同時是單元測試，也會寫進 AI skill 的步驟目錄
+
+**串流規則**（幾 GB 的檔案也要在固定記憶體內跑完，DESIGN.md §8）：
+- 資料讀進來時已經依 ``__source_file, __line_no`` 排好，filter / with_columns 都會保持順序，
+  所以步驟**不要再 sort**（排序會把整份資料放進記憶體）。
+- 不要用 window 函式（``.over()``）與 ``replace_strict``：串流引擎不支援，會退回整份放進記憶體。
+  每個來源檔的資訊（起點、列數、第一列）改用 ``file_positions()`` 先做一次小聚合，
+  再用 ``by_file()`` 的 when 對照表套回每一列。
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ LINE_NO = "__line_no"
 ORDER = (SOURCE_FILE, LINE_NO)
 SYSTEM_PREFIX = "__"
 TEMP_PREFIX = "__w_"
+ROW_INDEX = "__g"
 
 NonEmpty = Annotated[str, StringConstraints(min_length=1)]
 ColumnRef = Annotated[str, Field(min_length=1, json_schema_extra={"ui": "column"})]
@@ -93,24 +101,56 @@ class Step(BaseModel):
         return f"{TEMP_PREFIX}{self.id}_{name}"
 
     def output_order(self, lf: pl.LazyFrame) -> list[str]:
-        """依欄位效果推算輸出欄位順序：系統欄位、資料欄位、暫存欄位。"""
+        """依欄位效果推算輸出欄位順序：系統欄位、資料欄位，再保留前面步驟留下的暫存欄位。"""
         names = lf.collect_schema().names()
         data = [c for c in names if not c.startswith(SYSTEM_PREFIX)]
         effect = resolve_effect(self.effect, self.model_dump(mode="json"))
-        return system_columns(names) + apply_effect(data, effect)
+        temps = [c for c in names if c.startswith(TEMP_PREFIX)]
+        return system_columns(names) + apply_effect(data, effect) + temps
 
 
 def system_columns(names: list[str]) -> list[str]:
-    return [c for c in names if c.startswith(SYSTEM_PREFIX) and not c.startswith(TEMP_PREFIX)]
+    return [
+        c
+        for c in names
+        if c.startswith(SYSTEM_PREFIX) and not c.startswith(TEMP_PREFIX) and c != ROW_INDEX
+    ]
 
 
 def data_columns(lf: pl.LazyFrame) -> list[str]:
     return [c for c in lf.collect_schema().names() if not c.startswith(SYSTEM_PREFIX)]
 
 
-def row_in_file() -> pl.Expr:
-    """每個來源檔內的列序（從 0 起），呼叫前要先依 ``ORDER`` 排序。"""
-    return pl.int_range(pl.len()).over(SOURCE_FILE)
+def by_file(values: dict[str, Any], dtype: pl.DataType, default: Any = None) -> pl.Expr:
+    """每個來源檔對應一個值（when 對照表；串流引擎不支援 ``replace_strict``）。"""
+    branches = [
+        pl.when(pl.col(SOURCE_FILE) == name).then(pl.lit(v, dtype=dtype))
+        for name, v in values.items()
+    ]
+    return pl.coalesce([*branches, pl.lit(default, dtype=dtype)])
+
+
+def collect_small(lf: pl.LazyFrame) -> pl.DataFrame:
+    """執行只會產生少量結果的查詢（每個來源檔一列之類）。"""
+    return lf.collect(engine="streaming")
+
+
+def file_positions(lf: pl.LazyFrame) -> tuple[pl.LazyFrame, pl.Expr, pl.Expr]:
+    """回傳（加上全域列號的 lf、每列在來源檔內的位置（0 起）、該檔目前的列數）。
+
+    先用一次 min / len 聚合算出每個檔案的起點與列數，都是串流原生支援的操作。
+    用完記得 ``.drop(ROW_INDEX)``。
+    """
+    lf = lf.with_row_index(ROW_INDEX)
+    stats = collect_small(
+        lf.group_by(SOURCE_FILE).agg(
+            pl.col(ROW_INDEX).min().alias("start"), pl.len().alias("count")
+        )
+    )
+    dtype = lf.collect_schema()[ROW_INDEX]
+    start = by_file(dict(zip(stats[SOURCE_FILE], stats["start"], strict=True)), dtype)
+    count = by_file(dict(zip(stats[SOURCE_FILE], stats["count"], strict=True)), dtype, 0)
+    return lf, (pl.col(ROW_INDEX).cast(pl.Int64) - start.cast(pl.Int64)), count.cast(pl.Int64)
 
 
 def is_blank(expr: pl.Expr) -> pl.Expr:

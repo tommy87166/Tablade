@@ -7,11 +7,8 @@ from typing import Literal
 import polars as pl
 from pydantic import Field
 
-from .base import ORDER, SOURCE_FILE, Example, Step, data_columns, is_blank, row_in_file
+from .base import ROW_INDEX, Example, Step, data_columns, file_positions, is_blank
 from .registry import register
-
-_RN = "__rn"
-_COUNT = "__rows_in_file"
 
 
 @register
@@ -43,12 +40,8 @@ class RemoveTopRows(Step):
         return {"n": 1}
 
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
-        return (
-            lf.sort(ORDER)
-            .with_columns(row_in_file().alias(_RN))
-            .filter(pl.col(_RN) >= self.n)
-            .drop(_RN)
-        )
+        lf, position, _ = file_positions(lf)
+        return lf.filter(position >= self.n).drop(ROW_INDEX)
 
     def describe(self) -> str:
         return f"移除每個檔案的前 {self.n} 列"
@@ -78,12 +71,8 @@ class RemoveBottomRows(Step):
         return {"n": 1}
 
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
-        return (
-            lf.sort(ORDER)
-            .with_columns(row_in_file().alias(_RN), pl.len().over(SOURCE_FILE).alias(_COUNT))
-            .filter(pl.col(_RN) < pl.col(_COUNT) - self.n)
-            .drop(_RN, _COUNT)
-        )
+        lf, position, count = file_positions(lf)
+        return lf.filter(position < count - self.n).drop(ROW_INDEX)
 
     def describe(self) -> str:
         return f"移除每個檔案的後 {self.n} 列"

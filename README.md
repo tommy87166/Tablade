@@ -94,8 +94,9 @@ Five needs drove this tool:
 
 - Columns starting with `__` are system columns: hidden in the UI by default, optional on export.
 - Multiple files (glob) are combined with `diagonal_relaxed` concat — mismatched columns become null.
-- Anything that depends on row order (fill down, remove top/bottom rows) sorts by
-  `__source_file, __line_no` first, never relying on execution order.
+- Row order is fixed at read time (`__source_file`, then `__line_no`) and every step keeps it, so
+  steps never sort; per-file steps (fill down, remove top/bottom rows) work file by file without
+  window functions, which keeps memory flat on multi-GB inputs.
 
 ### Data flow
 
@@ -190,6 +191,13 @@ The skill's version is the recipe format version, so a skill always writes recip
 |---|---|---|
 | onefile | 65 MB | ~4 s (unpacks to a temp folder on every launch) |
 | onedir `.app` | 191 MB on disk / 62 MB zipped (Polars runtime is 148 MB) | ~1.5 s |
+
+| Large file (macOS arm64, generated data) | Time | Peak memory |
+|---|---|---|
+| 5 GB UTF-8 text, 85.6 M lines — open + preview (sample of 101,000 lines) | 20 s | 1.9 GB |
+| same — streaming export of all lines | 62 s | 2.5 GB |
+| 2 GB cp950 text — transcode | 22 s | flat |
+| before the streaming rewrite: 1 GB cp950 | 96 s | 10.2 GB |
 
 Windows (CI): onefile 68.5 MB zipped, onedir 69.2 MB zipped. Start-up times on a locked-down Windows laptop are still to be measured (M0's acceptance test).
 
@@ -289,9 +297,12 @@ tablade.spec          PyInstaller config (onefile / onedir via TABLADE_BUILD)
 
 - **The Copilot skill hasn't been tried in Agent Builder yet**: whether its scripts can read files uploaded in the chat, and the sandbox's Python version, still need the probe.
 - **One input per recipe** for now; joining or appending several inputs comes with M5.
-- **Files are read into memory and each step is collected** in M1 (cheap row counts and warnings).
-  Fine for typical files on a 16 GB laptop; lazy execution with streaming export comes later
-  without changing the steps.
+- **Large files are previewed from a sample.** Above 200,000 lines the preview uses the first
+  100,000 and last 1,000 lines of each file, so per-step row counts in the UI are sample counts;
+  export streams through everything. Streaming export reports only the final row count, and its
+  warnings cover the rows that are still in the output.
+- **Non-UTF-8 files are transcoded to a temporary UTF-8 copy first** (about 100 MB/s for cp950, and
+  roughly 1.5× the file size in free temp space); the copy is deleted when Tablade exits.
 - **`csv` reader line numbers assume no multi-line fields**; use `text_lines` for such files.
 - **onefile starts slowly** because it unpacks itself on every launch, and some antivirus or
   AppLocker setups block programs running from the temp folder — use the onedir build then.

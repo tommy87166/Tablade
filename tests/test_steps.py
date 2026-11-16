@@ -94,10 +94,17 @@ def test_remove_top_and_bottom_rows_count_per_file():
     assert run(make("remove_top_rows", n=0), df)[0].height == 5
 
 
-def test_remove_top_rows_ignores_physical_order_of_input():
-    df = frame({"line": ["a1", "a2", "a3"]}).reverse()
-    out, _, _ = run(make("remove_top_rows", n=1), df)
-    assert out["line"].to_list() == ["a2", "a3"]
+def test_steps_keep_the_input_order():
+    """讀檔保證依來源檔與行號排好；步驟不排序（排序在串流下會把整份資料放進記憶體）。"""
+    df = frame({"line": ["a1", "", "a3", "b1", "b2"]}, files=["a", "a", "a", "b", "b"])
+    for step in (
+        make("remove_top_rows", n=0),
+        make("remove_blank_rows"),
+        make("fill_down", columns=["line"]),
+    ):
+        out, _, _ = run(step, df)
+        assert out["__line_no"].to_list() == sorted(out["__line_no"].to_list(), key=lambda _: 0)
+        assert out["__source_file"].to_list() == sorted(out["__source_file"].to_list())
 
 
 def test_remove_blank_rows_looks_at_data_columns_only():
@@ -264,3 +271,38 @@ def test_describe_texts():
         keep="non_matching",
     )
     assert step.describe() == "排除：金額 開頭是「(」 且 金額 > 5"
+
+
+# ── split_delimited 的原生正規表示式要和 Python 的 csv 一致 ─────────────
+
+
+@pytest.mark.parametrize(
+    "delimiter", [",", ";", "|", "\t", "/", "-", "#", "&", "~", ":", " ", "^", "."]
+)
+def test_split_delimited_matches_python_csv_on_well_formed_lines(delimiter):
+    import csv as pycsv
+    import io
+    import random
+
+    rng = random.Random(hash(delimiter) % 1000)
+    alphabet = ["a", "門", "1", " ", ",", ";", "|", "\t", '"', "x", ".", "-"]
+    lines = []
+    for _ in range(300):
+        fields = [
+            "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 6)))
+            for _ in range(rng.randint(1, 5))
+        ]
+        buf = io.StringIO()
+        pycsv.writer(buf, delimiter=delimiter, lineterminator="").writerow(fields)
+        line = buf.getvalue()
+        if "\n" not in line and "\r" not in line and line:
+            lines.append(line)
+    expected = [next(pycsv.reader([line], delimiter=delimiter)) for line in lines]
+    width = max(len(e) for e in expected)
+    step = make("split_delimited", delimiter=delimiter, columns=[f"c{i}" for i in range(width)])
+    out, _, _ = run(step, frame({"line": lines}))
+    got = [
+        [v for v in row if v is not None]
+        for row in out.select([f"c{i}" for i in range(width)]).iter_rows()
+    ]
+    assert got == [[f for f in e] for e in expected]

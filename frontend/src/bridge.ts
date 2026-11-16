@@ -113,7 +113,13 @@ export interface ViewState {
     reader: 'text_lines' | 'csv'
     encoding: string
     error: string | null
+    /** 預覽用的列數（大檔時是樣本的列數） */
     rows: number | null
+    /** 所有來源檔的總行數 */
+    total_rows: number | null
+    /** 資料太大，預覽只用每個檔案的前 head 行與最後 tail 行 */
+    sampled: boolean
+    sample: { head: number; tail: number }
     columns: string[] | null
     files: SourceFile[]
   }
@@ -134,6 +140,14 @@ export interface ViewState {
 }
 
 export type Cell = string | number | boolean | null
+
+/** 讀檔、轉碼、匯出時由 Python 推送（pywebview 的 window.state.progress） */
+export interface Progress {
+  stage: string
+  file: string
+  done: number
+  total: number
+}
 
 export interface RowsPage {
   offset: number
@@ -172,15 +186,29 @@ export interface TabladeApi {
   select_step(index: number): Promise<WithState>
   undo(): Promise<WithState>
   redo(): Promise<WithState>
-  export_parquet(): Promise<Result<{ cancelled: boolean; path?: string; rows?: number; columns?: number; warnings?: number }>>
+  export_parquet(): Promise<
+    Result<{ cancelled: boolean; path?: string; rows?: number; columns?: number; warnings?: number; mode?: string }>
+  >
   error_report(): Promise<Result<{ text: string }>>
   download_skill(): Promise<Result<{ cancelled: boolean; path?: string; bytes?: number; version?: string }>>
 }
 
 declare global {
   interface Window {
-    pywebview?: { api: TabladeApi }
+    pywebview?: { api: TabladeApi; state?: EventTarget & { progress?: Progress | null } }
   }
+}
+
+/** 訂閱 Python 推送的進度；回傳取消訂閱的函式。 */
+export function onProgress(listener: (progress: Progress | null) => void): () => void {
+  const state = window.pywebview?.state
+  if (!state) return () => {}
+  const handler = (event: Event) => {
+    const detail = (event as CustomEvent<{ key: string; value: unknown }>).detail
+    if (detail?.key === 'progress') listener((detail.value as Progress | null) ?? null)
+  }
+  state.addEventListener('change', handler)
+  return () => state.removeEventListener('change', handler)
 }
 
 /** 等待 pywebview 注入 API。在一般瀏覽器開發時（npm run dev）改用假的 API。 */

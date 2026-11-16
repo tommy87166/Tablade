@@ -15,7 +15,7 @@ from tablade.recipe.schema import Recipe, RecipeError, load_json, parse_recipe
 from tablade.recipe.spec import build_spec
 from tablade.recipe.validator import validate
 
-from .run import RunError, RunReport, execute
+from .run import SAMPLE_HEAD, SAMPLE_TAIL, RunError, RunReport, execute
 
 
 @dataclass
@@ -95,18 +95,31 @@ def format_issues(issues: list[dict[str, Any]]) -> str:
 def format_report(report: RunReport, max_warnings: int = 10) -> str:
     lines = ["輸入："]
     for f in report.inputs:
-        lines.append(f"  {f.path}（{f.encoding}，{f.bytes:,} bytes，{f.rows:,} 列）")
-    lines.append(f"步驟（輸入共 {report.input_rows:,} 列）：")
+        lines.append(f"  {f.path}（{f.encoding}，{f.bytes:,} bytes，{f.rows:,} 行）")
     previous = report.input_rows
+    if report.mode == "sample":
+        previous = report.sample_rows or 0
+        lines.append(
+            f"大檔：試跑只用每個檔案的前 {SAMPLE_HEAD:,} 行與最後 {SAMPLE_TAIL:,} 行"
+            f"（共 {previous:,} 行），下面的列數是樣本的；匯出時會處理全部資料。"
+        )
+    if report.mode == "stream":
+        lines.append(
+            f"步驟（輸入共 {report.input_rows:,} 行，串流執行；每一步的列數只在試跑時提供）："
+        )
+    else:
+        lines.append(f"步驟（輸入共 {previous:,} 行）：")
     for s in report.steps:
+        warn = f"，警告 {s.warning_count:,}" if s.warning_count else ""
         if not s.enabled:
             lines.append(f"  {s.id:<6} [停用] {s.description}")
-            continue
-        delta = s.rows - previous if s.rows is not None else 0
-        change = f"{delta:+,}" if delta else "±0"
-        warn = f"，警告 {s.warning_count:,}" if s.warning_count else ""
-        lines.append(f"  {s.id:<6} {s.rows:>8,} 列（{change}{warn}）  {s.description}")
-        previous = s.rows if s.rows is not None else previous
+        elif s.rows is None:
+            lines.append(f"  {s.id:<6} {s.description}{f'（{warn[1:]}）' if warn else ''}")
+        else:
+            delta = s.rows - previous
+            change = f"{delta:+,}" if delta else "±0"
+            lines.append(f"  {s.id:<6} {s.rows:>8,} 列（{change}{warn}）  {s.description}")
+            previous = s.rows
     warnings = [w for s in report.steps for w in s.warnings]
     if warnings:
         lines.append(
