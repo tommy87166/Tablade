@@ -326,7 +326,7 @@ tablade/
 │   ├── app.js
 │   └── style.css
 ├── assets/
-│   └── icon.svg               # 圖示原始檔（表格＋菜刀）；icon.ico / icon.icns / icon.png 由 make_icons.py 產生
+│   └── icon.svg               # 圖示原始檔（置中表格＋🔪）；icon.ico / icon.icns / icon.png 由 make_icons.py 產生
 ├── examples/
 │   └── sales_report.recipe.json  # 搭配 gen_fixtures 產生的假資料
 ├── scripts/

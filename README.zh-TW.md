@@ -8,7 +8,7 @@
 <p align="center">一步一步把凌亂的 CSV / TXT / Excel 清洗成乾淨的 Parquet —— 全程本機執行，不上傳任何檔案。</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.0-0E7C5B" alt="version" />
+  <img src="https://img.shields.io/badge/version-0.1.0-FD5108" alt="version" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
   <img src="https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/Polars-2.1-CD792C?logo=polars&logoColor=white" alt="Polars" />
@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="../../releases/latest"><img src="https://img.shields.io/badge/⬇_下載-Windows_%7C_macOS-0E7C5B" alt="下載" /></a>
+  <a href="../../releases/latest"><img src="https://img.shields.io/badge/⬇_下載-Windows_%7C_macOS-FD5108" alt="下載" /></a>
 </p>
 
 <p align="center">

@@ -8,7 +8,7 @@
 <p align="center">A step-by-step data cleaning tool that turns messy CSV / TXT / Excel files into tidy Parquet — 100% local, nothing uploaded.</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.0-0E7C5B" alt="version" />
+  <img src="https://img.shields.io/badge/version-0.1.0-FD5108" alt="version" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
   <img src="https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/Polars-2.1-CD792C?logo=polars&logoColor=white" alt="Polars" />
@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="../../releases/latest"><img src="https://img.shields.io/badge/⬇_Download-Windows_%7C_macOS-0E7C5B" alt="Download" /></a>
+  <a href="../../releases/latest"><img src="https://img.shields.io/badge/⬇_Download-Windows_%7C_macOS-FD5108" alt="Download" /></a>
 </p>
 
 <p align="center">
