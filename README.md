@@ -158,13 +158,17 @@ cli.py — `tablade run recipe.json` runs the same engine without the UI
 | Platform | File | Notes |
 |---|---|---|
 | Windows | `tablade-windows-x64-onefile.zip` | One `tablade.exe` |
-| Windows | `tablade-windows-x64-onedir.zip` | Unzip and run `tablade\tablade.exe` — fallback when onefile is blocked or slow |
-| macOS | `tablade-macos-arm64-app.zip` | `Tablade.app`; first launch: right-click → **Open** |
-| macOS | `tablade-macos-arm64-onefile.zip` | Command-line single binary |
+| macOS | `tablade-macos-arm64-app.zip` | `Tablade.app` (an onedir build wrapped as an app; PyInstaller has no onefile `.app`); first launch: right-click → **Open** |
+| AI skill | `tablade-recipe-skill-v<recipe version>.zip` | For Microsoft 365 Copilot and other AI assistants |
 
-- `scripts/build.py` builds both variants, runs the built-in self-test on each, and zips them;
-  CI (`.github/workflows/build.yml`) runs the same script on Windows and macOS and attaches the
-  zips to a Release when a `v*` tag is pushed.
+- `scripts/build.py` builds what is released on the current platform (Windows: onefile; macOS:
+  `Tablade.app`), runs the built-in self-test, and zips it. `scripts/build.py onedir` still builds a
+  Windows onedir folder by hand — the fallback when onefile is blocked.
+- CI (`.github/workflows/build.yml`) runs the same script on Windows and macOS. When a `v*` tag is
+  pushed it first checks that the tag matches `__version__` in `src/tablade/__init__.py`
+  (`scripts/check_release.py`) and stops the release if it doesn't, then attaches the zips and the AI
+  skill to a Release.
+- To release: set `__version__` (e.g. `0.2.0`), commit and push, then `git tag v0.2.0 && git push origin v0.2.0`.
 - Binaries are **unsigned**. On macOS you can also run `xattr -dr com.apple.quarantine Tablade.app`.
 - The Windows build is a windowed app, so command-line output is not shown; use
   `tablade.exe selftest --out result.json` and read the JSON.
@@ -195,7 +199,7 @@ The skill's version is the recipe format version, so a skill always writes recip
 |---|---|
 | Unit tests (`pytest`) | 244 passed (every step's documented examples run as tests; the UI's session is driven step by step like a user) |
 | Example recipe (`examples/sales_detail.recipe.json`, 2 cp950 files, 94 lines → 70 rows) | ✅ output matches the expected rows; every row's `__line_no` points to its physical line |
-| Self-test inside the packaged app (generated cp950 CSV → Parquet → read back → lazy query → Excel engine → multi-core transcode → full run of the example recipe: transcode, per-file processing, merge source files, streaming export) | ✅ onefile and onedir on Windows x64 (CI) and macOS arm64 (the multi-core transcode and full example-recipe checks: verified on macOS, Windows pending CI) |
+| Self-test inside the packaged app (generated cp950 CSV → Parquet → read back → lazy query → Excel engine → multi-core transcode → full run of the example recipe: transcode, per-file processing, merge source files, streaming export) | ✅ Windows x64 (CI, 2 cores: 2 worker processes are still started) and macOS arm64 |
 | Window smoke test (open window, self-test, load the example through the JS bridge, wait for the grid to render 70 rows, close) | ✅ onefile and onedir on macOS arm64; Windows runs in CI |
 | AI skill from the packaged app (`tablade skill`) | ✅ onefile and onedir |
 
@@ -233,7 +237,7 @@ uv run python scripts/gen_frontend_dev_data.py       # fake API data for the bro
 npm --prefix frontend run dev                        # Vite dev server (mock API in a normal browser)
 TABLADE_DEV_URL=http://localhost:5173 uv run tablade # the real window, with hot reload
 uv run python scripts/gen_fixtures.py tmp/fixtures   # generate fake sample data
-uv run python scripts/build.py --gui-smoke           # build onefile + onedir, self-test, zip to dist/release/
+uv run python scripts/build.py --gui-smoke           # build the release (Windows: onefile, macOS: .app), self-test, zip to dist/release/
 uv run --group icons python scripts/make_icons.py    # regenerate icon.ico / icon.icns from assets/icon.svg
 ```
 
@@ -323,7 +327,8 @@ tablade.spec          PyInstaller config (onefile / onedir via TABLADE_BUILD)
   removed the next time Tablade starts.
 - **`csv` reader line numbers assume no multi-line fields**; use `text_lines` for such files.
 - **onefile starts slowly** because it unpacks itself on every launch, and some antivirus or
-  AppLocker setups block programs running from the temp folder — use the onedir build then.
+  AppLocker setups block programs running from the temp folder. Only onefile is released for Windows;
+  build an onedir folder with `uv run python scripts/build.py onedir` if that happens.
 - **Unsigned binaries:** expect Gatekeeper (macOS) and SmartScreen (Windows) prompts.
 - **macOS builds are Apple Silicon (arm64) only.**
 - Join / group-by in Polars 2.x can't spill to disk yet; if memory becomes a problem, those steps

@@ -60,7 +60,8 @@ uv run python scripts/update_schema_lock.py              # 升 RECIPE_VERSION �
 uv run ruff check . && uv run ruff format --check .
 uv run tablade                  # 開視窗
 uv run tablade gui --smoke      # 開視窗、確認 JS bridge 正常後自動關閉
-uv run python scripts/build.py --gui-smoke   # 打包 onefile + onedir、自我檢測、壓縮到 dist/release/
+uv run python scripts/build.py --gui-smoke   # 打包要發布的版本（Windows：onefile，macOS：.app）、自我檢測、壓縮到 dist/release/
+uv run python scripts/check_release.py v0.2.0   # 發版前：tag 要和 src/tablade/__init__.py 的 __version__ 一致（CI 推 tag 時也會跑）
 uv run --group icons python scripts/make_icons.py   # 改 assets/icon.svg 後重新產生圖示
 ```
 

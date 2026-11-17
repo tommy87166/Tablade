@@ -32,6 +32,11 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: uv sync --frozen
 
+      - name: 發版前檢查：tag 要和程式版號一致
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: uv run python scripts/check_release.py "${{ github.ref_name }}"
+
+      # Windows 只打包 onefile，macOS 只打包 Tablade.app（見 scripts/build.py 的 release_modes）
       - name: 打包、自我檢測、壓縮
         run: uv run python scripts/build.py --gui-smoke
 
@@ -49,10 +54,18 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+      - run: uv sync --frozen
+      - name: 發版前檢查：tag 要和程式版號一致
+        run: uv run python scripts/check_release.py "${{ github.ref_name }}"
       - uses: actions/download-artifact@v7
         with:
           path: release
           merge-multiple: true
+      - name: 產生 AI skill（tablade-recipe-skill-v<recipe 版本>.zip）
+        working-directory: release
+        run: uv run --project .. tablade skill
       - uses: softprops/action-gh-release@v3
         with:
           files: release/*.zip

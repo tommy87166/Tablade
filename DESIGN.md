@@ -255,8 +255,12 @@
   - 實測參考：Linux 上 Python 3.13 + Polars 2.1 的最小 onefile 約 64MB，啟動約 0.9 秒。加上 pywebview、fastexcel 和前端後，預估 70 到 100MB。
 - 前端 build 好的 `frontend/dist/index.html` 以 `datas` 打包；程式內用 `sys._MEIPASS` 取得路徑。
 - Windows：pywebview 使用 Edge WebView2（Win10/11 通常已內建）。
-- macOS：未簽章，第一次開啟要按右鍵 →「打開」，或執行 `xattr -dr com.apple.quarantine`。PyInstaller 不支援 macOS 的 onefile `.app`，所以 macOS 發布 onedir 的 `Tablade.app` 加上 onefile 的命令列執行檔。
-- **GitHub Actions**：在 `windows-latest` 和 `macos-latest` 上建置 onefile 與 onedir，上傳 artifacts；推 tag 時建立 Release。打包、自我檢測、壓縮都寫在 `scripts/build.py`，本機與 CI 共用。
+- macOS：未簽章，第一次開啟要按右鍵 →「打開」，或執行 `xattr -dr com.apple.quarantine`。PyInstaller 不支援 macOS 的 onefile `.app`，所以 macOS 只發布 `Tablade.app`（onedir 包成 App）。
+- **發布的產物**：Windows 只發 onefile（`tablade.exe`），macOS 只發 `Tablade.app`，另外附 AI skill 的 zip。Windows 的 onedir 不發布，onefile 被擋時用 `scripts/build.py onedir` 另外打包。
+- **GitHub Actions**：在 `windows-latest` 和 `macos-latest` 上跑 `scripts/build.py --gui-smoke`（打包、自我檢測、視窗 smoke test、壓縮，本機與 CI 共用），上傳 artifacts。推 `v*` tag 時：
+  1. `scripts/check_release.py` 檢查 tag 和 `src/tablade/__init__.py` 的 `__version__` 一致，不一致就停止發版（否則新版的 App 會以為自己是舊版，一直顯示「有新版本」）。
+  2. 建立 Release，附上兩個平台的 zip 與 `tablade skill` 產生的 AI skill zip。
+- **發版流程**：改 `__version__`（例如 `0.2.0`）→ commit、push → `git tag v0.2.0 && git push origin v0.2.0`。
 - **M0 本機實測（macOS arm64）**：onefile 65MB、每次啟動約 4 秒（要先解壓縮）；onedir 191MB（其中 Polars runtime 佔 148MB）、壓縮後 62MB、啟動約 1.5 秒。
 
 ---

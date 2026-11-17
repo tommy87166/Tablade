@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """打包、檢測、壓縮成可發布的 zip（本機與 CI 共用）。
 
-    uv run python scripts/build.py                 # onefile + onedir
-    uv run python scripts/build.py onedir          # 只打包一種
+    uv run python scripts/build.py                 # 發布的產物（見下面）
+    uv run python scripts/build.py onedir          # 指定要打包哪一種（onefile、onedir）
     uv run python scripts/build.py --gui-smoke     # 另外開視窗跑 smoke test
+
+發布的產物（不指定 mode 時）：
+- Windows：只有 onefile（單一 tablade.exe）。onefile 每次啟動都解壓到暫存資料夾；
+  遇到防毒軟體或 AppLocker 擋暫存資料夾裡的程式時，可以用 ``build.py onedir`` 另外打包。
+- macOS：只有 Tablade.app。.app 就是 onedir 包成 App（PyInstaller 不支援 onefile 的 .app）。
 
 需要 Node.js 24 以上（先 build 前端成單一 HTML，再交給 PyInstaller）。
 
@@ -41,6 +46,15 @@ def platform_tag() -> str:
     machine = platform.machine().lower()
     arch = {"amd64": "x64", "x86_64": "x64", "aarch64": "arm64"}.get(machine, machine)
     return f"{system}-{arch}"
+
+
+def release_modes() -> list[str]:
+    """不指定 mode 時打包的種類：Windows 只發 onefile，macOS 只發 Tablade.app（onedir）。"""
+    if IS_WIN:
+        return ["onefile"]
+    if IS_MAC:
+        return ["onedir"]
+    return list(MODES)
 
 
 def executable(mode: str) -> Path:
@@ -165,13 +179,16 @@ def warn(message: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="打包 Tablade")
     parser.add_argument(
-        "modes", nargs="*", metavar="mode", help="onefile、onedir（預設兩種都打包）"
+        "modes",
+        nargs="*",
+        metavar="mode",
+        help="onefile、onedir（預設：Windows 只打包 onefile，macOS 只打包 Tablade.app）",
     )
     parser.add_argument("--gui-smoke", action="store_true", help="另外開視窗跑 smoke test")
     parser.add_argument("--skip-build", action="store_true", help="只檢測與壓縮現有的產物")
     parser.add_argument("--skip-frontend", action="store_true", help="沿用現有的前端產物")
     args = parser.parse_args(argv)
-    args.modes = args.modes or list(MODES)
+    args.modes = args.modes or release_modes()
     if unknown := set(args.modes) - set(MODES):
         parser.error(f"不認得的 mode：{', '.join(sorted(unknown))}")
 

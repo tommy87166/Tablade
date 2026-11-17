@@ -141,13 +141,16 @@ cli.py — `tablade run recipe.json` 不開 UI，跑同一套引擎
 | 平台 | 檔案 | 說明 |
 |---|---|---|
 | Windows | `tablade-windows-x64-onefile.zip` | 單一 `tablade.exe` |
-| Windows | `tablade-windows-x64-onedir.zip` | 解壓後執行 `tablade\tablade.exe`——onefile 被擋或啟動太慢時的備案 |
-| macOS | `tablade-macos-arm64-app.zip` | `Tablade.app`；第一次開啟請按右鍵 →「打開」 |
-| macOS | `tablade-macos-arm64-onefile.zip` | 命令列單一執行檔 |
+| macOS | `tablade-macos-arm64-app.zip` | `Tablade.app`（onedir 包成 App；PyInstaller 不支援 onefile 的 `.app`）；第一次開啟請按右鍵 →「打開」 |
+| AI skill | `tablade-recipe-skill-v<recipe 版本>.zip` | 給 Microsoft 365 Copilot 等 AI 助理用 |
 
-- `scripts/build.py` 會打包兩種版本、各跑一次內建的自我檢測，再壓成 zip；CI
-  （`.github/workflows/build.yml`）在 Windows 與 macOS 上跑同一支腳本，推 `v*` tag 時把 zip
-  附到 Release。
+- `scripts/build.py` 打包這個平台要發布的版本（Windows：onefile；macOS：`Tablade.app`），跑一次內建的
+  自我檢測，再壓成 zip。`scripts/build.py onedir` 仍然可以另外打包 Windows 的 onedir 資料夾，
+  onefile 被擋時用。
+- CI（`.github/workflows/build.yml`）在 Windows 與 macOS 上跑同一支腳本。推 `v*` tag 時，先檢查 tag
+  和 `src/tablade/__init__.py` 的 `__version__` 一致（`scripts/check_release.py`），不一致就停止發版；
+  再把 zip 和 AI skill 附到 Release。
+- 發版：改 `__version__`（例如 `0.2.0`）、commit 並 push，再 `git tag v0.2.0 && git push origin v0.2.0`。
 - 執行檔**未簽章**。macOS 也可以執行 `xattr -dr com.apple.quarantine Tablade.app`。
 - Windows 版是視窗程式，命令列輸出不會顯示；請用 `tablade.exe selftest --out result.json`，
   再看 JSON 的內容。
@@ -176,7 +179,7 @@ Tablade 會從步驟 registry 產生 [Agent Skills](https://learn.microsoft.com/
 |---|---|
 | 單元測試（`pytest`） | 244 項通過（每種步驟文件裡的範例都當成測試跑；UI 背後的 session 照使用者的操作順序一步步測） |
 | 範例 recipe（`examples/sales_detail.recipe.json`，2 個 cp950 檔、94 行 → 70 列） | ✅ 輸出與預期完全一致；每一列的 `__line_no` 都指回原始檔的那一行 |
-| 打包後的自我檢測（產生 cp950 CSV → Parquet → 讀回比對 → Lazy 查詢 → Excel 引擎 → 多核心轉碼 → 完整執行範例 recipe：轉碼、各檔分開處理、合併來源檔、串流匯出） | ✅ Windows x64（CI）與 macOS arm64 的 onefile、onedir（「多核心轉碼」與「完整執行範例 recipe」這兩項：macOS 已驗證，Windows 待 CI） |
+| 打包後的自我檢測（產生 cp950 CSV → Parquet → 讀回比對 → Lazy 查詢 → Excel 引擎 → 多核心轉碼 → 完整執行範例 recipe：轉碼、各檔分開處理、合併來源檔、串流匯出） | ✅ Windows x64（CI，2 個核心：仍實際開 2 個工作程序測試）與 macOS arm64 |
 | 視窗 smoke test（開視窗、自我檢測、透過 JS bridge 載入範例、等表格畫出 70 列、關閉） | ✅ macOS arm64 的 onefile、onedir；Windows 由 CI 跑 |
 | 打包後的 App 產生 AI skill（`tablade skill`） | ✅ onefile、onedir |
 
@@ -214,7 +217,7 @@ uv run python scripts/gen_frontend_dev_data.py       # 產生瀏覽器假 API �
 npm --prefix frontend run dev                        # Vite dev server（一般瀏覽器會用假 API）
 TABLADE_DEV_URL=http://localhost:5173 uv run tablade # 在真正的視窗裡熱更新
 uv run python scripts/gen_fixtures.py tmp/fixtures   # 產生假資料
-uv run python scripts/build.py --gui-smoke           # 打包 onefile + onedir、自我檢測、壓縮到 dist/release/
+uv run python scripts/build.py --gui-smoke           # 打包要發布的版本（Windows：onefile，macOS：.app）、自我檢測、壓縮到 dist/release/
 uv run --group icons python scripts/make_icons.py    # 從 assets/icon.svg 重新產生 icon.ico / icon.icns
 ```
 
@@ -299,7 +302,7 @@ tablade.spec          PyInstaller 設定（以 TABLADE_BUILD 切換 onefile / on
   匯出時會串流處理全部資料，進度列顯示處理到第幾行與百分比。串流匯出只回報最後的列數，警告也只算最後還留著的列。
 - **非 UTF-8 的檔案會先轉成 UTF-8 暫存檔**（cp950 單核心約每秒 230 MB；64 MB 以上的檔用多個程序同時轉，最多 8 個，結果和單核心相同；需要約原檔 1.5 倍的暫存空間），關閉視窗時刪除；當掉或被強制結束時留下的副本，下次啟動 Tablade 時清掉。
 - **`csv` 模式的行號假設沒有跨行欄位**；有跨行欄位的檔案請用 `text_lines`。
-- **onefile 啟動較慢**：每次啟動都要先解壓縮；部分防毒軟體或 AppLocker 會擋暫存資料夾裡的程式，這時請改用 onedir 版。
+- **onefile 啟動較慢**：每次啟動都要先解壓縮；部分防毒軟體或 AppLocker 會擋暫存資料夾裡的程式。Windows 只發布 onefile，遇到這種情況請用 `uv run python scripts/build.py onedir` 另外打包 onedir 版。
 - **執行檔未簽章**：macOS 會出現 Gatekeeper、Windows 會出現 SmartScreen 提示。
 - **macOS 版只支援 Apple Silicon（arm64）。**
 - Polars 2.x 的 join / group-by 還不能寫到硬碟；若記憶體不夠，之後可能把這幾種步驟交給 DuckDB。
