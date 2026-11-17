@@ -101,6 +101,10 @@ def test_registry_metadata_is_complete():
         "promote_headers",
         "fill_down",
         "remove_columns",
+        "select_columns",
+        "rename_columns",
+        "trim_clean",
+        "replace_values",
         "parse_number",
         "parse_date",
         "filter",
@@ -291,6 +295,138 @@ def test_remove_columns_needs_something_picked():
     with pytest.raises(EffectError, match="要選至少一個"):
         apply_effect(["a"], effect)
     assert apply_effect(None, {**effect, "positions": [3]}) is None  # 還不知道有哪些欄
+
+
+def test_select_columns_order_and_errors():
+    out, _, _ = run(make("select_columns", columns=["c", "a"]), frame(FOUR))
+    assert out.columns == [SOURCE_FILE, LINE_NO, "c", "a"]
+    with pytest.raises(RunError, match="欄位不存在：x"):
+        run(make("select_columns", columns=["a", "x"]), frame(FOUR))
+    with pytest.raises(RunError, match="欄位重複：a"):
+        run(make("select_columns", columns=["a", "b", "a"]), frame(FOUR))
+    assert make("select_columns", columns=["a", "b"]).describe() == "保留 2 欄：a、b"
+
+
+def test_rename_columns_swap_and_errors():
+    out, _, _ = run(make("rename_columns", names={"a": "b", "b": "a"}), frame(FOUR))
+    assert out.columns == [SOURCE_FILE, LINE_NO, "b", "a", "c", "d"]
+    assert out["b"].to_list() == ["1"]  # 原本的 a
+    for names, message in [
+        ({"x": "y"}, "欄位不存在：x"),
+        ({"a": "b"}, "改完後欄名重複：b"),
+        ({"a": "__x"}, "不能以 __ 開頭"),
+    ]:
+        with pytest.raises(RunError, match=message):
+            run(make("rename_columns", names=names), frame(FOUR))
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        make("rename_columns", names={})
+    with pytest.raises(ValidationError):
+        make("rename_columns", names={"a": ""})
+    assert make("rename_columns", names={"a": "甲"}).describe() == "改欄名：a→甲"
+
+
+# ── 文字 ───────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("params", "value", "expected"),
+    [
+        ({}, "\u3000ＡＢ１２３，（總店）\u200b ", "AB123，（總店）"),
+        ({"width": "nfkc"}, "ＡＢ１２３，（總店）①", "AB123,(總店)1"),
+        ({"width": "none"}, "ＡＢ１ ", "ＡＢ１"),
+        ({"trim": False}, " a ", " a "),
+        ({"invisible": False}, "a\u200bb", "a\u200bb"),
+        ({}, "a\tb\x07c\ufeff", "a\tbc"),  # Tab 保留，控制字元與 BOM 移除
+        ({"collapse_spaces": True}, "北區　 門市  總店", "北區 門市 總店"),
+        ({}, None, None),
+    ],
+)
+def test_trim_clean_options(params, value, expected):
+    out, _, _ = run(make("trim_clean", columns=["t"], **params), frame({"t": [value]}))
+    assert out["t"].to_list() == [expected]
+
+
+def test_text_steps_need_text_columns():
+    df = frame({"n": ["1"]}).with_columns(pl.col("n").cast(pl.Int64))
+    for step in (
+        make("trim_clean", columns=["n"]),
+        make("replace_values", columns=["n"], replacements=[{"find": "1", "replace": "2"}]),
+    ):
+        with pytest.raises(RunError, match="只能用在文字欄：n 不是文字"):
+            run(step, df)
+    with pytest.raises(RunError, match="欄位不存在：x"):
+        run(make("trim_clean", columns=["x"]), df)
+
+
+def test_replace_values_modes_in_order():
+    df = frame({"t": ["aab", "ab", None, "b"]})
+    pairs = [{"find": "a", "replace": "b"}, {"find": "bb", "replace": "c"}]
+    out, _, _ = run(make("replace_values", columns=["t"], replacements=pairs), df)
+    assert out["t"].to_list() == ["cb", "c", None, "b"]  # 依序：先 a→b，再 bb→c
+    whole, _, _ = run(
+        make(
+            "replace_values",
+            columns=["t"],
+            match="whole",
+            replacements=[{"find": "ab", "replace": "X"}],
+        ),
+        df,
+    )
+    assert whole["t"].to_list() == ["aab", "X", None, "b"]
+    regex, _, _ = run(
+        make(
+            "replace_values",
+            columns=["t"],
+            match="regex",
+            replacements=[{"find": "^(a+)(b)$", "replace": "$2-$1"}],
+        ),
+        df,
+    )
+    assert regex["t"].to_list() == ["b-aa", "b-a", None, "b"]
+    # 一般文字模式不把 $ 當成群組，也不把 . 當成任意字元
+    literal, _, _ = run(
+        make("replace_values", columns=["t"], replacements=[{"find": ".", "replace": "$1"}]),
+        frame({"t": ["a.b", "ab"]}),
+    )
+    assert literal["t"].to_list() == ["a$1b", "ab"]
+
+
+def test_replace_values_validation():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="正規表示式有誤"):
+        make(
+            "replace_values",
+            columns=["t"],
+            match="regex",
+            replacements=[{"find": "(", "replace": ""}],
+        )
+    with pytest.raises(ValidationError):
+        make("replace_values", columns=["t"], replacements=[])
+    with pytest.raises(ValidationError):
+        make("replace_values", columns=["t"], replacements=[{"find": "", "replace": "x"}])
+    # 一般文字模式的 ( 不是正規表示式，不會擋
+    assert make("replace_values", columns=["t"], replacements=[{"find": "(", "replace": ""}])
+    step = make(
+        "replace_values",
+        columns=["t"],
+        match="whole",
+        replacements=[{"find": str(i), "replace": ""} for i in range(5)],
+    )
+    assert step.describe() == "取代（整格相符）：「0」→「」、「1」→「」、「2」→「」…共 5 組，欄位 t"
+
+
+def test_validator_checks_new_effects_and_maps():
+    from tablade.recipe.validator import EffectError, apply_effect
+
+    assert apply_effect(["a", "b"], {"kind": "rename", "names": {"a": "b", "b": "a"}}) == ["b", "a"]
+    assert apply_effect(None, {"kind": "select", "names": ["x"]}) is None
+    with pytest.raises(EffectError, match="要填至少一個新欄名"):
+        apply_effect(["a"], {"kind": "rename", "names": {}})
+    with pytest.raises(EffectError, match="要選至少一個要保留的欄位"):
+        apply_effect(["a"], {"kind": "select", "names": []})
 
 
 # ── 轉型別 ─────────────────────────────────────────────────────

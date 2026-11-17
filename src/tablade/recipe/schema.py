@@ -61,6 +61,11 @@ class Output(_Model):
     keep_system_columns: bool = Field(
         default=True, title="保留系統欄位（__source_file、__line_no）"
     )
+    manifest: bool = Field(
+        default=True,
+        title="同時寫出處理紀錄（manifest）",
+        description="在輸出檔旁邊寫一份 xxx.manifest.json：Recipe、輸入檔與輸出檔的 SHA-256、每一步的列數與警告",
+    )
 
 
 class Recipe(_Model):

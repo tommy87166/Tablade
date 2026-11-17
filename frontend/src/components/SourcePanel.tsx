@@ -184,6 +184,15 @@ export function OutputPanel({ state, onOutput }: OutputProps) {
         保留系統欄位（__source_file、__line_no）
         <Switch checked={output.keep_system_columns} onCheckedChange={(keep_system_columns) => onOutput({ keep_system_columns })} />
       </label>
+      <label className="flex items-start justify-between gap-3 text-sm">
+        <span>
+          同時寫出處理紀錄（manifest）
+          <span className="block text-xs text-muted-foreground">
+            在輸出檔旁邊寫一份 .manifest.json：用了哪份 Recipe、輸入與輸出檔的 SHA-256、每一步的列數與警告
+          </span>
+        </span>
+        <Switch checked={output.manifest} onCheckedChange={(manifest) => onOutput({ manifest })} />
+      </label>
     </section>
   )
 }

@@ -164,7 +164,7 @@
 
 ### 7.1 MVP（第一版）
 
-已完成：`remove_top_rows`、`remove_bottom_rows`、`remove_blank_rows`、`promote_headers`、`split_delimited`、`split_column`、`fill_down`、`remove_columns`、`parse_number`、`parse_date`、`filter`、`merge_files`。
+已完成：`remove_top_rows`、`remove_bottom_rows`、`remove_blank_rows`、`promote_headers`、`split_delimited`、`split_column`、`fill_down`、`remove_columns`、`select_columns`、`rename_columns`、`trim_clean`、`replace_values`、`parse_number`、`parse_date`、`filter`、`merge_files`。
 
 | 類型 | 說明 | Polars 實作方向 |
 |---|---|---|
@@ -178,10 +178,10 @@
 | `filter` | 條件篩選（等於、包含、開頭是、正規表示式、空值、數值比較） | `filter(expr)`，條件用結構化參數組成，不接受任意字串運算式 |
 | `merge_files` | 依指定順序把所有來源檔接成一份；`__source_file` 改成同一個名稱、`__line_no` 從 1 重編，之後「前 N 列」等步驟改對整份計算 | 合併型步驟（`combine()`）：照指定順序把各檔的流水線 `concat` 起來，每個檔只讀一次 |
 | `remove_columns` | 刪除欄位：依名稱或依位置（第幾個資料欄），可以多選 | 欄位效果 `drop` 算出剩下的欄，`select`；欄不存在、位置超出範圍、刪光所有資料欄都是錯誤 |
-| `select_columns` | 保留、重新排序欄位 | `select` |
-| `rename_columns` | 重新命名欄位 | `rename` |
-| `trim_clean` | 修剪空白、全形轉半形（NFKC）、移除不可見字元 | `str.strip_chars`、`map_batches` 加 `unicodedata` |
-| `replace_values` | 取代值（一般文字或正規表示式） | `str.replace_all` |
+| `select_columns` | 保留和排序欄位：只留下列出的欄，依清單順序排列 | 欄位效果 `select`，`select`；欄不存在、重複都是錯誤 |
+| `rename_columns` | 改欄名：`{舊名: 新名}`，只列要改的欄 | 欄位效果 `rename`，`rename`；改完後不能重複（可以互換）、新名不能以 `__` 開頭 |
+| `trim_clean` | 清理文字：去掉前後空白（含全形空白）、全形轉半形（預設只轉英數字與全形空白，中文標點不動；可選全部轉 NFKC）、移除看不見的字元（零寬空白、BOM、Tab 以外的控制字元）、合併中間的空白 | 全用原生運算：`str.replace_all(r"[\p{Cf}[\p{Cc}--\t]]")`、`str.replace_many`（英數字對照表）或 `str.normalize("NFKC")`、`str.strip_chars`。不用 `map_batches`（會違反串流規則） |
+| `replace_values` | 取代值：一個步驟可以列很多組「找 → 換成」，依序取代；部分相符、整格相符或正規表示式（換成可以用 `$1`） | `str.replace_all(literal=…)`；整格相符用 `when(col == find)`；正規表示式在驗證時就編譯一次 |
 | `parse_number` | 文字轉數字：千分位、括號負數 `(1,000)`、尾端負號 `1,000-`；精確小數（`Decimal`，指定位數、四捨五入）或整數 | 正規化字串後 `cast(Decimal(38, 18), strict=False)`，再 `round(mode="half_away_from_zero")`（直接 cast 是銀行家捨入）；原本有值、轉完是空值的列產生附行號的警告 |
 | `parse_date` | 文字轉日期。**不自動判斷**：一定要先選樣式，再選民國年或西元年。樣式各是一個獨立的正規表示式（年/月/日、年-月-日、年.月.日、年月日、連寫），也可以自訂；正規表示式要剛好三個群組，依序是年、月、日 | `str.extract` 取出三個群組；民國年 1～3 位數、加 1911，西元年要 4 位數，位數不對算失敗（不會變成西元 115 年）；`str.to_date(strict=False)`（不能用 `pl.date()`：不存在的日期會讓整個執行失敗）；失敗的列產生附行號的警告 |
 | `classify_rows` | 依規則替每一列貼標籤（開頭是、包含、正規表示式） | `when/then` 產生 `__row_type` |
@@ -226,22 +226,30 @@
 
 ## 9. 輸出與可追溯紀錄
 
-輸出 `xxx.parquet`，並在旁邊寫一份 `xxx.manifest.json`：
+輸出 `xxx.parquet` 時，在旁邊寫一份 `xxx.manifest.json`（處理紀錄，`export/manifest.py`）。「輸出資料」設定可以關掉（Recipe 的 `output.manifest`，預設開）；只試跑、不寫出檔案時不寫。
 
 ```json
 {
-  "tool": "tablade", "tool_version": "0.1.0", "polars_version": "2.1.x",
-  "run_at": "2026-11-16T18:00:00+08:00",
-  "recipe_sha256": "…",
+  "tablade_manifest": "1.0",
+  "tool": { "name": "tablade", "version": "0.1.0", "polars": "2.1.0" },
+  "run_at": "2026-11-17T10:00:00+08:00",
+  "mode": "eager",
+  "recipe": { "name": "門市銷售明細整理", "sha256": "…", "content": { "…完整的 Recipe…": "" } },
   "inputs": [
-    { "file": "明細_01.csv", "bytes": 123456, "sha256": "…", "encoding_detected": "cp950" }
+    { "file": "data/明細_01.csv", "bytes": 123456, "sha256": "…", "encoding": "cp950", "rows": 120345 }
   ],
-  "row_counts": { "input": 120345, "s1": 120341, "s5": 120300, "output": 120300 },
-  "warnings": [ { "step": "s5", "line_no": 88, "source_file": "明細_01.csv", "message": "無法轉為數字：'N/A'" } ],
-  "output": { "file": "明細.parquet", "rows": 120300, "sha256": "…" }
+  "steps": [
+    { "id": "s1", "type": "remove_top_rows", "description": "移除每個檔案的前 2 列", "enabled": true, "rows": 120341, "warning_count": 0 }
+  ],
+  "warnings": { "count": 1, "items": [ { "step": "s5", "source_file": "data/明細_01.csv", "line_no": 88, "message": "「金額」的「N/A」不是數字，已改成空值" } ] },
+  "output": { "file": "明細.parquet", "rows": 120300, "columns": ["日期", "…"], "bytes": 456789, "sha256": "…" }
 }
 ```
 
+- `recipe.sha256` 是 `recipe.content` 以排序過的緊湊 JSON 算出來的；完整的 Recipe 一起放進去，日後可以重跑。
+- `inputs[].sha256` 讀檔時就算好了（和檢查編碼同一次讀取）；`output.sha256` 寫完後再讀一次輸出檔算。
+- 串流執行沒有每一步的列數（`rows` 是 `null`）；警告沿用執行報告（每項檢查最多 100 則），`count` 是總數。
+- 先寫暫存檔再改名，不會留下半個檔案。自我檢測的「完整執行範例 Recipe」也檢查 manifest 的 SHA-256。
 - 輸入檔的 SHA-256 加上 recipe 雜湊，可以證明「這份輸出是用這份 recipe，從這些原始檔產生的」。
 - 每一步的列數變化可以直接拿來核對資料有沒有漏掉或重複。
 - 另外提供「匯出成 Python 腳本」，把 recipe 轉成獨立可執行的 Polars 程式碼，方便檢查或重跑（第二階段）。
@@ -393,7 +401,7 @@ tablade/
 | M1 引擎 | recipe schema（版本 `MAJOR.MINOR`、schema lock）、registry（含 §7.3 的 8 件事）、ingest（text_lines / csv）、compiler、CLI（`run` / `validate` / `schema`）、MVP 中的 8 種步驟 | `tablade run examples/sales_detail.recipe.json` 產出正確結果，測試全過（✅ 完成） |
 | M1.5 AI skill | probe skill 實測沙箱、`tablade profile`、skill 產生器、單一檔案驗證器（§17） | Copilot 載入 skill 後，能依描述寫出通過驗證的範例 recipe（程式已完成，等 Copilot 實測） |
 | M2 UI | 步驟清單（新增、排序、停用、刪除）、預覽表格、參數表單、匯入 recipe（版本檢查、錯誤報告）、下載 AI skill | 不寫 JSON，也能在 UI 完成範例整理流程（✅ 完成） |
-| M3 台灣格式與留痕 | parse_number、parse_date（民國）✅、remove_columns ✅、型別分頁 ✅、trim_clean、manifest | 輸出附 manifest，警告附行號 |
+| M3 台灣格式與留痕 | parse_number、parse_date（民國）、trim_clean、replace_values、remove_columns、select_columns、rename_columns、型別分頁、manifest | 輸出附 manifest，警告附行號（✅ 完成） |
 | M4 多檔與 Excel | glob、diagonal concat、excel reader、classify_rows、extract_regex | 分段報表的範例可以完整攤平 |
 | M5 進階步驟 | join、group_by、unpivot、pivot、dedupe、匯出 Python 腳本 | — |
 
@@ -483,6 +491,9 @@ tablade/
 | `type: array` + `items: string` | 可增減的標籤輸入 |
 | `ui: "column"` / `ui: "columns"` | 欄位選擇器（單選 / 多選），選項是上一步的輸出欄位 |
 | `ui: "column_positions"` | 依位置勾選欄位（顯示「2 門市」，存的是第幾欄） |
+| `ui: "column_order"` | 保留和排序：上面是保留的欄（上下移、移除），下面是沒保留的欄（勾選加到最後） |
+| `ui: "rename_map"` | 改欄名：每個欄位一列，旁邊填新名稱（空白代表不改），存成 `{舊名: 新名}` |
+| `type: array` + `items` 是物件的 `$ref` | 每一項一個框，依子 schema 畫欄位，可以新增、移除（例如取代值的「找 → 換成」） |
 | `ui: "regex"` | 正規表示式輸入框＋即時測試 |
 | `oneOf` + `discriminator` | 先選類型，再顯示對應的子表單（例如篩選條件「等於 / 包含 / 數值比較」） |
 
@@ -577,7 +588,7 @@ tablade-recipe-skill-v1.4.zip
 | 新增 | `classify_rows` 新增 `__row_type` |
 | 拆分 | `split_column`：移除 `column`，新增 `names` |
 | 整組換掉 | `split_delimited`、`promote_headers`：換成參數裡寫死的欄名 |
-| 選取 / 改名 | `select_columns`、`rename_columns` |
+| 刪除 / 選取 / 改名 | `remove_columns`（`drop`）、`select_columns`（`select`）、`rename_columns`（`rename`） |
 
 Tablade 的 `output_columns()` 與驗證器都從這份宣告推算，所以不需要資料就能檢查「第 5 步引用的欄位在那之前存在嗎」。
 

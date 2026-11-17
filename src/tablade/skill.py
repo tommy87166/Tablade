@@ -37,6 +37,8 @@ _EFFECT_TEXT = {
     "split": "移除{source}指定的欄位（keep_source 為 true 時保留），在原位置插入{names}列出的欄位",
     "replace_data": "所有資料欄換成{names}列出的欄位",
     "rename_data": "資料欄依序改名為{names}列出的欄名（數量必須和目前的資料欄相同）",
+    "select": "只留下{names}列出的資料欄，依列出的順序排列；沒列到的資料欄刪掉（欄名不能重複）",
+    "rename": "依{names}（{{舊欄名: 新欄名}}）改欄名；改完後欄名不能重複，可以互換",
     "drop": (
         "刪除欄位：by 是 name 時刪除{names}列出的欄位，by 是 position 時刪除{positions}"
         "列出的第幾個資料欄（從 1 起，不算系統欄位）；至少要留下一個資料欄"
@@ -64,9 +66,15 @@ def _type_text(prop: dict[str, Any], defs: dict[str, Any]) -> str:
         items = prop.get("items", {})
         if "discriminator" in items:
             return "條件陣列（見下方）"
+        if "$ref" in items:
+            at_least = f"，至少 {prop['minItems']} 項" if prop.get("minItems") else ""
+            return f"`{items['$ref'].rsplit('/', 1)[-1]}` 物件的陣列（見下方{at_least}）"
         noun = {"string": "文字", "integer": "整數"}.get(items.get("type"), "")
         at_least = f"（至少 {prop['minItems']} 項）" if prop.get("minItems") else ""
         return f"{noun}陣列{at_least}"
+    if kind == "object":
+        at_least = f"，至少 {prop['minProperties']} 項" if prop.get("minProperties") else ""
+        return f"物件（文字 → 文字{at_least}）"
     labels = {"string": "文字", "integer": "整數", "number": "數字", "boolean": "true / false"}
     text = labels.get(kind, str(kind))
     if "minimum" in prop:
@@ -83,6 +91,8 @@ def _ui_text(prop: dict[str, Any]) -> str:
         "column": "引用現有欄位",
         "columns": "引用現有欄位（多個）",
         "column_positions": "第幾個資料欄（多個，從 1 起）",
+        "column_order": "引用現有欄位（多個，依順序）",
+        "rename_map": "{現有欄名: 新欄名}",
         "new_columns": "新欄名",
         "regex": "正規表示式（Rust regex）",
     }.get(prop.get("ui", ""), "")
@@ -158,6 +168,16 @@ def steps_markdown(spec: dict[str, Any] | None = None) -> str:
             out += ["條件（`conditions` 的每一項）依 `op` 分成四種：", ""]
             for name in ("TextCondition", "RegexCondition", "EmptyCondition", "NumberCondition"):
                 out += [f"**{name}**", "", *_param_rows(defs[name], defs, ()), ""]
+        for param, prop in schema.get("properties", {}).items():  # 物件陣列：列出每一項的欄位
+            ref = prop.get("items", {}).get("$ref") if prop.get("type") == "array" else None
+            if ref and "discriminator" not in prop["items"]:
+                name = ref.rsplit("/", 1)[-1]
+                out += [
+                    f"`{param}` 的每一項（**{name}**）：",
+                    "",
+                    *_param_rows(defs[name], defs, ()),
+                    "",
+                ]
         for example in cls.examples:
             step = {"id": "s1", "type": cls.type_name(), **example.params}
             out += [

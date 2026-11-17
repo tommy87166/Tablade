@@ -134,4 +134,6 @@ def format_report(report: RunReport, max_warnings: int = 10) -> str:
     )
     if report.output:
         lines.append(f"輸出：{report.output}")
+    if report.manifest:
+        lines.append(f"處理紀錄：{report.manifest}")
     return "\n".join(lines)

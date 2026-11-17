@@ -270,6 +270,10 @@
             "keep_system_columns": {
               "default": true,
               "type": "boolean"
+            },
+            "manifest": {
+              "default": true,
+              "type": "boolean"
             }
           },
           "type": "object"
@@ -593,6 +597,145 @@
           ],
           "type": "object"
         },
+        "RenameColumns": {
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "names": {
+              "additionalProperties": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minProperties": 1,
+              "propertyNames": {
+                "minLength": 1
+              },
+              "type": "object",
+              "ui": "rename_map"
+            },
+            "type": {
+              "const": "rename_columns",
+              "default": "rename_columns",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "names"
+          ],
+          "type": "object"
+        },
+        "ReplaceValues": {
+          "additionalProperties": false,
+          "properties": {
+            "columns": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "ui": "columns"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "match": {
+              "default": "contains",
+              "enum": [
+                "contains",
+                "whole",
+                "regex"
+              ],
+              "type": "string"
+            },
+            "replacements": {
+              "items": {
+                "$ref": "#/$defs/Replacement"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "type": {
+              "const": "replace_values",
+              "default": "replace_values",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "columns",
+            "replacements"
+          ],
+          "type": "object"
+        },
+        "Replacement": {
+          "additionalProperties": false,
+          "properties": {
+            "find": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "replace": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "required": [
+            "find"
+          ],
+          "type": "object"
+        },
+        "SelectColumns": {
+          "additionalProperties": false,
+          "properties": {
+            "columns": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "ui": "column_order"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "type": {
+              "const": "select_columns",
+              "default": "select_columns",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "columns"
+          ],
+          "type": "object"
+        },
         "SplitColumn": {
           "additionalProperties": false,
           "properties": {
@@ -750,6 +893,61 @@
             "value"
           ],
           "type": "object"
+        },
+        "TrimClean": {
+          "additionalProperties": false,
+          "properties": {
+            "collapse_spaces": {
+              "default": false,
+              "type": "boolean"
+            },
+            "columns": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "ui": "columns"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "invisible": {
+              "default": true,
+              "type": "boolean"
+            },
+            "trim": {
+              "default": true,
+              "type": "boolean"
+            },
+            "type": {
+              "const": "trim_clean",
+              "default": "trim_clean",
+              "type": "string"
+            },
+            "width": {
+              "default": "alnum",
+              "enum": [
+                "none",
+                "alnum",
+                "nfkc"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "columns"
+          ],
+          "type": "object"
         }
       },
       "additionalProperties": false,
@@ -783,8 +981,12 @@
                 "remove_bottom_rows": "#/$defs/RemoveBottomRows",
                 "remove_columns": "#/$defs/RemoveColumns",
                 "remove_top_rows": "#/$defs/RemoveTopRows",
+                "rename_columns": "#/$defs/RenameColumns",
+                "replace_values": "#/$defs/ReplaceValues",
+                "select_columns": "#/$defs/SelectColumns",
                 "split_column": "#/$defs/SplitColumn",
-                "split_delimited": "#/$defs/SplitDelimited"
+                "split_delimited": "#/$defs/SplitDelimited",
+                "trim_clean": "#/$defs/TrimClean"
               },
               "propertyName": "type"
             },
@@ -812,6 +1014,18 @@
               },
               {
                 "$ref": "#/$defs/RemoveColumns"
+              },
+              {
+                "$ref": "#/$defs/SelectColumns"
+              },
+              {
+                "$ref": "#/$defs/RenameColumns"
+              },
+              {
+                "$ref": "#/$defs/TrimClean"
+              },
+              {
+                "$ref": "#/$defs/ReplaceValues"
               },
               {
                 "$ref": "#/$defs/ParseNumber"
@@ -906,6 +1120,26 @@
         },
         "schema_ref": "RemoveTopRows"
       },
+      "rename_columns": {
+        "effect": {
+          "kind": "rename",
+          "names": "$names"
+        },
+        "schema_ref": "RenameColumns"
+      },
+      "replace_values": {
+        "effect": {
+          "kind": "keep"
+        },
+        "schema_ref": "ReplaceValues"
+      },
+      "select_columns": {
+        "effect": {
+          "kind": "select",
+          "names": "$columns"
+        },
+        "schema_ref": "SelectColumns"
+      },
       "split_column": {
         "effect": {
           "keep_source": "$keep_source",
@@ -923,6 +1157,12 @@
           "source": "$column"
         },
         "schema_ref": "SplitDelimited"
+      },
+      "trim_clean": {
+        "effect": {
+          "kind": "keep"
+        },
+        "schema_ref": "TrimClean"
       }
     },
     "system_columns": [

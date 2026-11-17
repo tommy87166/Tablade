@@ -49,7 +49,9 @@ def test_selftest_reports_each_check():
     assert result["ok"], result
     assert len(result["checks"]) == 8
     assert all(c["purpose"] and c["ran"] for c in result["checks"])
-    assert result["checks"][-1]["detail"] == "2 個 cp950 檔 → 合併成 70 列，與預期一致"
+    assert (
+        result["checks"][-1]["detail"] == "2 個 cp950 檔 → 合併成 70 列，與預期一致；處理紀錄正確"
+    )
     assert result["versions"]["polars"].startswith("2.")
 
 

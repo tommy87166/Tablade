@@ -131,6 +131,29 @@ def test_unknown_column_with_hint():
     parse_recipe(data)  # 語意問題只有驗證器抓得到
 
 
+def test_new_column_steps_are_checked_by_the_validator():
+    """保留和排序欄位、改欄名：欄名打錯有提示；物件的值、空的鍵、至少一項也會檢查。"""
+
+    def with_step(step: dict) -> dict:
+        return mutate(lambda d: d["steps"].append({"id": "z", **step}))
+
+    issues = check(with_step({"type": "select_columns", "columns": ["金額", "門"]}))
+    assert paths(issues) == ["steps[8].columns[1]"] and "是不是「門市」？" in issues[0]["hint"]
+    issues = check(with_step({"type": "rename_columns", "names": {"品命": "商品"}}))
+    assert paths(issues)[0] == "steps[8].names.品命" and "品名" in issues[0]["hint"]
+    assert paths(check(with_step({"type": "rename_columns", "names": {"品名": ""}}))) == [
+        "steps[8].names.品名"
+    ]
+    assert paths(check(with_step({"type": "rename_columns", "names": {"": "x"}}))) == [
+        "steps[8].names."
+    ]
+    assert "steps[8].names" in paths(check(with_step({"type": "rename_columns", "names": {}})))
+    # 改完後重複：欄位效果檢查
+    issues = check(with_step({"type": "rename_columns", "names": {"品名": "門市"}}))
+    assert any("重複" in i["error"] for i in issues)
+    assert check(with_step({"type": "rename_columns", "names": {"品名": "商品"}})) == []
+
+
 def test_column_refs_inside_filter_conditions():
     data = mutate(lambda d: d["steps"][7]["conditions"][0].update(column="價格"))
     assert paths(check(data)) == ["steps[7].conditions[0].column"]

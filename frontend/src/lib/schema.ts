@@ -10,6 +10,8 @@ export type FieldKind =
   | 'column'
   | 'columns'
   | 'column_positions'
+  | 'column_order'
+  | 'rename_map'
   | 'new_columns'
   | 'regex'
   | 'enum'
@@ -18,6 +20,7 @@ export type FieldKind =
   | 'number'
   | 'string'
   | 'conditions'
+  | 'objects'
   | 'source_files'
   | 'unknown'
 
@@ -36,6 +39,8 @@ export function fieldKind(prop: JsonSchema, root: JsonSchema): FieldKind {
     schema.ui === 'column' ||
     schema.ui === 'columns' ||
     schema.ui === 'column_positions' ||
+    schema.ui === 'column_order' ||
+    schema.ui === 'rename_map' ||
     schema.ui === 'new_columns' ||
     schema.ui === 'regex' ||
     schema.ui === 'source_files'
@@ -44,6 +49,8 @@ export function fieldKind(prop: JsonSchema, root: JsonSchema): FieldKind {
   }
   if (schema.enum) return 'enum'
   if (schema.type === 'array' && schema.items?.discriminator) return 'conditions'
+  // 物件的陣列（例如取代值的「找 → 換成」）：每一項依子 schema 畫欄位
+  if (schema.type === 'array' && schema.items?.$ref && resolve(schema.items, root).properties) return 'objects'
   if (schema.type === 'boolean') return 'boolean'
   if (schema.type === 'integer') return 'integer'
   if (schema.type === 'number') return 'number'
@@ -92,10 +99,14 @@ export function defaultFor(prop: JsonSchema, root: JsonSchema): unknown {
       return false
     case 'columns':
     case 'column_positions':
+    case 'column_order':
     case 'new_columns':
     case 'conditions':
+    case 'objects':
     case 'source_files':
       return []
+    case 'rename_map':
+      return {}
     default:
       return undefined
   }

@@ -3,7 +3,7 @@
 
     uv run python scripts/gen_frontend_dev_data.py
 
-用假資料跑一次範例 recipe（最後再加上「文字轉數字」「文字轉日期」「刪除欄」，看得到型別的變化），
+用假資料跑一次範例 recipe（最後再加上轉型別、刪除欄、清理文字、取代值、改欄名、保留和排序欄位，看得到這些步驟的表單），
 把每一步（含讀取資料、輸出資料）的畫面狀態、前 200 列與型別分頁的內容存起來。之後用一般瀏覽器跑
 ``npm --prefix frontend run dev`` 時，``src/mock.ts`` 會用這份資料，畫面和真的一樣。
 """
@@ -40,6 +40,25 @@ def main() -> int:
             len(session.steps) - 1, {"columns": ["日期"], "pattern": "slash", "calendar": "roc"}
         )
         session.add_step("remove_columns", {"column": "單號"}, index=len(session.steps))
+        session.add_step("trim_clean", {"column": "品名"}, index=len(session.steps))
+        session.add_step("replace_values", {"column": "付款方式"}, index=len(session.steps))
+        session.update_step(
+            len(session.steps) - 1,
+            {
+                "columns": ["付款方式"],
+                "match": "whole",
+                "replacements": [
+                    {"find": "行動支付", "replace": "行動"},
+                    {"find": "信用卡", "replace": "刷卡"},
+                ],
+            },
+        )
+        session.add_step("rename_columns", {"column": "品名"}, index=len(session.steps))
+        session.update_step(len(session.steps) - 1, {"names": {"品名": "商品"}})
+        session.add_step("select_columns", {}, index=len(session.steps))
+        session.update_step(
+            len(session.steps) - 1, {"columns": ["日期", "門市", "商品", "付款方式", "金額"]}
+        )
         ready = api.ready()
         states, rows, columns_info = {}, {}, {}
         count = len(session.steps)

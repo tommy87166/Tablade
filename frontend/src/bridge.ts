@@ -24,7 +24,7 @@ export type JsonSchema = {
   default?: unknown
   enum?: unknown[]
   const?: unknown
-  ui?: 'column' | 'columns' | 'column_positions' | 'new_columns' | 'regex' | 'source_files'
+  ui?: 'column' | 'columns' | 'column_positions' | 'column_order' | 'rename_map' | 'new_columns' | 'regex' | 'source_files'
   ui_labels?: Record<string, string>
   /** 選到某個選項時，顯示在選單下面的說明（例如日期樣式的正規表示式） */
   ui_option_hints?: Record<string, string>
@@ -34,6 +34,8 @@ export type JsonSchema = {
   required?: string[]
   items?: JsonSchema
   minItems?: number
+  additionalProperties?: boolean | JsonSchema
+  minProperties?: number
   minLength?: number
   maxLength?: number
   minimum?: number
@@ -155,7 +157,7 @@ export interface ViewState {
     /** 載入後實際讀到的每個檔 */
     sources: SourceFile[]
   }
-  output: { format: string; keep_system_columns: boolean }
+  output: { format: string; keep_system_columns: boolean; manifest: boolean }
   steps: StepState[]
   /** -1 是「讀取資料」，0..n-1 是步驟，steps.length 是「輸出資料」（預覽最後一步的結果） */
   selected: number
@@ -258,7 +260,15 @@ export interface TabladeApi {
   undo(): Promise<WithState>
   redo(): Promise<WithState>
   export_parquet(): Promise<
-    Result<{ cancelled: boolean; path?: string; rows?: number; columns?: number; warnings?: number; mode?: string }>
+    Result<{
+      cancelled: boolean
+      path?: string
+      rows?: number
+      columns?: number
+      warnings?: number
+      mode?: string
+      manifest?: string | null
+    }>
   >
   error_report(): Promise<Result<{ text: string }>>
   download_skill(): Promise<Result<{ cancelled: boolean; path?: string; bytes?: number; version?: string }>>

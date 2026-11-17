@@ -31,7 +31,7 @@ EMBEDDED_SPEC: dict[str, Any] | None = None
 
 SYSTEM_COLUMNS = ("__source_file", "__line_no", "__sheet", "__row_type")
 VERSION_RE = re.compile(r"^(\d+)\.(\d+)$")
-EFFECT_KINDS = ("keep", "add", "split", "replace_data", "rename_data", "drop")
+EFFECT_KINDS = ("keep", "add", "split", "replace_data", "rename_data", "drop", "select", "rename")
 
 Issue = dict[str, Any]
 
@@ -102,7 +102,47 @@ def apply_effect(columns: list[str] | None, effect: dict[str, Any]) -> list[str]
         return names
     if kind == "drop":
         return _drop(columns, effect)
+    if kind == "select":
+        return _select(columns, list(effect.get("names") or []))
+    if kind == "rename":
+        return _rename(columns, dict(effect.get("names") or {}))
     raise EffectError(f"未知的欄位效果：{kind}")
+
+
+def _missing(columns: list[str], names: list[str]) -> None:
+    missing = [n for n in names if n not in columns]
+    if missing:
+        raise EffectError(f"欄位不存在：{'、'.join(missing)}")
+
+
+def _select(columns: list[str] | None, names: list[str]) -> list[str] | None:
+    """保留和排序欄位：依清單順序只留下這些欄。"""
+    if not names:
+        raise EffectError("要選至少一個要保留的欄位")
+    repeated = sorted({n for n in names if names.count(n) > 1})
+    if repeated:
+        raise EffectError(f"欄位重複：{'、'.join(repeated)}")
+    if columns is None:
+        return None
+    _missing(columns, names)
+    return names
+
+
+def _rename(columns: list[str] | None, names: dict[str, str]) -> list[str] | None:
+    """改欄名：{舊名: 新名}；改完後不能重複（可以互換），新名不能以 __ 開頭。"""
+    if not names:
+        raise EffectError("要填至少一個新欄名")
+    for new in names.values():
+        if new.startswith("__"):
+            raise EffectError(f"欄名「{new}」不能以 __ 開頭（保留給系統欄位）")
+    if columns is None:
+        return None
+    _missing(columns, list(names))
+    result = [names.get(c, c) for c in columns]
+    repeated = sorted({n for n in result if result.count(n) > 1})
+    if repeated:
+        raise EffectError(f"改完後欄名重複：{'、'.join(repeated)}")
+    return result
 
 
 def _drop(columns: list[str] | None, effect: dict[str, Any]) -> list[str] | None:
@@ -276,14 +316,21 @@ class _Schema:
                     issues += self.check(item, schema["items"], path + [i])
         if isinstance(value, dict):
             props = schema.get("properties", {})
+            extra = schema.get("additionalProperties")
+            if len(value) < schema.get("minProperties", 0):
+                issues.append(_issue(path, f"至少要有 {schema['minProperties']} 項"))
             for name in schema.get("required", []):
                 if name not in value:
                     issues.append(_issue(path + [name], "缺少必填欄位"))
             for name, item in value.items():
+                if len(name) < schema.get("propertyNames", {}).get("minLength", 0):
+                    issues.append(_issue(path + [name], "名稱不能是空字串"))
                 if name in props:
                     issues += self.check(item, props[name], path + [name])
-                elif schema.get("additionalProperties") is False:
+                elif extra is False:
                     issues.append(_issue(path + [name], "不認得的欄位", _close(name, list(props))))
+                elif isinstance(extra, dict):  # 例如改欄名的 {舊名: 新名}
+                    issues += self.check(item, extra, path + [name])
         return issues
 
     def column_refs(
@@ -294,8 +341,10 @@ class _Schema:
         ui = schema.get("ui")
         if ui == "column" and isinstance(value, str):
             return [(path, value)]
-        if ui == "columns" and isinstance(value, list):
+        if ui in ("columns", "column_order") and isinstance(value, list):
             return [(path + [i], v) for i, v in enumerate(value) if isinstance(v, str)]
+        if ui == "rename_map" and isinstance(value, dict):
+            return [(path + [k], k) for k in value if isinstance(k, str)]
         refs: list[tuple[list[str | int], str]] = []
         disc = schema.get("discriminator")
         if disc and isinstance(value, dict) and value.get(disc["propertyName"]) in disc["mapping"]:
@@ -404,6 +453,7 @@ def _semantic(
         info = spec["steps"][raw_step["type"]]
         ref_schema = step_schema[info["schema_ref"]]
         step = _with_defaults(raw_step, ref_schema)
+        before = len(issues)
         if columns is not None:
             for path, name in schema.column_refs(step, ref_schema, ["steps", i]):
                 if name.startswith("__"):
@@ -427,7 +477,8 @@ def _semantic(
         try:
             columns = apply_effect(columns, resolve_effect(info["effect"], step))
         except EffectError as err:
-            issues.append(_issue(["steps", i], str(err)))
+            if len(issues) == before:  # 欄位引用已經報過錯時，不要再報一次同樣的問題
+                issues.append(_issue(["steps", i], str(err)))
             columns = None
     return issues
 

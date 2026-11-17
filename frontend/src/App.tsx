@@ -282,7 +282,8 @@ export default function App() {
       if (res && !res.cancelled) {
         const warn = res.warnings ? `，警告 ${res.warnings.toLocaleString()} 則` : ''
         const how = res.mode === 'stream' ? '（串流處理全部資料）' : ''
-        setStatus({ text: `已匯出 ${res.path}：${res.rows?.toLocaleString()} 列 × ${res.columns} 欄${warn}${how}` })
+        const record = res.manifest ? `；另寫出處理紀錄 ${res.manifest.split('/').pop()}` : ''
+        setStatus({ text: `已匯出 ${res.path}：${res.rows?.toLocaleString()} 列 × ${res.columns} 欄${warn}${how}${record}` })
       }
     },
     downloadSkill: async () => {

@@ -198,6 +198,32 @@ def test_stream_matches_eager_with_conversions_and_removed_columns(workdir):
     assert pick(streamed) == pick(eager)
 
 
+def test_stream_matches_eager_with_text_and_column_steps(workdir):
+    """清理文字、取代值、改欄名、保留和排序欄位：串流與整份讀進記憶體的結果一致。"""
+    data = json.loads(EXAMPLE.read_text(encoding="utf-8"))
+    data["steps"] += [
+        {"id": "t", "type": "trim_clean", "columns": ["品名", "門市"], "collapse_spaces": True},
+        {
+            "id": "r",
+            "type": "replace_values",
+            "columns": ["單號"],
+            "match": "regex",
+            "replacements": [{"find": r"^單號\s*(\d+)$", "replace": "$1"}],
+        },
+        {"id": "m", "type": "rename_columns", "names": {"品名": "商品", "單號": "編號"}},
+        {"id": "c", "type": "select_columns", "columns": ["編號", "日期", "商品", "金額"]},
+    ]
+    (workdir / "text.recipe.json").write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+    r = parse_recipe(load_json(workdir / "text.recipe.json"))
+    execute(r, workdir, output=workdir / "e.parquet", mode="eager")
+    execute(r, workdir, output=workdir / "s.parquet", mode="stream")
+    a = pl.read_parquet(workdir / "e.parquet")
+    b = pl.read_parquet(workdir / "s.parquet")
+    assert a.equals(b) and b.height == 70
+    assert b.columns == ["__source_file", "__line_no", "編號", "日期", "商品", "金額"]
+    assert b["編號"].str.contains(r"^\d+$").all()
+
+
 def test_auto_mode_samples_dry_runs_and_streams_exports(workdir, monkeypatch):
     monkeypatch.setattr(engine_run, "SAMPLE_THRESHOLD", 10)
     monkeypatch.setattr(engine_run, "SAMPLE_HEAD", 20)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import platform
 import sys
 import tempfile
@@ -153,7 +154,14 @@ def run_selftest() -> dict[str, Any]:
             assert out["__line_no"].to_list() == list(range(1, out.height + 1)), (
                 "合併後的行號沒有從 1 重編"
             )
-            return f"2 個 cp950 檔 → 合併成 {report.rows} 列，與預期一致"
+            # 處理紀錄：輸出檔的 SHA-256 要和實際的檔案一樣
+            from .export.manifest import file_sha256
+
+            assert report.manifest, "沒有寫出處理紀錄（manifest）"
+            manifest = json.loads(Path(report.manifest).read_text(encoding="utf-8"))
+            assert manifest["output"]["sha256"] == file_sha256(result), "處理紀錄的 SHA-256 不對"
+            assert len(manifest["inputs"]) == 2, "處理紀錄的輸入檔數量不對"
+            return f"2 個 cp950 檔 → 合併成 {report.rows} 列，與預期一致；處理紀錄正確"
 
         steps = [
             ("產生假資料 CSV", "可以在暫存資料夾寫檔", make_fixture),

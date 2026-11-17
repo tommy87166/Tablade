@@ -52,7 +52,7 @@ from .steps.base import SOURCE_FILE, SYSTEM_PREFIX, Step
 
 MAX_UNDO = 100
 DEFAULT_INPUT = {"id": "src", "files": [], "reader": "text_lines", "encoding": "auto"}
-DEFAULT_OUTPUT = {"format": "parquet", "keep_system_columns": True}
+DEFAULT_OUTPUT = {"format": "parquet", "keep_system_columns": True, "manifest": True}
 INVALID_FILENAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
@@ -362,8 +362,9 @@ class Session:
     def set_output(self, values: dict[str, Any]) -> None:
         with self._lock:
             self._change()
-            if "keep_system_columns" in values:
-                self.output["keep_system_columns"] = bool(values["keep_system_columns"])
+            for key in ("keep_system_columns", "manifest"):
+                if key in values:
+                    self.output[key] = bool(values[key])
 
     def set_meta(self, values: dict[str, Any]) -> None:
         with self._lock:
@@ -781,6 +782,7 @@ class Session:
                 "columns": len(report.columns),
                 "warnings": report.warning_count,
                 "mode": report.mode,
+                "manifest": report.manifest,
             }
 
     def error_report(self) -> str:

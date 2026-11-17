@@ -81,7 +81,7 @@ export const mockApi: TabladeApi = sample
               [
                 '完整執行範例 Recipe',
                 '轉碼、各檔分開處理、8 個步驟、合併來源檔、串流匯出整條流程正常',
-                '2 個 cp950 檔 → 合併成 70 列，與預期一致',
+                '2 個 cp950 檔 → 合併成 70 列，與預期一致；處理紀錄正確',
               ],
             ].map(([name, purpose, detail]) => ({ name, purpose, detail, ok: true, ran: true })),
             versions: { tablade: '0.1.0', python: '—', polars: '—', platform: 'Browser（開發用假資料）', frozen: 'False' },

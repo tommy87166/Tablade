@@ -196,6 +196,156 @@ function PositionChecklist({ value, onChange, columns }: { value: unknown; onCha
   )
 }
 
+/** 保留和排序欄位：上面是要保留的欄（依順序，可以上下移、移除），下面是沒保留的欄（勾選就加到最後）。 */
+function ColumnOrderEditor({ value, onChange, columns }: { value: unknown; onChange: (v: unknown) => void; columns: string[] | null }) {
+  const selected = asList(value)
+  if (!columns) return <TagsEditor value={selected} onChange={onChange} placeholder="欄位名稱（依順序）" />
+  const rest = columns.filter((c) => !selected.includes(c))
+  const move = (i: number, to: number) => {
+    const next = [...selected]
+    const [item] = next.splice(i, 1)
+    next.splice(to, 0, item)
+    onChange(next)
+  }
+  return (
+    <div className="space-y-2">
+      <ol className="divide-y rounded-md border text-sm">
+        {selected.map((c, i) => (
+          <li key={c} className="flex items-center gap-1.5 py-1 pr-1 pl-2">
+            <span className="w-5 text-right text-xs text-muted-foreground tabular-nums">{i + 1}</span>
+            <span className={`min-w-0 flex-1 truncate ${columns.includes(c) ? '' : 'text-destructive'}`}>
+              {columns.includes(c) ? c : `${c}（不存在）`}
+            </span>
+            <Button variant="ghost" size="icon-xs" aria-label={`上移 ${c}`} disabled={i === 0} onClick={() => move(i, i - 1)}>
+              <ArrowUp />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label={`下移 ${c}`}
+              disabled={i === selected.length - 1}
+              onClick={() => move(i, i + 1)}
+            >
+              <ArrowDown />
+            </Button>
+            <Button variant="ghost" size="icon-xs" aria-label={`不保留 ${c}`} onClick={() => onChange(selected.filter((x) => x !== c))}>
+              <X />
+            </Button>
+          </li>
+        ))}
+        {selected.length === 0 ? <li className="p-2 text-xs text-muted-foreground">還沒有選要保留的欄位</li> : null}
+      </ol>
+      {rest.length ? (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>不保留的欄位（勾選就加到最後）</span>
+            <Button variant="link" size="sm" className="h-auto p-0 text-xs" onClick={() => onChange([...selected, ...rest])}>
+              全部加入
+            </Button>
+          </div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1.5 rounded-md border border-dashed p-2">
+            {rest.map((c) => (
+              <label key={c} className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                <Checkbox checked={false} onCheckedChange={() => onChange([...selected, c])} />
+                {c}
+              </label>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+/** 改欄名：每個欄位一列，右邊填新名稱（空白代表不改）；只存有填的。 */
+function RenameMapEditor({ value, onChange, columns }: { value: unknown; onChange: (v: unknown) => void; columns: string[] | null }) {
+  const raw = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
+  const names: Record<string, string> = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, asString(v)]))
+  const set = (old: string, next: string) => {
+    const out = { ...names }
+    if (next) out[old] = next
+    else delete out[old]
+    onChange(out)
+  }
+  const missing = Object.keys(names).filter((k) => !columns?.includes(k))
+  return (
+    <div className="space-y-1.5">
+      {columns ? (
+        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)] items-center gap-x-2 gap-y-1.5 rounded-md border p-2">
+          {columns.map((c) => (
+            <div key={c} className="contents">
+              <span className="truncate text-sm" title={c}>
+                {c}
+              </span>
+              <Input value={names[c] ?? ''} placeholder="不改" className="h-8" onChange={(e) => set(c, e.target.value)} />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">載入資料後，這裡會列出每一個欄位。</p>
+      )}
+      {missing.map((k) => (
+        <div key={k} className="flex items-center gap-2 text-sm text-destructive">
+          <span className="min-w-0 flex-1 truncate">
+            {k}（不存在）→ {names[k]}
+          </span>
+          <Button variant="ghost" size="icon-xs" aria-label={`移除 ${k}`} onClick={() => set(k, '')}>
+            <X />
+          </Button>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** 物件的陣列（例如取代值的「找 → 換成」）：每一項一個框，依子 schema 畫欄位，可以新增、移除。 */
+function ObjectListEditor(props: FieldProps) {
+  const { value, onChange, schema, root, path, issues } = props
+  const itemSchema = resolve(resolve(schema, root).items ?? {}, root)
+  const items = (Array.isArray(value) ? value : []) as Record<string, unknown>[]
+  const fields = Object.entries(itemSchema.properties ?? {})
+  const required = itemSchema.required ?? []
+  const blank = () => Object.fromEntries(fields.map(([name, prop]) => [name, defaultFor(prop, root) ?? '']))
+  const update = (i: number, name: string, v: unknown) => onChange(items.map((item, k) => (k === i ? { ...item, [name]: v } : item)))
+  return (
+    <div className="space-y-2">
+      {items.map((item, i) => (
+        <div key={i} className="grid grid-cols-[3rem_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1.5 rounded-md border bg-muted/30 p-2">
+          {fields.map(([name, prop], j) => {
+            const fieldProps: FieldProps = {
+              ...props,
+              name,
+              path: `${path}[${i}].${name}`,
+              schema: prop,
+              value: item[name],
+              required: required.includes(name),
+              onChange: (v) => update(i, name, v),
+            }
+            const own = issues.filter((x) => x.path === fieldProps.path)
+            return (
+              <div key={name} className="contents">
+                <span className="text-xs text-muted-foreground">{resolve(prop, root).title ?? name}</span>
+                <div className={j === 0 ? '' : 'col-span-2'}>
+                  {control(fieldKind(prop, root), fieldProps)}
+                  <FieldErrors issues={own} />
+                </div>
+                {j === 0 ? (
+                  <Button variant="ghost" size="icon-sm" aria-label="移除這一組" onClick={() => onChange(items.filter((_, k) => k !== i))}>
+                    <X />
+                  </Button>
+                ) : null}
+              </div>
+            )
+          })}
+        </div>
+      ))}
+      <Button variant="outline" size="sm" onClick={() => onChange([...items, blank()])}>
+        <Plus /> 新增一組
+      </Button>
+    </div>
+  )
+}
+
 export function TagsEditor({ value, onChange, placeholder }: { value: unknown; onChange: (v: unknown) => void; placeholder?: string }) {
   const items = asList(value)
   const set = (i: number, text: string) => onChange(items.map((v, k) => (k === i ? text : v)))
@@ -400,6 +550,12 @@ function control(kind: FieldKind, props: FieldProps) {
       return <ConditionsEditor {...props} />
     case 'source_files':
       return <SourceFilesOrder value={value} onChange={onChange} files={props.files ?? null} />
+    case 'column_order':
+      return <ColumnOrderEditor value={value} onChange={onChange} columns={columns} />
+    case 'rename_map':
+      return <RenameMapEditor value={value} onChange={onChange} columns={columns} />
+    case 'objects':
+      return <ObjectListEditor {...props} />
     case 'enum':
       return <EnumSelect value={value} onChange={onChange} schema={schema} />
     case 'boolean':

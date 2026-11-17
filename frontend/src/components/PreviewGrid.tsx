@@ -3,7 +3,7 @@
  * 欄標題與儲存格的右鍵選單可以直接新增步驟（帶入點選的欄位或值）。
  */
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
 
 import {
   ContextMenu,
@@ -17,6 +17,8 @@ import type { Cell, TabladeApi, ViewState } from '../bridge'
 
 const PAGE = 200
 const ROW_HEIGHT = 28
+/** 量文字寬度用的隱藏 span（不佔版面、看不到）。 */
+const MEASURE_BASE = 'pointer-events-none invisible absolute top-0 left-0 whitespace-pre'
 
 export interface GridHandle {
   scrollToRow: (index: number) => void
@@ -40,16 +42,35 @@ interface Props {
   ref?: Ref<GridHandle>
 }
 
-/** 估算文字寬度：中日韓字元約 14px，其他約 7.5px（14px 字型）。 */
+/** 粗估文字寬度：中日韓字元約 14px，其他約 7.5px（14px 字型）。只用來挑最長的幾個值去實際量。 */
 function textWidth(text: string): number {
   let width = 0
   for (const ch of text) width += ch.codePointAt(0)! >= 0x2e80 ? 14 : 7.5
   return width
 }
 
-function widthFor(name: string, sample: Cell[]): number {
-  const longest = Math.max(textWidth(name) + 12, ...sample.map((v) => textWidth(v === null ? 'null' : String(v))))
-  return Math.ceil(Math.min(Math.max(longest + 20, 64), 360))
+const SAMPLE_ROWS = 200
+/** 每一欄實際量幾個最長的值（用粗估挑出來）。 */
+const MEASURE_CANDIDATES = 5
+/** 儲存格左右留白（px-2）、左框線，再多留一點，避免字型捨入造成截斷。 */
+const CELL_EXTRA = 16 + 1 + 7
+const MIN_WIDTH = 64
+const MAX_WIDTH = 360
+
+const cellText = (v: Cell) => (v === null ? 'null' : String(v))
+
+function clampWidth(content: number): number {
+  return Math.ceil(Math.min(Math.max(content + CELL_EXTRA, MIN_WIDTH), MAX_WIDTH))
+}
+
+/** 量不到實際寬度之前（第一次畫面）用的粗估寬度。 */
+function estimateWidth(name: string, sample: Cell[]): number {
+  return clampWidth(Math.max(textWidth(name) + 12, ...sample.map((v) => textWidth(cellText(v)))))
+}
+
+/** 最長（粗估）的幾個不重複的值，交給 DOM 實際量寬度。 */
+function candidates(values: string[]): string[] {
+  return [...new Set(values)].sort((a, b) => textWidth(b) - textWidth(a)).slice(0, MEASURE_CANDIDATES)
 }
 
 export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAddStep, onLoaded, ref }: Props) {
@@ -114,13 +135,37 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
   const fileIndex = columns.indexOf('__source_file')
   const dtypes = new Map(preview.columns.map((c) => [c.name, c.dtype]))
 
-  const widths = useMemo(() => {
-    const sample = pages.get(0) ?? []
-    return visible.map(({ name, i }) => widthFor(name, sample.slice(0, 50).map((r) => r[i])))
-  }, [visible, pages])
+  const firstPage = pages.get(0)
+  const estimated = useMemo(() => {
+    const sample = (firstPage ?? []).slice(0, SAMPLE_ROWS)
+    return visible.map(({ name, i }) => estimateWidth(name, sample.map((r) => r[i])))
+  }, [visible, firstPage])
   // 行號欄依最大行號的位數加寬（大檔的行號可能有 8、9 位數）
-  const lineDigits = String(Math.max(maxLine ?? 0, preview.rows ?? 0, 1)).length
-  const lineWidth = Math.max(56, lineDigits * 7.5 + 22)
+  const maxLineText = String(Math.max(maxLine ?? 0, preview.rows ?? 0, 1))
+
+  // 欄寬用畫面上實際的字型量（含 tabular-nums；App 的系統字型比估計的寬，數字會被截斷）。
+  // 量的 span 放在表格裡，字型、字級、數字樣式都跟儲存格一樣。
+  const measurer = useRef<HTMLSpanElement>(null)
+  const [measured, setMeasured] = useState<{ widths: number[]; line: number } | null>(null)
+  useLayoutEffect(() => {
+    const span = measurer.current
+    if (!span) return
+    const width = (text: string, className: string) => {
+      span.className = `${MEASURE_BASE} ${className}`
+      span.textContent = text
+      return span.getBoundingClientRect().width
+    }
+    const sample = (firstPage ?? []).slice(0, SAMPLE_ROWS)
+    const widths = visible.map(({ name, i }) => {
+      const values = candidates(sample.map((r) => cellText(r[i])))
+      return clampWidth(Math.max(width(name, 'font-medium'), ...values.map((v) => width(v, ''))))
+    })
+    const line = Math.ceil(Math.max(56, width(maxLineText, 'text-xs') + CELL_EXTRA))
+    span.textContent = ''
+    setMeasured({ widths, line })
+  }, [visible, firstPage, maxLineText])
+  const widths = measured && measured.widths.length === visible.length ? measured.widths : estimated
+  const lineWidth = measured?.line ?? Math.max(56, maxLineText.length * 7.5 + 22)
   const template = `${lineWidth}px ${widths.map((w) => `${w}px`).join(' ')}`
 
   if (preview.rows === null) {
@@ -129,6 +174,7 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
 
   return (
     <div ref={scroller} className="relative h-full overflow-auto text-sm tabular-nums">
+      <span ref={measurer} aria-hidden className={MEASURE_BASE} />
       <div style={{ width: 'max-content', minWidth: '100%' }}>
         <div
           className="sticky top-0 z-10 grid border-b bg-background font-medium"
@@ -159,12 +205,22 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
                 <ContextMenuItem onSelect={() => onAddStep({ type: 'filter', context: { column: name } })}>
                   篩選：不是空白
                 </ContextMenuItem>
+                <ContextMenuItem onSelect={() => onAddStep({ type: 'trim_clean', context: { column: name } })}>
+                  清理文字
+                </ContextMenuItem>
+                <ContextMenuItem onSelect={() => onAddStep({ type: 'replace_values', context: { column: name } })}>
+                  取代值
+                </ContextMenuItem>
                 <ContextMenuSeparator />
                 <ContextMenuItem onSelect={() => onAddStep({ type: 'parse_number', context: { column: name } })}>
                   轉成數字
                 </ContextMenuItem>
                 <ContextMenuItem onSelect={() => onAddStep({ type: 'parse_date', context: { column: name } })}>
                   轉成日期
+                </ContextMenuItem>
+                <ContextMenuSeparator />
+                <ContextMenuItem onSelect={() => onAddStep({ type: 'rename_columns', context: { column: name } })}>
+                  改欄名
                 </ContextMenuItem>
                 <ContextMenuItem onSelect={() => onAddStep({ type: 'remove_columns', context: { column: name } })}>
                   刪除這一欄
@@ -234,6 +290,10 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
                 onSelect={() => onAddStep({ type: 'filter', context: { column: target.name, value: target.value, exclude: true } })}
               >
                 排除等於這個值的列
+              </ContextMenuItem>
+              <ContextMenuSeparator />
+              <ContextMenuItem onSelect={() => onAddStep({ type: 'replace_values', context: { column: target.name, value: target.value } })}>
+                取代這個值
               </ContextMenuItem>
             </ContextMenuContent>
           ) : null}

@@ -22,6 +22,7 @@ from typing import Any, Literal
 import polars as pl
 
 from tablade.engine.progress import Watcher, rows_per_file, with_positions
+from tablade.export.manifest import write_manifest
 from tablade.export.parquet import write_parquet
 from tablade.ingest.sources import (
     Part,
@@ -76,6 +77,8 @@ class RunReport:
     output: str | None
     mode: str = "eager"
     sample_rows: int | None = None
+    manifest: str | None = None
+    """處理紀錄（xxx.manifest.json）的位置；沒有寫出時是 None。"""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -226,7 +229,8 @@ def execute(
             raise ValueError("stream 模式一定會寫出檔案")
         # 每一列帶著在所有輸入裡的位置，執行中才能回報進度（寫出前拿掉）
         parts = with_positions(parts, files, source.reader)
-        return None, _execute_stream(recipe, parts, files, input_rows, output, limit, progress)
+        report = _execute_stream(recipe, parts, files, input_rows, output, limit, progress)
+        return None, _with_manifest(recipe, report, output)
 
     frame = (
         concat(parts).collect(engine="streaming")
@@ -270,7 +274,16 @@ def execute(
         mode,
         sample_rows,
     )
+    if written is not None and output is not None:
+        _with_manifest(recipe, report, output)
     return frame, report
+
+
+def _with_manifest(recipe: Recipe, report: RunReport, output: Path) -> RunReport:
+    """寫出處理紀錄（Recipe 的輸出設定可以關掉）。"""
+    if recipe.output.manifest:
+        report.manifest = write_manifest(recipe, report, output).as_posix()
+    return report
 
 
 def _execute_stream(
