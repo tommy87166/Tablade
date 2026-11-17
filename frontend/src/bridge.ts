@@ -24,11 +24,23 @@ export type JsonSchema = {
   default?: unknown
   enum?: unknown[]
   const?: unknown
-  ui?: 'column' | 'columns' | 'column_positions' | 'column_order' | 'rename_map' | 'int_list' | 'new_columns' | 'regex' | 'source_files'
+  ui?:
+    | 'column'
+    | 'columns'
+    | 'column_positions'
+    | 'column_order'
+    | 'rename_map'
+    | 'int_list'
+    | 'new_columns'
+    | 'regex'
+    | 'source_files'
+    | 'stage'
+    | 'right_column'
+    | 'right_columns'
   ui_labels?: Record<string, string>
   /** 選到某個選項時，顯示在選單下面的說明（例如日期樣式的正規表示式） */
   ui_option_hints?: Record<string, string>
-  /** 其他參數是這些值時才顯示這個欄位（例如刪除欄依位置時才顯示 positions） */
+  /** 其他參數是這些值時才顯示這個欄位（例如刪除欄依位置時才顯示 positions）；值是陣列時是其中之一 */
   ui_show_if?: Record<string, unknown>
   properties?: Record<string, JsonSchema>
   required?: string[]
@@ -112,6 +124,32 @@ export interface RowWarning {
   line_no: number | null
   /** 讀 Excel 全部工作表時，這一列在哪個工作表 */
   sheet?: string | null
+  /** 從前面的階段讀進來的列：從哪個階段讀的 */
+  stage?: string | null
+  /** 合併來源檔之後的列：合併前的位置 */
+  orig_source_file?: string | null
+  orig_line_no?: number | null
+  orig_sheet?: string | null
+  orig_stage?: string | null
+}
+
+/** 最左邊的階段分頁 */
+export interface StageState {
+  index: number
+  name: string
+  reader: string
+  /** 最後一個階段：它的結果寫到輸出檔 */
+  last: boolean
+  status: 'ok' | 'waiting' | 'error'
+  rows: number | null
+  /** 這個階段結果的資料欄（合併查詢的右表欄位選單） */
+  columns: string[] | null
+  /** 結果是用樣本算的 */
+  sampled: boolean
+  /** 已經「完整跑一次」，後面的階段用完整的結果 */
+  full: boolean
+  /** 用到哪些前面的階段 */
+  uses: string[]
 }
 
 export interface SourceFile {
@@ -135,10 +173,17 @@ export interface ViewState {
     /** false：還沒有新增或開啟 Recipe（顯示起始頁） */
     open: boolean
   }
+  /** 每個階段；最後一個的結果寫到輸出檔 */
+  stages: StageState[]
+  /** 目前在編輯的階段（下面的 input、steps、preview 都是這個階段的） */
+  current: number
   input: {
-    id: string
     /** 檔案清單：相對於 Recipe 資料夾的路徑或絕對路徑，可含 * */
     files: string[]
+    /** 讀取方式是「前面階段的輸出」時，要讀的階段 */
+    stages: string[]
+    /** 目前階段前面的階段（只能讀這些） */
+    earlier: string[]
     /** 檔案清單每一項找到幾個檔 */
     entries: { path: string; found: number }[]
     /** 清單不是空的，而且每一項都找得到 */
@@ -147,7 +192,7 @@ export interface ViewState {
     loaded: boolean
     /** 載入之後設定或檔案變了，要重新載入 */
     stale: boolean
-    reader: 'text_lines' | 'csv' | 'excel'
+    reader: 'text_lines' | 'csv' | 'excel' | 'parquet' | 'stages'
     encoding: string
     /** Excel 的工作表名稱；空白代表第一個工作表，* 代表全部工作表 */
     sheet: string
@@ -247,7 +292,13 @@ export interface TabladeApi {
   state(): Promise<WithState>
   rows(step: number, offset: number, limit: number): Promise<Result<RowsPage>>
   column_info(step: number): Promise<Result<ColumnsInfo>>
-  find_row(step: number, source_file: string, line_no: number, sheet?: string | null): Promise<Result<{ row: number | null }>>
+  find_row(
+    step: number,
+    source_file: string,
+    line_no: number,
+    sheet?: string | null,
+    stage?: string | null,
+  ): Promise<Result<{ row: number | null }>>
   new_recipe(): Promise<Dialog<{ path: string }>>
   open_recipe(): Promise<Dialog<{ issues: Issue[] }>>
   save_recipe(): Promise<Dialog<{ path: string }>>
@@ -259,6 +310,12 @@ export interface TabladeApi {
   set_input(values: Partial<ViewState['input']>): Promise<WithState>
   set_output(values: Partial<ViewState['output']>): Promise<WithState>
   set_meta(values: { name?: string; description?: string }): Promise<WithState>
+  add_stage(name: string, before?: boolean): Promise<WithState<{ index: number }>>
+  rename_stage(index: number, name: string): Promise<WithState>
+  move_stage(index: number, to: number): Promise<WithState>
+  delete_stage(index: number): Promise<WithState>
+  select_stage(index: number): Promise<WithState>
+  full_run(index: number): Promise<WithState>
   add_step(type_name: string, context?: { column?: string; value?: Cell; exclude?: boolean }): Promise<WithState<{ index: number }>>
   update_step(index: number, values: Record<string, unknown>): Promise<WithState>
   move_step(index: number, to: number): Promise<WithState>

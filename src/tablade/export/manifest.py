@@ -50,19 +50,29 @@ def recipe_sha256(content: dict[str, Any]) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _warning(w: Any) -> dict[str, Any]:
+    item: dict[str, Any] = {"step": w.step}
+    if w.stage:
+        item["from_stage"] = w.stage
+    item["source_file"] = w.source_file
+    if w.sheet:
+        item["sheet"] = w.sheet
+    item["line_no"] = w.line_no
+    if w.orig_source_file is not None or w.orig_line_no is not None:
+        item["original"] = {
+            **({"from_stage": w.orig_stage} if w.orig_stage else {}),
+            "source_file": w.orig_source_file,
+            **({"sheet": w.orig_sheet} if w.orig_sheet else {}),
+            "line_no": w.orig_line_no,
+        }
+    item["message"] = w.message
+    return item
+
+
 def build_manifest(recipe: Recipe, report: RunReport, output: Path) -> dict[str, Any]:
     content = recipe_content(recipe)
-    warnings = [
-        {
-            "step": w.step,
-            "source_file": w.source_file,
-            **({"sheet": w.sheet} if w.sheet else {}),
-            "line_no": w.line_no,
-            "message": w.message,
-        }
-        for s in report.steps
-        for w in s.warnings
-    ]
+    warnings = [_warning(w) for s in report.steps for w in s.warnings]
+    multi = len(recipe.stages) > 1
     return {
         "tablade_manifest": MANIFEST_VERSION,
         "tool": {"name": "tablade", "version": __version__, "polars": pl.__version__},
@@ -75,6 +85,7 @@ def build_manifest(recipe: Recipe, report: RunReport, output: Path) -> dict[str,
         },
         "inputs": [
             {
+                **({"stage": f.stage} if multi and f.stage else {}),
                 "file": f.path,
                 **({"sheet": f.sheet} if f.sheet else {}),
                 "bytes": f.bytes,
@@ -86,6 +97,7 @@ def build_manifest(recipe: Recipe, report: RunReport, output: Path) -> dict[str,
         ],
         "steps": [
             {
+                **({"stage": s.stage} if multi else {}),
                 "id": s.id,
                 "type": s.type,
                 "description": s.description,
@@ -95,6 +107,16 @@ def build_manifest(recipe: Recipe, report: RunReport, output: Path) -> dict[str,
             }
             for s in report.steps
         ],
+        **(
+            {
+                "stages": [
+                    {"name": st.name, "rows": st.rows, "columns": st.columns}
+                    for st in report.stages[:-1]
+                ]
+            }
+            if multi
+            else {}
+        ),
         "warnings": {"count": report.warning_count, "items": warnings},
         "output": {
             "file": output.name,

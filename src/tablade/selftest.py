@@ -154,16 +154,17 @@ def run_selftest() -> dict[str, Any]:
             write_messy_export(work / "data" / "明細_01.csv", n=50, seed=0, encoding="cp950")
             write_messy_export(work / "data" / "明細_02.csv", n=30, seed=1, encoding="cp950")
             data = load_json(resource_dir() / "examples" / "sales_detail.recipe.json")
-            data["steps"].append(
+            data["stages"][-1]["steps"].append(
                 {"id": "selftest_merge", "type": "merge_files", "order": ["data/明細_02.csv"]}
             )
             result = work / "result.parquet"
             _, report = execute(parse_recipe(data), work, output=result, mode="stream")
             out = pl.read_parquet(result)
             expected = messy_export(30, 1)[1] + messy_export(50, 0)[1]
-            got = out.drop("__source_file", "__line_no").to_dicts()
+            got = out.select([c for c in out.columns if not c.startswith("__")]).to_dicts()
             assert got == expected, f"結果有 {len(got)} 列，和預期的 {len(expected)} 列不同"
             assert set(out["__source_file"]) == {"合併"}, "合併後的來源檔名稱不對"
+            assert out["__orig_source_file"][0] == "data/明細_02.csv", "合併前的來源檔沒有留下來"
             assert out["__line_no"].to_list() == list(range(1, out.height + 1)), (
                 "合併後的行號沒有從 1 重編"
             )

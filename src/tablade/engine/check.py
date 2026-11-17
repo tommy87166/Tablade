@@ -15,7 +15,7 @@ from tablade.recipe.schema import Recipe, RecipeError, load_json, parse_recipe
 from tablade.recipe.spec import build_spec
 from tablade.recipe.validator import validate
 
-from .run import SAMPLE_HEAD, SAMPLE_TAIL, RunError, RunReport, execute
+from .run import SAMPLE_HEAD, SAMPLE_TAIL, RowWarning, RunError, RunReport, execute
 
 
 @dataclass
@@ -33,31 +33,47 @@ def _issue(path: str, error: str, severity: str = "error") -> dict[str, Any]:
     return {"path": path, "error": error, "severity": severity}
 
 
-def check_recipe(data: dict[str, Any], base_dir: Path, *, dry_run: bool = False) -> CheckResult:
+def _peek_stages(
+    data: dict[str, Any], base_dir: Path, dry_run: bool
+) -> tuple[dict[str, list[str]], list[dict[str, Any]]]:
+    """每個讀實際檔的階段，先看第一個檔有哪些欄位（不讀整個檔，給驗證器檢查欄位引用）。"""
+    columns: dict[str, list[str]] = {}
     extra: list[dict[str, Any]] = []
-    input_columns = None
-    inputs = data.get("inputs")
-    if (
-        isinstance(inputs, list)
-        and inputs
-        and isinstance(inputs[0], dict)
-        and isinstance(inputs[0].get("files"), list)
-        and inputs[0]["files"]
-        and all(isinstance(f, str) and f for f in inputs[0]["files"])
-    ):
-        first = inputs[0]
+    stages = data.get("stages")
+    for si, stage in enumerate(stages if isinstance(stages, list) else []):
+        source = stage.get("input") if isinstance(stage, dict) else None
+        if not isinstance(source, dict) or source.get("reader") == "stages":
+            continue
+        files = source.get("files")
+        if not (isinstance(files, list) and files and all(isinstance(f, str) and f for f in files)):
+            continue
         try:
-            columns = peek_columns(
-                first["files"],
-                first.get("reader", "text_lines"),
-                first.get("encoding", "auto"),
+            found = peek_columns(
+                files,
+                source.get("reader", "text_lines"),
+                source.get("encoding", "auto"),
                 base_dir,
-                first.get("sheet", "") if isinstance(first.get("sheet"), str) else "",
+                source.get("sheet", "") if isinstance(source.get("sheet"), str) else "",
             )
-            input_columns = {first.get("id", "src"): columns}
         except (InputError, DecodeError, LookupError) as err:
-            extra.append(_issue("inputs[0].files", str(err), "error" if dry_run else "warning"))
+            path = f"stages[{si}].input.files"
+            extra.append(_issue(path, str(err), "error" if dry_run else "warning"))
+            continue
+        if isinstance(stage.get("name"), str) and found is not None:
+            columns[stage["name"]] = found
+    return columns, extra
 
+
+def _step_path(recipe: Recipe, step_id: str) -> str:
+    for si, stage in enumerate(recipe.stages):
+        for i, step in enumerate(stage.steps):
+            if step.id == step_id:
+                return f"stages[{si}].steps[{i}]"
+    return "stages"
+
+
+def check_recipe(data: dict[str, Any], base_dir: Path, *, dry_run: bool = False) -> CheckResult:
+    input_columns, extra = _peek_stages(data, base_dir, dry_run)
     issues = validate(data, build_spec(), input_columns) + extra
     result = CheckResult(issues)
     if not result.ok:
@@ -71,10 +87,9 @@ def check_recipe(data: dict[str, Any], base_dir: Path, *, dry_run: bool = False)
         try:
             _, result.report = execute(result.recipe, base_dir, write_output=False)
         except RunError as err:
-            index = next(i for i, s in enumerate(result.recipe.steps) if s.id == err.step_id)
-            result.issues.append(_issue(f"steps[{index}]", str(err)))
+            result.issues.append(_issue(_step_path(result.recipe, err.step_id), str(err)))
         except (InputError, DecodeError) as err:
-            result.issues.append(_issue("inputs[0]", str(err)))
+            result.issues.append(_issue("stages", str(err)))
     return result
 
 
@@ -95,10 +110,26 @@ def format_issues(issues: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def warning_place(w: RowWarning) -> str:
+    """警告指到的位置：「@階段／檔名［工作表］:行號（原始：檔名:行號）」。"""
+    where = f"{w.source_file}［{w.sheet}］" if w.sheet else f"{w.source_file}"
+    if w.stage:
+        where = f"@{w.stage}／{where}"
+    where += f":{w.line_no}"
+    if w.orig_source_file is not None or w.orig_line_no is not None:
+        original = f"{w.orig_source_file}［{w.orig_sheet}］" if w.orig_sheet else w.orig_source_file
+        if w.orig_stage:
+            original = f"@{w.orig_stage}／{original}"
+        where += f"（原始：{original}:{w.orig_line_no}）"
+    return where
+
+
 def format_report(report: RunReport, max_warnings: int = 10) -> str:
+    multi = len(report.stages) > 1
     lines = ["輸入："]
     for f in report.inputs:
-        lines.append(f"  {f.name}（{f.encoding}，{f.bytes:,} bytes，{f.rows:,} 行）")
+        stage = f"［{f.stage}］" if multi and f.stage else ""
+        lines.append(f"  {stage}{f.name}（{f.encoding}，{f.bytes:,} bytes，{f.rows:,} 行）")
     previous = report.input_rows
     if report.mode == "sample":
         previous = report.sample_rows or 0
@@ -112,12 +143,22 @@ def format_report(report: RunReport, max_warnings: int = 10) -> str:
         )
     else:
         lines.append(f"步驟（輸入共 {previous:,} 行）：")
+    stage = None
     for s in report.steps:
+        if multi and s.stage != stage:
+            stage = s.stage
+            lines.append(f" 階段「{stage}」")
+            previous = None
         warn = f"，警告 {s.warning_count:,}" if s.warning_count else ""
         if not s.enabled:
             lines.append(f"  {s.id:<6} [停用] {s.description}")
         elif s.rows is None:
             lines.append(f"  {s.id:<6} {s.description}{f'（{warn[1:]}）' if warn else ''}")
+        elif previous is None:
+            lines.append(
+                f"  {s.id:<6} {s.rows:>8,} 列{f'（{warn[1:]}）' if warn else ''}  {s.description}"
+            )
+            previous = s.rows
         else:
             delta = s.rows - previous
             change = f"{delta:+,}" if delta else "±0"
@@ -129,8 +170,7 @@ def format_report(report: RunReport, max_warnings: int = 10) -> str:
             f"警告（共 {report.warning_count:,} 則，列出前 {min(len(warnings), max_warnings)} 則）："
         )
         for w in warnings[:max_warnings]:
-            where = f"{w.source_file}［{w.sheet}］" if w.sheet else w.source_file
-            lines.append(f"  {w.step} {where}:{w.line_no}  {w.message}")
+            lines.append(f"  {w.step} {warning_place(w)}  {w.message}")
     lines.append(
         f"結果：{report.rows:,} 列 × {len(report.columns)} 欄（{'、'.join(report.columns)}）"
     )

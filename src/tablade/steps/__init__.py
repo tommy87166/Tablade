@@ -15,6 +15,7 @@ from . import text  # noqa: F401  清理文字、取代值
 from . import convert  # noqa: F401  文字轉數字、文字轉日期
 from . import aggregate  # noqa: F401  取消樞紐、群組彙總、樞紐
 from . import files  # noqa: F401  合併來源檔
+from . import join  # noqa: F401  合併查詢
 from .registry import all_steps, get
 
 __all__ = ["all_steps", "get"]

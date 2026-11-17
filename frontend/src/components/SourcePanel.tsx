@@ -3,12 +3,19 @@ import { CircleCheck, CircleX, FileInput, FolderOpen, Plus, X } from 'lucide-rea
 import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import type { ViewState } from '../bridge'
 
-const READERS = { text_lines: '逐行讀取（爛格式檔案）', csv: '乾淨的 CSV', excel: 'Excel 工作表' }
+const READERS = {
+  text_lines: '逐行讀取（爛格式檔案）',
+  csv: '乾淨的 CSV',
+  excel: 'Excel 工作表',
+  parquet: 'Parquet',
+  stages: '前面階段的輸出',
+}
 /** Radix 的選項不能是空字串：「第一個工作表」用這個值代表 sheet = '' */
 const FIRST_SHEET = '__first__'
 /** 全部工作表（Excel 的工作表名稱不能有 *，不會撞名） */
@@ -39,8 +46,80 @@ interface InputProps {
 
 const isGlob = (path: string) => /[*?[]/.test(path)
 
+/** 讀前面階段的輸出：勾選要讀的階段（依階段的順序讀）。 */
+function StagesInput({ state, busy, onLoad, onInput }: Pick<InputProps, 'state' | 'busy' | 'onLoad' | 'onInput'>) {
+  const { input } = state
+  const picked = new Set(input.stages)
+  const toggle = (name: string, on: boolean) => onInput({ stages: input.earlier.filter((n) => (n === name ? on : picked.has(n))) })
+  const missing = input.stages.filter((n) => !input.earlier.includes(n))
+  return (
+    <div className="space-y-3">
+      <div className="space-y-1.5">
+        <div className="text-xs text-muted-foreground">要讀的階段（依階段的順序接在一起）</div>
+        <ul className="divide-y rounded-md border text-sm">
+          {input.earlier.map((name) => (
+            <li key={name}>
+              <label className="flex items-center gap-2 px-2 py-1.5">
+                <Checkbox checked={picked.has(name)} onCheckedChange={(v) => toggle(name, v === true)} />
+                <span className="min-w-0 flex-1 truncate">@{name}</span>
+              </label>
+            </li>
+          ))}
+        </ul>
+        {missing.length ? <p className="text-xs text-destructive">不是前面的階段：{missing.join('、')}</p> : null}
+        <p className="text-xs text-muted-foreground">
+          每個來源檔各自是一個來源（名稱是「@階段／檔名」）。要接成一份（附加）就加「合併來源檔」；同名欄的型別要一樣，缺的欄補空值。
+        </p>
+      </div>
+      {input.error ? <p className="rounded-md bg-destructive/10 p-2 text-sm text-destructive">{input.error}</p> : null}
+      {!input.loaded && !input.error ? (
+        <div className="space-y-1.5">
+          <Button className="w-full" onClick={onLoad} disabled={busy || !input.can_load || !input.stages.length}>
+            <FileInput /> 載入資料
+          </Button>
+          <p className="text-center text-xs text-muted-foreground">
+            {input.stages.length ? '前面的階段還沒有結果：載入資料，並確認前面的階段沒有錯誤' : '先勾選要讀的階段'}
+          </p>
+        </div>
+      ) : input.loaded ? (
+        <p className="text-xs text-muted-foreground">
+          {input.rows?.toLocaleString()} 列 × {input.columns?.length} 欄
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
 export function InputPanel({ state, busy, onLoad, onAddFiles, onAddEntry, onRemove, onInput }: InputProps) {
   const { input } = state
+  const [entry, setEntry] = useState('')
+  const readerSelect = (
+    <div className="space-y-1.5">
+      <div className="text-xs text-muted-foreground">讀取方式</div>
+      <Select value={input.reader} onValueChange={(reader) => onInput({ reader: reader as ViewState['input']['reader'] })}>
+        <SelectTrigger className="w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {Object.entries(READERS).map(([k, v]) => (
+            <SelectItem key={k} value={k} disabled={k === 'stages' && state.current === 0}>
+              {v}
+              {k === 'stages' && state.current === 0 ? '（第一個階段不能選）' : ''}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  )
+  if (input.reader === 'stages') {
+    return (
+      <section className="space-y-3">
+        <div className="text-sm font-medium">讀取資料</div>
+        {readerSelect}
+        <StagesInput state={state} busy={busy} onLoad={onLoad} onInput={onInput} />
+      </section>
+    )
+  }
   const loadHint = !input.files.length
     ? '先加入檔案'
     : !input.can_load
@@ -54,7 +133,6 @@ export function InputPanel({ state, busy, onLoad, onAddFiles, onAddEntry, onRemo
       : input.stale
         ? 'text-amber-700 dark:text-amber-400'
         : 'text-muted-foreground'
-  const [entry, setEntry] = useState('')
   const submit = () => {
     if (!entry.trim()) return
     onAddEntry(entry)
@@ -112,22 +190,12 @@ export function InputPanel({ state, busy, onLoad, onAddFiles, onAddEntry, onRemo
         </form>
       </div>
       <div className="space-y-3">
-        <div className="space-y-1.5">
-          <div className="text-xs text-muted-foreground">讀取方式</div>
-          <Select value={input.reader} onValueChange={(reader) => onInput({ reader: reader as ViewState['input']['reader'] })}>
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {Object.entries(READERS).map(([k, v]) => (
-                <SelectItem key={k} value={k}>
-                  {v}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        {input.reader === 'excel' ? (
+        {readerSelect}
+        {input.reader === 'parquet' ? (
+          <p className="text-xs text-muted-foreground">
+            欄位與型別照檔案；檔案自己帶的 __ 開頭欄位改名成「原始…」保留（例如 __line_no → 原始行號）。
+          </p>
+        ) : input.reader === 'excel' ? (
           <div className="space-y-1.5">
             <div className="text-xs text-muted-foreground">工作表</div>
             <Select value={input.sheet || FIRST_SHEET} onValueChange={(sheet) => onInput({ sheet: sheet === FIRST_SHEET ? '' : sheet })}>
@@ -205,6 +273,20 @@ interface OutputProps {
 
 export function OutputPanel({ state, onOutput }: OutputProps) {
   const { output } = state
+  const stage = state.stages[state.current]
+  if (stage && !stage.last) {
+    const users = state.stages.filter((s) => s.uses.includes(stage.name)).map((s) => `「${s.name}」`)
+    return (
+      <section className="space-y-3">
+        <div className="text-sm font-medium">階段結果</div>
+        <p className="text-sm text-muted-foreground">
+          這個階段的結果不會寫到輸出檔：是暫存的，後面的階段用 @{stage.name} 讀它
+          {users.length ? `（目前${users.join('、')}用到它）` : '（目前還沒有階段用到它）'}。
+        </p>
+        <p className="text-xs text-muted-foreground">只有最後一個階段的結果會寫到輸出檔。</p>
+      </section>
+    )
+  }
   return (
     <section className="space-y-3">
       <div className="text-sm font-medium">輸出資料</div>

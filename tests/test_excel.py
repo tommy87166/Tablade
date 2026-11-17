@@ -75,14 +75,19 @@ def test_excel_errors(tmp_path):
 def excel_recipe(sheet: str = "") -> dict:
     return {
         "tablade_recipe": "1.0",
-        "inputs": [{"id": "src", "files": ["*.xlsx"], "reader": "excel", "sheet": sheet}],
-        "steps": [
-            {"id": "s1", "type": "remove_top_rows", "n": 3},
+        "stages": [
             {
-                "id": "s2",
-                "type": "promote_headers",
-                "names": ["日期", "門市", "品號", "品名", "數量", "金額"],
-            },
+                "name": "預設階段",
+                "input": {"files": ["*.xlsx"], "reader": "excel", "sheet": sheet},
+                "steps": [
+                    {"id": "s1", "type": "remove_top_rows", "n": 3},
+                    {
+                        "id": "s2",
+                        "type": "promote_headers",
+                        "names": ["日期", "門市", "品號", "品名", "數量", "金額"],
+                    },
+                ],
+            }
         ],
         "output": {"format": "parquet", "keep_system_columns": True},
     }
@@ -117,9 +122,9 @@ def test_session_lists_sheets_and_loads_excel(tmp_path):
     assert s.state()["input"]["stale"] is True
     s.load_data()
     assert s.state()["input"]["rows"] == 1
-    assert s.recipe_dict()["inputs"][0]["sheet"] == "說明"
+    assert s.recipe_dict()["stages"][0]["input"]["sheet"] == "說明"
     s.set_input({"reader": "text_lines", "sheet": ""})
-    assert "sheet" not in s.recipe_dict()["inputs"][0]  # 不是 Excel 時不寫工作表
+    assert "sheet" not in s.recipe_dict()["stages"][0]["input"]  # 不是 Excel 時不寫工作表
 
 
 def test_example_data_includes_an_excel_file(tmp_path):
@@ -153,11 +158,16 @@ def monthly(tmp_path: Path) -> list[Path]:
 def all_sheets_recipe(*extra: dict, keep_system: bool = True) -> dict:
     return {
         "tablade_recipe": "1.0",
-        "inputs": [{"id": "src", "files": ["甲.xlsx", "乙.xlsx"], "reader": "excel", "sheet": "*"}],
-        "steps": [
-            {"id": "s1", "type": "remove_top_rows", "n": 1},
-            {"id": "s2", "type": "promote_headers", "names": ["品號", "金額"]},
-            *extra,
+        "stages": [
+            {
+                "name": "預設階段",
+                "input": {"files": ["甲.xlsx", "乙.xlsx"], "reader": "excel", "sheet": "*"},
+                "steps": [
+                    {"id": "s1", "type": "remove_top_rows", "n": 1},
+                    {"id": "s2", "type": "promote_headers", "names": ["品號", "金額"]},
+                    *extra,
+                ],
+            }
         ],
         "output": {"format": "parquet", "keep_system_columns": keep_system},
     }

@@ -1,4 +1,4 @@
-/** 左側：讀取資料 → 步驟清單（點選、拖曳排序、停用、刪除）→ 輸出資料，以及新增步驟選單。 */
+/** 左側：目前階段的讀取資料 → 步驟清單（點選、拖曳排序、停用、刪除）→ 輸出資料（中間的階段是「階段結果」），以及新增步驟選單。 */
 import { AlertTriangle, ArrowDown, ArrowUp, CircleX, FileInput, FileOutput, GripVertical, Pause, Play, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 
@@ -104,22 +104,37 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
   const [over, setOver] = useState<number | null>(null)
   const input = state.input
   const missing = input.entries.filter((e) => !e.found).length
-  const sourceText = !input.files.length
-    ? '尚未加入檔案'
-    : missing
-      ? `有 ${missing} 個找不到的檔`
-      : input.loaded
-        ? `${input.sources.length} 個檔案・已載入`
-        : input.stale
-          ? '設定已變更・請重新載入'
-          : `${input.files.length} 個項目・尚未載入`
-  const sourceTone = missing ? 'text-destructive' : input.stale ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'
+  const sourceText =
+    input.reader === 'stages'
+      ? input.stages.length
+        ? `讀 ${input.stages.map((n) => `@${n}`).join('、')}${input.error ? '・有錯誤' : input.loaded ? '' : '・還沒有結果'}`
+        : '尚未選擇前面的階段'
+      : !input.files.length
+        ? '尚未加入檔案'
+        : missing
+          ? `有 ${missing} 個找不到的檔`
+          : input.loaded
+            ? `${input.sources.length} 個檔案・已載入`
+            : input.stale
+              ? '設定已變更・請重新載入'
+              : `${input.files.length} 個項目・尚未載入`
+  const sourceTone =
+    missing || (input.reader === 'stages' && input.error)
+      ? 'text-destructive'
+      : input.stale
+        ? 'text-amber-700 dark:text-amber-400'
+        : 'text-muted-foreground'
   const last = state.steps.length - 1
+  const stage = state.stages[state.current]
 
   return (
     <div className="flex h-full flex-col">
       <PaneHeader>
-        <PaneTitle>步驟</PaneTitle>
+        <PaneTitle>
+          <span className="block max-w-40 truncate" title={stage?.name}>
+            {state.stages.length > 1 && stage ? stage.name : '步驟'}
+          </span>
+        </PaneTitle>
         {state.input.sampled ? <span className="truncate text-[11px] text-amber-700 dark:text-amber-400">列數為樣本</span> : null}
         <span className="ml-auto flex shrink-0 items-center gap-1">
           <AddStepMenu catalog={catalog} onAdd={onAdd} disabled={busy} />
@@ -263,7 +278,10 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
           >
             <FileOutput className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
             <span className="min-w-0 flex-1">
-              <span className="block font-medium">輸出資料</span>
+              <span className="block font-medium">{stage && !stage.last ? '階段結果' : '輸出資料'}</span>
+              {stage && !stage.last ? (
+                <span className="block text-xs text-muted-foreground">暫存，後面的階段用 @{stage.name} 讀它</span>
+              ) : null}
             </span>
           </button>
         </li>

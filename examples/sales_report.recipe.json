@@ -2,23 +2,26 @@
   "tablade_recipe": "1.0",
   "name": "門市銷售報表攤平",
   "description": "範例：把分段的列印格式報表攤平成明細表。先執行 uv run python scripts/gen_fixtures.py examples/data 產生假資料",
-  "inputs": [
-    { "id": "src", "files": ["data/銷售報表.txt"], "reader": "text_lines", "encoding": "auto" }
-  ],
-  "steps": [
-    { "id": "s1", "type": "classify_rows",
-      "rules": [
-        { "label": "段落", "conditions": [{ "column": "line", "op": "starts_with", "value": "門市：" }] },
-        { "label": "明細", "conditions": [{ "column": "line", "op": "regex", "pattern": "^\\d{3}/\\d{2}/\\d{2} " }] }
-      ] },
-    { "id": "s2", "type": "extract_regex", "column": "line", "pattern": "^門市：\\s*(.+)$", "names": ["門市"] },
-    { "id": "s3", "type": "fill_down", "columns": ["門市"] },
-    { "id": "s4", "type": "filter", "conditions": [{ "column": "類型", "op": "equals", "value": "明細" }] },
-    { "id": "s5", "type": "split_fixed_width", "starts": [1, 12, 18, 31, 38, 47],
-      "names": ["日期", "品號", "品名", "數量", "單價", "金額"] },
-    { "id": "s6", "type": "select_columns", "columns": ["門市", "日期", "品號", "品名", "數量", "單價", "金額"] },
-    { "id": "s7", "type": "parse_number", "columns": ["數量", "單價", "金額"], "kind": "integer" },
-    { "id": "s8", "type": "parse_date", "columns": ["日期"], "pattern": "slash", "calendar": "roc" }
+  "stages": [
+    {
+      "name": "預設階段",
+      "input": { "files": ["data/銷售報表.txt"], "reader": "text_lines", "encoding": "auto" },
+      "steps": [
+        { "id": "s1", "type": "classify_rows",
+          "rules": [
+            { "label": "段落", "conditions": [{ "column": "line", "op": "starts_with", "value": "門市：" }] },
+            { "label": "明細", "conditions": [{ "column": "line", "op": "regex", "pattern": "^\\d{3}/\\d{2}/\\d{2} " }] }
+          ] },
+        { "id": "s2", "type": "extract_regex", "column": "line", "pattern": "^門市：\\s*(.+)$", "names": ["門市"] },
+        { "id": "s3", "type": "fill_down", "columns": ["門市"] },
+        { "id": "s4", "type": "filter", "conditions": [{ "column": "類型", "op": "equals", "value": "明細" }] },
+        { "id": "s5", "type": "split_fixed_width", "starts": [1, 12, 18, 31, 38, 47],
+          "names": ["日期", "品號", "品名", "數量", "單價", "金額"] },
+        { "id": "s6", "type": "select_columns", "columns": ["門市", "日期", "品號", "品名", "數量", "單價", "金額"] },
+        { "id": "s7", "type": "parse_number", "columns": ["數量", "單價", "金額"], "kind": "integer" },
+        { "id": "s8", "type": "parse_date", "columns": ["日期"], "pattern": "slash", "calendar": "roc" }
+      ]
+    }
   ],
   "output": { "format": "parquet", "keep_system_columns": true }
 }

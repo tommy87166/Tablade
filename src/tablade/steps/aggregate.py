@@ -19,6 +19,7 @@ from .base import (
     POSITION,
     SHEET,
     SOURCE_FILE,
+    STAGE,
     ColumnRef,
     ColumnRefs,
     Example,
@@ -32,6 +33,7 @@ from .base import (
     pick_column,
     quote_list,
     sample_values,
+    system_columns,
 )
 from .registry import register
 
@@ -96,12 +98,19 @@ def aggregate(expr: pl.Expr, op: str) -> pl.Expr:
 def group_rows(lf: pl.LazyFrame, keys: list[str], aggs: list[pl.Expr]) -> pl.LazyFrame:
     """依 keys 分組（沒有 keys 就整份一組），照每組第一次出現的順序。
 
-    系統欄位：__source_file、__sheet 在同一個來源裡是固定值；__line_no 是這一組第一筆的行號；
-    位置欄（串流時回報進度用）取這一組最後一筆的位置。
+    系統欄位：__source_file、__sheet、__stage 在同一個來源裡是固定值；__line_no 是這一組第一筆的行號，
+    __orig_*（合併前的位置）也取這一組第一筆的；位置欄（串流時回報進度用）取這一組最後一筆的位置。
     """
     names = lf.collect_schema().names()
-    system = [pl.col(c).first() for c in (SOURCE_FILE, SHEET) if c in names]
-    system.append(pl.col(LINE_NO).min())
+    first = pl.col(LINE_NO).arg_min()
+    system = []
+    for c in system_columns(names):
+        if c == LINE_NO:
+            system.append(pl.col(LINE_NO).min())
+        elif c in (SOURCE_FILE, SHEET, STAGE):
+            system.append(pl.col(c).first())  # 同一個來源裡是固定值
+        else:
+            system.append(pl.col(c).get(first))  # 合併前的位置：這一組第一筆的
     if POSITION in names:
         system.append(pl.col(POSITION).max())
     if not keys:

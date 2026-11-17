@@ -29,9 +29,19 @@ def make(type_name: str, **params):
     return get(type_name).model_validate({"id": "t", "type": type_name, **params})
 
 
-def run(step, df):
-    out, total, warnings = apply_step(step, df)
+def run(step, df, tables=None):
+    out, total, warnings = apply_step(step, df, tables=tables)
     return out, total, warnings
+
+
+def tables_of(example) -> dict | None:
+    """範例的右表（前面階段的結果），補上系統欄位。"""
+    if not example.tables:
+        return None
+    return {
+        name: frame(data, files=[f"{name}.csv"] * len(next(iter(data.values()))))
+        for name, data in example.tables.items()
+    }
 
 
 def data_of(df: pl.DataFrame) -> dict:
@@ -50,7 +60,7 @@ EXAMPLES = [
 @pytest.mark.parametrize(("cls", "example"), EXAMPLES)
 def test_registry_examples(cls, example):
     step = cls.model_validate({"id": "ex", "type": cls.type_name(), **example.params})
-    out, _, _ = run(step, frame(example.input))
+    out, _, _ = run(step, frame(example.input), tables_of(example))
     assert data_of(out) == example.output
     assert not [c for c in out.columns if c.startswith(TEMP_PREFIX)]
 
@@ -78,8 +88,8 @@ def test_row_steps_ignore_file_boundaries(cls, example):
     step = cls.model_validate({"id": "ex", "type": cls.type_name(), **example.params})
     n = len(next(iter(example.input.values())))
     split = ["a.txt"] * (n // 2) + ["b.txt"] * (n - n // 2)
-    one, _, _ = run(step, frame(example.input))
-    two, _, _ = run(step, frame(example.input, split))
+    one, _, _ = run(step, frame(example.input), tables_of(example))
+    two, _, _ = run(step, frame(example.input, split), tables_of(example))
     assert data_of(one) == data_of(two)
 
 
@@ -119,6 +129,7 @@ def test_registry_metadata_is_complete():
         "group_by",
         "pivot",
         "merge_files",
+        "join",
     ]
     for cls in all_steps():
         assert cls.label and cls.category and cls.__doc__ and cls.ai_notes, cls
@@ -987,3 +998,92 @@ def test_aggregate_effects():
         apply_effect(cols, pivot)
     with pytest.raises(EffectError, match="已經是每一列依的欄"):
         apply_effect(cols, {**pivot, "on": "門市"})
+
+
+# ── 合併查詢 ─────────────────────────────────────────────────────
+
+
+def right_table(data: dict) -> dict:
+    """右表（前面階段的結果），補上系統欄位。"""
+    n = len(next(iter(data.values())))
+    return {"對照": frame(data, files=["對照.csv"] * n)}
+
+
+def test_join_ways_and_unmatched_warnings():
+    df = frame(
+        {"代號": ["A", "B", None, "C", "A"], "金額": [1, 2, 3, 4, 5]},
+        files=["a", "a", "a", "b", "b"],
+    )
+    tables = right_table({"代號": ["A", "B"], "名稱": ["甲", "乙"]})
+    on = [{"left": "代號", "right": "代號"}]
+    left, total, warnings = run(make("join", right="對照", on=on, columns=["名稱"]), df, tables)
+    assert left["名稱"].to_list() == ["甲", "乙", None, None, "甲"]
+    assert lines(left) == [("a", 1), ("a", 2), ("a", 3), ("b", 1), ("b", 2)]  # 順序與行號不變
+    assert total == 2 and [w.message for w in warnings] == [
+        "「代號」的「（空值）」在 @對照 找不到",  # 空值不算對到
+        "「代號」的「C」在 @對照 找不到",
+    ]
+    inner, total, warnings = run(
+        make("join", right="對照", on=on, how="inner", columns=["名稱"]), df, tables
+    )
+    assert inner["代號"].to_list() == ["A", "B", "A"]
+    assert total == 2 and (warnings[1].source_file, warnings[1].line_no) == (
+        "b",
+        1,
+    )  # 拿掉之前就算好
+    anti, total, _ = run(make("join", right="對照", on=on, how="anti"), df, tables)
+    assert anti["代號"].to_list() == [None, "C"] and total == 0 and "名稱" not in anti.columns
+    semi, _, _ = run(make("join", right="對照", on=on, how="semi"), df, tables)
+    assert semi["代號"].to_list() == ["A", "B", "A"]
+    quiet = make("join", right="對照", on=on, columns=["名稱"], warn_unmatched=False)
+    assert run(quiet, df, tables)[1] == 0
+
+
+def test_join_several_keys_and_types():
+    df = frame({"門市": ["北", "北", "中"], "月": ["1", "2", "1"], "金額": [1, 2, 3]})
+    tables = right_table({"店": ["北", "中"], "月份": ["1", "1"], "目標": [10, 20]})
+    on = [{"left": "門市", "right": "店"}, {"left": "月", "right": "月份"}]
+    out, total, warnings = run(make("join", right="對照", on=on, columns=["目標"]), df, tables)
+    assert out["目標"].to_list() == [10, None, 20] and out.schema["目標"] == pl.Int64
+    assert total == 1 and warnings[0].message == "「門市、月」的「北、2」在 @對照 找不到"
+    numbers = frame({"門市": ["北"], "月": [1], "金額": [1]})
+    with pytest.raises(RunError, match="鍵的型別不一樣：「月」是整數，@對照 的「月份」是文字"):
+        run(make("join", right="對照", on=on, columns=["目標"]), numbers, tables)
+
+
+def test_join_errors():
+    df = frame({"代號": ["A"], "名稱": ["x"]})
+    on = [{"left": "代號", "right": "代號"}]
+    dup = right_table({"代號": ["A", "B", "A", None, None], "類別": ["1", "2", "3", "4", "5"]})
+    with pytest.raises(RunError, match=r"@對照 的鍵「代號」重複：「A」（對照\.csv 第 1、3 行）"):
+        run(make("join", right="對照", on=on, columns=["類別"]), df, dup)  # 空值的鍵重複不算
+    tables = right_table({"代號": ["A"], "名稱": ["甲"], "類別": ["1"]})
+    with pytest.raises(RunError, match="新欄名「名稱」和現有欄位重複"):
+        run(make("join", right="對照", on=on, columns=["名稱"]), df, tables)
+    with pytest.raises(RunError, match="@對照 沒有欄位：區域"):
+        run(make("join", right="對照", on=on, columns=["區域"]), df, tables)
+    with pytest.raises(RunError, match="「代號」是右表的鍵，不用帶進來"):
+        run(make("join", right="對照", on=on, columns=["代號"]), df, tables)
+    with pytest.raises(RunError, match="沒有階段「對照」的結果"):
+        run(make("join", right="對照", on=on, columns=["類別"]), df)
+
+
+def test_join_effect_checks_right_columns():
+    effect = {
+        "kind": "join",
+        "stage": "對照",
+        "how": "left",
+        "names": ["類別"],
+        "on": [{"left": "品號", "right": "品號"}],
+    }
+    assert apply_effect(["品號", "金額"], effect, {"對照": ["品號", "類別"]}) == [
+        "品號",
+        "金額",
+        "類別",
+    ]
+    assert apply_effect(["品號"], {**effect, "how": "anti"}, {"對照": ["品號", "類別"]}) == ["品號"]
+    with pytest.raises(EffectError, match="階段「對照」沒有欄位：類別"):
+        apply_effect(["品號"], effect, {"對照": ["品號"]})
+    assert apply_effect(None, effect, {}) is None  # 不知道欄位時不檢查
+    with pytest.raises(EffectError, match="要設定至少一組鍵"):
+        apply_effect(["品號"], {**effect, "on": []})

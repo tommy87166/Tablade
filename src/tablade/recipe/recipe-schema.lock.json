@@ -8,6 +8,12 @@
       "excel": {
         "columns": null
       },
+      "parquet": {
+        "columns": null
+      },
+      "stages": {
+        "columns": null
+      },
       "text_lines": {
         "columns": [
           "line"
@@ -385,26 +391,124 @@
               },
               "type": "array"
             },
-            "id": {
-              "default": "src",
-              "minLength": 1,
-              "pattern": "^[A-Za-z0-9_-]+$",
-              "type": "string"
-            },
             "reader": {
               "default": "text_lines",
               "enum": [
                 "text_lines",
                 "csv",
-                "excel"
+                "excel",
+                "parquet",
+                "stages"
               ],
               "type": "string"
             },
             "sheet": {
               "default": "",
               "type": "string"
+            },
+            "stages": {
+              "items": {
+                "maxLength": 40,
+                "minLength": 1,
+                "pattern": "^\\S(.*\\S)?$",
+                "type": "string"
+              },
+              "type": "array",
+              "ui": "stages"
             }
           },
+          "type": "object"
+        },
+        "Join": {
+          "additionalProperties": false,
+          "properties": {
+            "columns": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": "array",
+              "ui": "right_columns",
+              "ui_show_if": {
+                "how": [
+                  "left",
+                  "inner"
+                ]
+              }
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "how": {
+              "default": "left",
+              "enum": [
+                "left",
+                "inner",
+                "anti",
+                "semi"
+              ],
+              "type": "string"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "on": {
+              "items": {
+                "$ref": "#/$defs/JoinKey"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "right": {
+              "minLength": 1,
+              "type": "string",
+              "ui": "stage"
+            },
+            "type": {
+              "const": "join",
+              "default": "join",
+              "type": "string"
+            },
+            "warn_unmatched": {
+              "default": true,
+              "type": "boolean",
+              "ui_show_if": {
+                "how": [
+                  "left",
+                  "inner"
+                ]
+              }
+            }
+          },
+          "required": [
+            "id",
+            "right",
+            "on"
+          ],
+          "type": "object"
+        },
+        "JoinKey": {
+          "additionalProperties": false,
+          "properties": {
+            "left": {
+              "minLength": 1,
+              "type": "string",
+              "ui": "column"
+            },
+            "right": {
+              "minLength": 1,
+              "type": "string",
+              "ui": "right_column"
+            }
+          },
+          "required": [
+            "left",
+            "right"
+          ],
           "type": "object"
         },
         "MergeFiles": {
@@ -1256,6 +1360,132 @@
           ],
           "type": "object"
         },
+        "Stage": {
+          "additionalProperties": false,
+          "properties": {
+            "input": {
+              "$ref": "#/$defs/Input"
+            },
+            "name": {
+              "maxLength": 40,
+              "minLength": 1,
+              "pattern": "^\\S(.*\\S)?$",
+              "type": "string"
+            },
+            "steps": {
+              "items": {
+                "discriminator": {
+                  "mapping": {
+                    "classify_rows": "#/$defs/ClassifyRows",
+                    "dedupe": "#/$defs/Dedupe",
+                    "extract_regex": "#/$defs/ExtractRegex",
+                    "fill_down": "#/$defs/FillDown",
+                    "filter": "#/$defs/Filter",
+                    "group_by": "#/$defs/GroupBy",
+                    "join": "#/$defs/Join",
+                    "merge_files": "#/$defs/MergeFiles",
+                    "parse_date": "#/$defs/ParseDate",
+                    "parse_number": "#/$defs/ParseNumber",
+                    "pivot": "#/$defs/Pivot",
+                    "promote_headers": "#/$defs/PromoteHeaders",
+                    "remove_blank_rows": "#/$defs/RemoveBlankRows",
+                    "remove_bottom_rows": "#/$defs/RemoveBottomRows",
+                    "remove_columns": "#/$defs/RemoveColumns",
+                    "remove_top_rows": "#/$defs/RemoveTopRows",
+                    "rename_columns": "#/$defs/RenameColumns",
+                    "replace_values": "#/$defs/ReplaceValues",
+                    "select_columns": "#/$defs/SelectColumns",
+                    "split_column": "#/$defs/SplitColumn",
+                    "split_delimited": "#/$defs/SplitDelimited",
+                    "split_fixed_width": "#/$defs/SplitFixedWidth",
+                    "trim_clean": "#/$defs/TrimClean",
+                    "unpivot": "#/$defs/Unpivot"
+                  },
+                  "propertyName": "type"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/RemoveTopRows"
+                  },
+                  {
+                    "$ref": "#/$defs/RemoveBottomRows"
+                  },
+                  {
+                    "$ref": "#/$defs/RemoveBlankRows"
+                  },
+                  {
+                    "$ref": "#/$defs/Dedupe"
+                  },
+                  {
+                    "$ref": "#/$defs/Filter"
+                  },
+                  {
+                    "$ref": "#/$defs/SplitDelimited"
+                  },
+                  {
+                    "$ref": "#/$defs/SplitColumn"
+                  },
+                  {
+                    "$ref": "#/$defs/ClassifyRows"
+                  },
+                  {
+                    "$ref": "#/$defs/ExtractRegex"
+                  },
+                  {
+                    "$ref": "#/$defs/SplitFixedWidth"
+                  },
+                  {
+                    "$ref": "#/$defs/PromoteHeaders"
+                  },
+                  {
+                    "$ref": "#/$defs/FillDown"
+                  },
+                  {
+                    "$ref": "#/$defs/RemoveColumns"
+                  },
+                  {
+                    "$ref": "#/$defs/SelectColumns"
+                  },
+                  {
+                    "$ref": "#/$defs/RenameColumns"
+                  },
+                  {
+                    "$ref": "#/$defs/TrimClean"
+                  },
+                  {
+                    "$ref": "#/$defs/ReplaceValues"
+                  },
+                  {
+                    "$ref": "#/$defs/ParseNumber"
+                  },
+                  {
+                    "$ref": "#/$defs/ParseDate"
+                  },
+                  {
+                    "$ref": "#/$defs/Unpivot"
+                  },
+                  {
+                    "$ref": "#/$defs/GroupBy"
+                  },
+                  {
+                    "$ref": "#/$defs/Pivot"
+                  },
+                  {
+                    "$ref": "#/$defs/MergeFiles"
+                  },
+                  {
+                    "$ref": "#/$defs/Join"
+                  }
+                ]
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
         "TextCondition": {
           "additionalProperties": false,
           "properties": {
@@ -1396,14 +1626,6 @@
       },
       "additionalProperties": false,
       "properties": {
-        "inputs": {
-          "items": {
-            "$ref": "#/$defs/Input"
-          },
-          "maxItems": 1,
-          "minItems": 1,
-          "type": "array"
-        },
         "name": {
           "default": "",
           "type": "string"
@@ -1411,108 +1633,11 @@
         "output": {
           "$ref": "#/$defs/Output"
         },
-        "steps": {
+        "stages": {
           "items": {
-            "discriminator": {
-              "mapping": {
-                "classify_rows": "#/$defs/ClassifyRows",
-                "dedupe": "#/$defs/Dedupe",
-                "extract_regex": "#/$defs/ExtractRegex",
-                "fill_down": "#/$defs/FillDown",
-                "filter": "#/$defs/Filter",
-                "group_by": "#/$defs/GroupBy",
-                "merge_files": "#/$defs/MergeFiles",
-                "parse_date": "#/$defs/ParseDate",
-                "parse_number": "#/$defs/ParseNumber",
-                "pivot": "#/$defs/Pivot",
-                "promote_headers": "#/$defs/PromoteHeaders",
-                "remove_blank_rows": "#/$defs/RemoveBlankRows",
-                "remove_bottom_rows": "#/$defs/RemoveBottomRows",
-                "remove_columns": "#/$defs/RemoveColumns",
-                "remove_top_rows": "#/$defs/RemoveTopRows",
-                "rename_columns": "#/$defs/RenameColumns",
-                "replace_values": "#/$defs/ReplaceValues",
-                "select_columns": "#/$defs/SelectColumns",
-                "split_column": "#/$defs/SplitColumn",
-                "split_delimited": "#/$defs/SplitDelimited",
-                "split_fixed_width": "#/$defs/SplitFixedWidth",
-                "trim_clean": "#/$defs/TrimClean",
-                "unpivot": "#/$defs/Unpivot"
-              },
-              "propertyName": "type"
-            },
-            "oneOf": [
-              {
-                "$ref": "#/$defs/RemoveTopRows"
-              },
-              {
-                "$ref": "#/$defs/RemoveBottomRows"
-              },
-              {
-                "$ref": "#/$defs/RemoveBlankRows"
-              },
-              {
-                "$ref": "#/$defs/Dedupe"
-              },
-              {
-                "$ref": "#/$defs/Filter"
-              },
-              {
-                "$ref": "#/$defs/SplitDelimited"
-              },
-              {
-                "$ref": "#/$defs/SplitColumn"
-              },
-              {
-                "$ref": "#/$defs/ClassifyRows"
-              },
-              {
-                "$ref": "#/$defs/ExtractRegex"
-              },
-              {
-                "$ref": "#/$defs/SplitFixedWidth"
-              },
-              {
-                "$ref": "#/$defs/PromoteHeaders"
-              },
-              {
-                "$ref": "#/$defs/FillDown"
-              },
-              {
-                "$ref": "#/$defs/RemoveColumns"
-              },
-              {
-                "$ref": "#/$defs/SelectColumns"
-              },
-              {
-                "$ref": "#/$defs/RenameColumns"
-              },
-              {
-                "$ref": "#/$defs/TrimClean"
-              },
-              {
-                "$ref": "#/$defs/ReplaceValues"
-              },
-              {
-                "$ref": "#/$defs/ParseNumber"
-              },
-              {
-                "$ref": "#/$defs/ParseDate"
-              },
-              {
-                "$ref": "#/$defs/Unpivot"
-              },
-              {
-                "$ref": "#/$defs/GroupBy"
-              },
-              {
-                "$ref": "#/$defs/Pivot"
-              },
-              {
-                "$ref": "#/$defs/MergeFiles"
-              }
-            ]
+            "$ref": "#/$defs/Stage"
           },
+          "minItems": 1,
           "type": "array"
         },
         "tablade_recipe": {
@@ -1522,7 +1647,7 @@
       },
       "required": [
         "tablade_recipe",
-        "inputs",
+        "stages",
         "output"
       ],
       "type": "object"
@@ -1570,6 +1695,16 @@
           "kind": "group"
         },
         "schema_ref": "GroupBy"
+      },
+      "join": {
+        "effect": {
+          "how": "$how",
+          "kind": "join",
+          "names": "$columns",
+          "on": "$on",
+          "stage": "$right"
+        },
+        "schema_ref": "Join"
       },
       "merge_files": {
         "effect": {
@@ -1700,6 +1835,11 @@
       "__source_file",
       "__line_no",
       "__sheet",
+      "__stage",
+      "__orig_source_file",
+      "__orig_line_no",
+      "__orig_sheet",
+      "__orig_stage",
       "__row_type"
     ]
   }

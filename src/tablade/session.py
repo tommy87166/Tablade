@@ -3,9 +3,11 @@
 - 資料很大時（超過 ``SAMPLE_THRESHOLD`` 行），預覽只用每個來源檔的前幾行與最後幾行，
   匯出時才串流處理全部資料（DESIGN.md §8）。
 
+- Recipe 由好幾個階段組成：畫面上一次編輯一個階段（``current``），``input`` / ``steps`` / ``selected``
+  都是目前這個階段的。讀前面階段的輸出、合併查詢的右表，都用前面階段算好的結果。
 - 步驟以原始 dict 保存：參數還不完整（剛新增、正在填）的步驟也能留在清單裡，顯示錯誤，
   預覽算到它的前一步為止，跟 Power Query 的步驟錯誤一樣。
-- 每一步的結果依「input ＋ 到這一步為止的步驟」的內容快取；改了第 k 步，k 之前的結果直接沿用。
+- 每一步的結果依「輸入＋到這一步為止的步驟＋用到的其他階段」的內容快取；改了第 k 步，k 之前的結果直接沿用。
 - 每個會改變 recipe 的操作都先存一份快照，支援 undo / redo。
 - 不碰檔案對話框（那是 api.py 的事），所以可以直接用 pytest 測。
 """
@@ -17,6 +19,7 @@ import hashlib
 import json
 import re
 import threading
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -25,6 +28,7 @@ import polars as pl
 from pydantic import ValidationError
 
 from . import __version__
+from .dtypes import type_label
 from .engine.check import check_recipe, format_issues, format_report
 from .engine.run import (
     SAMPLE_HEAD,
@@ -34,6 +38,7 @@ from .engine.run import (
     RunError,
     apply_step,
     execute,
+    stage_frame,
 )
 from .ingest.encoding import DecodeError
 from .ingest.excel import ExcelError, is_excel, sheet_names
@@ -46,15 +51,26 @@ from .ingest.sources import (
     expand,
     sample,
     scan_parts,
+    staging_dir,
 )
-from .recipe.schema import RECIPE_VERSION, RecipeError, load_json, parse_recipe, pydantic_issues
+from .recipe.schema import (
+    DEFAULT_STAGE,
+    RECIPE_VERSION,
+    RecipeError,
+    load_json,
+    parse_recipe,
+    pydantic_issues,
+)
+from .recipe.validator import stage_ref_fields
 from .steps import all_steps, get
-from .steps.base import SHEET, SOURCE_FILE, SYSTEM_PREFIX, Step, source_name
+from .steps.base import SHEET, SOURCE_FILE, STAGE, SYSTEM_PREFIX, Step, source_name
 
 MAX_UNDO = 100
-DEFAULT_INPUT = {"id": "src", "files": [], "reader": "text_lines", "encoding": "auto", "sheet": ""}
+DEFAULT_INPUT = {"files": [], "reader": "text_lines", "encoding": "auto", "sheet": "", "stages": []}
 DEFAULT_OUTPUT = {"format": "parquet", "keep_system_columns": True, "manifest": True}
 INVALID_FILENAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+STAGE_NAME_MAX = 40
+OLD_FORMAT = "這是舊的 Recipe 寫法（最外層的 inputs / steps），請改成 stages"
 
 
 class SessionError(ValueError):
@@ -106,6 +122,51 @@ def _file_count(frame: pl.DataFrame) -> int:
     return frame.select(source_name(frame.columns)).to_series().n_unique()
 
 
+def _new_stage(name: str) -> dict[str, Any]:
+    """畫面上的一個階段：名稱、讀取資料、步驟，加上選取的步驟（不寫進 Recipe）。"""
+    return {"name": name, "input": copy.deepcopy(DEFAULT_INPUT), "steps": [], "selected": -1}
+
+
+def _ref_fields() -> dict[str, list[str]]:
+    """每種步驟引用其他階段的參數（合併查詢的 right）。"""
+    from .recipe.spec import build_spec
+
+    return stage_ref_fields(build_spec())
+
+
+_REF_FIELDS: dict[str, list[str]] | None = None
+
+
+def ref_fields() -> dict[str, list[str]]:
+    global _REF_FIELDS
+    if _REF_FIELDS is None:
+        _REF_FIELDS = _ref_fields()
+    return _REF_FIELDS
+
+
+def stage_refs(stage: dict[str, Any]) -> list[tuple[str, str]]:
+    """這個階段用到哪些其他階段：（階段名稱, 用在哪裡）。"""
+    out = []
+    source = stage["input"]
+    if source.get("reader") == "stages":
+        out += [(n, "讀取資料") for n in source.get("stages") or [] if isinstance(n, str)]
+    for step in stage["steps"]:
+        if step.get("enabled", True) is False:
+            continue
+        for name in ref_fields().get(step.get("type"), []):
+            ref = step.get(name)
+            if isinstance(ref, str):
+                out.append((ref, f"{step.get('id')}（{_label(step.get('type'))}）"))
+    return out
+
+
+def _label(type_name: Any) -> str:
+    try:
+        return get(type_name).label
+    except KeyError:
+        return str(type_name)
+
+
 def _jsonable(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -114,27 +175,6 @@ def _jsonable(value: Any) -> Any:
 
 EXAMPLE_ROWS = 1_000
 """型別分頁的範例值從前這麼多列找。"""
-
-
-def type_label(dtype: pl.DataType) -> str:
-    """型別的中文名稱（型別分頁用）。"""
-    if dtype == pl.String:
-        return "文字"
-    if isinstance(dtype, pl.Decimal):
-        return f"小數（{dtype.scale} 位）"
-    if dtype.is_integer():
-        return "整數"
-    if dtype.is_float():
-        return "浮點數"
-    if dtype == pl.Date:
-        return "日期"
-    if isinstance(dtype, pl.Datetime):
-        return "日期時間"
-    if dtype == pl.Boolean:
-        return "是／否"
-    if dtype == pl.Null:
-        return "空"
-    return str(dtype)
 
 
 def column_summary(frame: pl.DataFrame) -> list[dict[str, Any]]:
@@ -175,24 +215,50 @@ class Session:
         self.recipe_path: Path | None = None
         self.base_dir: Path | None = None
         self.meta: dict[str, str] = {"name": "", "description": ""}
-        self.input: dict[str, Any] = copy.deepcopy(DEFAULT_INPUT)
         self.output: dict[str, Any] = dict(DEFAULT_OUTPUT)
-        self.steps: list[dict[str, Any]] = []
-        self.selected = -1
+        self.stages: list[dict[str, Any]] = [_new_stage(DEFAULT_STAGE)]
+        self.current = 0
+        """畫面上正在編輯的階段。"""
         self.dirty = False
         self.issues: list[dict[str, Any]] = []
         self._undo: list[dict[str, Any]] = []
         self._redo: list[dict[str, Any]] = []
         self._sheets: dict[tuple[str, int, int], list[str]] = {}
-        self._source: tuple[str, pl.DataFrame | None, list[SourceFile], str | None] | None = None
-        """按「載入資料」讀進來的資料（設定指紋、資料、來源檔、錯誤）；不會自動讀檔。"""
-        self._stale = False
-        """載入之後檔案清單、讀取方式、編碼或檔案內容變了：要重新按「載入資料」。"""
+        self._sources: dict[str, tuple[str, pl.DataFrame, list[SourceFile]]] = {}
+        """每個讀實際檔的階段按「載入資料」讀進來的資料（設定指紋、資料、來源檔）；不會自動讀檔。"""
+        self._stale: set[str] = set()
+        """載入之後檔案清單、讀取方式、編碼或檔案內容變了的階段：要重新按「載入資料」。"""
         self.progress: Progress = None
         """讀檔、轉碼、匯出時的進度回報（api.py 會把它推給前端）。"""
-        self._computed: list[_Computed] = []
+        self._computed: dict[str, list[_Computed]] = {}
+        self._inputs: dict[str, tuple[str, pl.DataFrame]] = {}
+        """讀前面階段輸出的階段：接好的輸入（依前面階段結果的指紋快取）。"""
+        self._full: dict[str, tuple[str, pl.DataFrame]] = {}
+        """「完整跑一次」的結果：{階段: (樣本結果的指紋, 完整的結果)}；樣本結果變了就不用。"""
         self.last_export: Path | None = None
         """上次「處理並匯出資料」存的位置：下次存檔對話框的預設值。"""
+
+    # ── 目前的階段 ─────────────────────────────────────────────
+
+    @property
+    def stage(self) -> dict[str, Any]:
+        return self.stages[self.current]
+
+    @property
+    def input(self) -> dict[str, Any]:
+        return self.stage["input"]
+
+    @property
+    def steps(self) -> list[dict[str, Any]]:
+        return self.stage["steps"]
+
+    @property
+    def selected(self) -> int:
+        return self.stage["selected"]
+
+    @selected.setter
+    def selected(self, value: int) -> None:
+        self.stage["selected"] = value
 
     # ── 快照與 undo / redo ─────────────────────────────────────
 
@@ -200,17 +266,16 @@ class Session:
         return copy.deepcopy(
             {
                 "meta": self.meta,
-                "input": self.input,
                 "output": self.output,
-                "steps": self.steps,
-                "selected": self.selected,
+                "stages": self.stages,
+                "current": self.current,
             }
         )
 
     def _restore(self, snap: dict[str, Any]) -> None:
         snap = copy.deepcopy(snap)
-        self.meta, self.input, self.output = snap["meta"], snap["input"], snap["output"]
-        self.steps, self.selected = snap["steps"], snap["selected"]
+        self.meta, self.output = snap["meta"], snap["output"]
+        self.stages, self.current = snap["stages"], snap["current"]
 
     def _change(self) -> None:
         """在修改 recipe 之前呼叫。"""
@@ -235,16 +300,23 @@ class Session:
 
     # ── recipe 的組成與載入 ────────────────────────────────────
 
+    @staticmethod
+    def _stage_dict(stage: dict[str, Any]) -> dict[str, Any]:
+        source = dict(stage["input"])
+        if source.get("reader") == "stages":
+            source = {"reader": "stages", "stages": list(source.get("stages") or [])}
+        else:
+            source.pop("stages", None)
+            if source.get("reader") != "excel" and not source.get("sheet"):
+                source.pop("sheet", None)  # 不是 Excel 時不寫工作表，Recipe 比較好讀
+        return {"name": stage["name"], "input": source, "steps": stage["steps"]}
+
     def recipe_dict(self) -> dict[str, Any]:
-        source = dict(self.input)
-        if source.get("reader") != "excel" and not source.get("sheet"):
-            source.pop("sheet", None)  # 不是 Excel 時不寫工作表，Recipe 比較好讀
         return {
             "tablade_recipe": RECIPE_VERSION,
             "name": self.meta.get("name", ""),
             "description": self.meta.get("description", ""),
-            "inputs": [source],
-            "steps": self.steps,
+            "stages": [self._stage_dict(st) for st in self.stages],
             "output": self.output,
         }
 
@@ -273,33 +345,43 @@ class Session:
         with self._lock:
             path = path.resolve()
             data = load_json(path)  # JSON 本身壞掉時丟出 RecipeError
+            if "stages" not in data and any(k in data for k in ("inputs", "steps")):
+                raise RecipeError([{"path": "(Recipe)", "error": OLD_FORMAT, "severity": "error"}])
             result = check_recipe(data, path.parent)
             if any(i["path"] == "tablade_recipe" for i in result.issues):
                 raise RecipeError([i for i in result.issues if i["path"] == "tablade_recipe"])
-            inputs = data.get("inputs") if isinstance(data.get("inputs"), list) else []
+            raw = data.get("stages") if isinstance(data.get("stages"), list) else []
+            stages: list[dict[str, Any]] = []
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("name")
+                if not isinstance(name, str) or not name.strip():
+                    name = f"階段 {len(stages) + 1}"
+                stage = _new_stage(name)
+                source = item.get("input") if isinstance(item.get("input"), dict) else {}
+                stage["input"].update(copy.deepcopy(source))
+                stage["input"].pop("id", None)
+                for key in ("files", "stages"):
+                    values = stage["input"].get(key)
+                    values = values if isinstance(values, list) else []
+                    stage["input"][key] = [v for v in values if isinstance(v, str) and v]
+                steps = item.get("steps") if isinstance(item.get("steps"), list) else []
+                stage["steps"] = [s for s in steps if isinstance(s, dict)]
+                stage["selected"] = len(stage["steps"]) - 1
+                stages.append(stage)
             self._reset()
             self.recipe_path, self.base_dir = path, path.parent
             self.meta = {
                 "name": str(data.get("name", "")),
                 "description": str(data.get("description", "")),
             }
-            self.input = {
-                **copy.deepcopy(DEFAULT_INPUT),
-                **(copy.deepcopy(inputs[0]) if inputs and isinstance(inputs[0], dict) else {}),
-            }
-            if not isinstance(self.input.get("files"), list):
-                self.input["files"] = []
-            self.input["files"] = [f for f in self.input["files"] if isinstance(f, str) and f]
+            self.stages = stages or [_new_stage(DEFAULT_STAGE)]
+            self.current = len(self.stages) - 1
             self.output = {
                 **DEFAULT_OUTPUT,
                 **(data.get("output") if isinstance(data.get("output"), dict) else {}),
             }
-            self.steps = (
-                [s for s in data.get("steps", []) if isinstance(s, dict)]
-                if isinstance(data.get("steps"), list)
-                else []
-            )
-            self.selected = len(self.steps) - 1
             self.issues = result.issues
             return result.issues
 
@@ -311,10 +393,11 @@ class Session:
                 raise SessionError("還沒有指定 Recipe 檔的位置")
             target = target.resolve()
             if self.base_dir and target.parent != self.base_dir:
-                self.input["files"] = [
-                    _entry_for(_entry_path(e, self.base_dir), target.parent)
-                    for e in self.input["files"]
-                ]
+                for stage in self.stages:
+                    stage["input"]["files"] = [
+                        _entry_for(_entry_path(e, self.base_dir), target.parent)
+                        for e in stage["input"]["files"]
+                    ]
             self.base_dir = target.parent
             target.write_text(
                 json.dumps(self.recipe_dict(), ensure_ascii=False, indent=2) + "\n",
@@ -323,6 +406,111 @@ class Session:
             self.recipe_path = target
             self.dirty = False
             return target
+
+    # ── 階段 ──────────────────────────────────────────────────
+
+    def _stage_name(self, name: Any, exclude: int | None = None) -> str:
+        text = str(name).strip()
+        if not text:
+            raise SessionError("請輸入階段名稱")
+        if len(text) > STAGE_NAME_MAX:
+            raise SessionError(f"階段名稱最多 {STAGE_NAME_MAX} 個字")
+        for i, stage in enumerate(self.stages):
+            if i != exclude and stage["name"] == text:
+                raise SessionError(f"已經有叫「{text}」的階段")
+        return text
+
+    def _check_stage(self, index: int) -> None:
+        if not 0 <= index < len(self.stages):
+            raise SessionError(f"沒有第 {index + 1} 個階段")
+
+    def add_stage(self, name: str, before: bool = True) -> int:
+        """新增階段：預設插在目前階段的前面（新增的通常是給目前階段用的對照表）。"""
+        with self._lock:
+            text = self._stage_name(name)
+            self._change()
+            position = self.current if before else self.current + 1
+            self.stages.insert(position, _new_stage(text))
+            self.current = position
+            return position
+
+    def rename_stage(self, index: int, name: str) -> None:
+        """改階段名稱：所有引用它的地方（讀取資料、合併查詢的右表）一併改掉。"""
+        with self._lock:
+            self._check_stage(index)
+            new = self._stage_name(name, exclude=index)
+            old = self.stages[index]["name"]
+            if new == old:
+                return
+            self._change()
+            self.stages[index]["name"] = new
+            for stage in self.stages:
+                source = stage["input"]
+                source["stages"] = [new if n == old else n for n in source.get("stages") or []]
+                for step in stage["steps"]:
+                    for field_name in ref_fields().get(step.get("type"), []):
+                        if step.get(field_name) == old:
+                            step[field_name] = new
+            for cache in (self._sources, self._computed, self._inputs, self._full):
+                if old in cache:
+                    cache[new] = cache.pop(old)  # type: ignore[attr-defined]
+            if old in self._stale:
+                self._stale.discard(old)
+                self._stale.add(new)
+
+    def _order_problems(self, stages: list[dict[str, Any]]) -> list[str]:
+        """每個階段只能引用前面的階段：回傳違反的地方。"""
+        problems, earlier = [], set()
+        names = {st["name"] for st in stages}
+        for stage in stages:
+            for ref, where in stage_refs(stage):
+                if ref in names and ref not in earlier:
+                    problems.append(f"「{stage['name']}」的{where}要用「{ref}」")
+            earlier.add(stage["name"])
+        return problems
+
+    def move_stage(self, index: int, to: int) -> None:
+        with self._lock:
+            self._check_stage(index)
+            to = max(0, min(to, len(self.stages) - 1))
+            if to == index:
+                return
+            trial = list(self.stages)
+            trial.insert(to, trial.pop(index))
+            problems = self._order_problems(trial)
+            if problems:
+                raise SessionError(
+                    f"不能這樣排：{'；'.join(problems)}，只能用前面的階段（先調整這些引用）"
+                )
+            self._change()
+            self.stages = trial
+            self.current = to
+
+    def delete_stage(self, index: int) -> None:
+        with self._lock:
+            self._check_stage(index)
+            if len(self.stages) == 1:
+                raise SessionError("至少要有一個階段")
+            name = self.stages[index]["name"]
+            users = [
+                f"「{stage['name']}」的{where}"
+                for stage in self.stages
+                for ref, where in stage_refs(stage)
+                if ref == name and stage is not self.stages[index]
+            ]
+            if users:
+                raise SessionError(
+                    f"不能刪除「{name}」：{'、'.join(users)}用到它，請先改掉這些引用"
+                )
+            self._change()
+            del self.stages[index]
+            if self.current > index or self.current >= len(self.stages):
+                self.current = max(0, self.current - 1)
+
+    def select_stage(self, index: int) -> None:
+        with self._lock:
+            self._check_stage(index)
+            self.current = index
 
     # ── 編輯操作 ──────────────────────────────────────────────
 
@@ -362,11 +550,22 @@ class Session:
             del self.input["files"][index]
 
     def set_input(self, values: dict[str, Any]) -> None:
+        """讀取方式、編碼、工作表；讀前面階段的輸出時，要讀的階段（只能選前面的）。"""
         with self._lock:
+            if "stages" in values:
+                earlier = [st["name"] for st in self.stages[: self.current]]
+                picked = [n for n in values["stages"] if isinstance(n, str)]
+                bad = [n for n in picked if n not in earlier]
+                if bad:
+                    raise SessionError(f"只能讀前面的階段：{'、'.join(bad)}")
+            if values.get("reader") == "stages" and self.current == 0:
+                raise SessionError("第一個階段只能讀實際檔（前面沒有階段）")
             self._change()
             for key in ("reader", "encoding", "sheet"):
                 if key in values:
                     self.input[key] = values[key]
+            if "stages" in values:
+                self.input["stages"] = list(dict.fromkeys(picked))
 
     def set_output(self, values: dict[str, Any]) -> None:
         with self._lock:
@@ -383,11 +582,20 @@ class Session:
                     self.meta[key] = str(values[key])
 
     def _new_id(self) -> str:
-        used = {s.get("id") for s in self.steps}
-        n = len(self.steps) + 1
+        """步驟 id 在整份 Recipe 裡不重複。"""
+        used = {s.get("id") for st in self.stages for s in st["steps"]}
+        n = sum(len(st["steps"]) for st in self.stages) + 1
         while f"s{n}" in used:
             n += 1
         return f"s{n}"
+
+    def _earlier_columns(self) -> dict[str, list[str] | None]:
+        """目前階段前面每個階段的結果有哪些資料欄（合併查詢的建議值、右表的欄位選單）。"""
+        out = {}
+        for i in range(self.current):
+            frame = self._stage_result(i)[0]
+            out[self.stages[i]["name"]] = _data_columns(frame) if frame is not None else None
+        return out
 
     def add_step(
         self, type_name: str, context: dict[str, Any] | None = None, index: int | None = None
@@ -399,7 +607,7 @@ class Session:
             position = max(0, min(position, len(self.steps)))
             before = self._frame_before(position)
             frame = before if before is not None else pl.DataFrame()
-            params = cls.suggest(frame, context or {})
+            params = cls.suggest(frame, {**(context or {}), "stages": self._earlier_columns()})
             self._change()
             self.steps.insert(
                 position, self._normalize({"id": self._new_id(), "type": type_name, **params})
@@ -468,7 +676,7 @@ class Session:
         if not 0 <= index < len(self.steps):
             raise SessionError(f"沒有第 {index} 步")
 
-    # ── 計算 ─────────────────────────────────────────────────
+    # ── 載入資料 ─────────────────────────────────────────────
 
     def _sheet_names(self) -> list[str]:
         """讀取方式是 Excel 時，第一個 Excel 檔有哪些工作表（給「工作表」選單；依檔案快取）。"""
@@ -488,79 +696,153 @@ class Session:
                     return []
         return []
 
-    def _source_key(self) -> str:
-        """目前設定的指紋：讀取方式、編碼，加上實際讀到的每個檔（位置、大小、修改時間）。
+    def _source_key(self, stage: dict[str, Any]) -> str:
+        """讀實際檔的設定指紋：讀取方式、編碼，加上實際讀到的每個檔（位置、大小、修改時間）。
 
         用實際位置而不是清單上的寫法：另存到別的資料夾只改寫法，不需要重新載入。
         """
+        source = stage["input"]
         files = []
         if self.base_dir:
-            for entry in self.input["files"]:
+            for entry in source["files"]:
                 for p in expand(entry, self.base_dir):
                     try:
                         st = p.stat()
                         files.append((str(p.resolve()), st.st_size, st.st_mtime_ns))
                     except OSError:
                         continue
-        reading = {k: self.input.get(k) for k in ("reader", "encoding", "sheet")}
+        reading = {k: source.get(k) for k in ("reader", "encoding", "sheet")}
         return _digest({"reading": reading, "files": files})
 
+    @staticmethod
+    def _reads_files(stage: dict[str, Any]) -> bool:
+        return stage["input"].get("reader") != "stages"
+
     def load_data(self) -> None:
-        """「載入資料」：檔案清單裡的檔都找得到才讀（資料大時讀樣本）。"""
+        """「載入資料」：讀每個讀實際檔的階段的檔案清單（資料大時讀樣本）。
+
+        目前的階段一定要有檔案；其他還沒加檔案的階段先跳過。清單上有找不到的檔就不讀。
+        """
         with self._lock:
             base = self._require_recipe()
-            missing = [
-                e["path"] for e in check_entries(self.input["files"], base) if not e["found"]
-            ]
-            if not self.input["files"]:
+            if self._reads_files(self.stage) and not self.input["files"]:
                 raise SessionError("還沒有加入資料檔")
-            if missing:
-                raise SessionError(f"找不到：{'、'.join(missing)}（請先從檔案清單移除）")
-            self._source, self._computed, self._stale = None, [], False
-            key = self._source_key()
-            frame, files, error = None, [], None
-            try:
-                parts, files = scan_parts(
-                    self.input["files"],
-                    self.input["reader"],
-                    self.input["encoding"],
-                    base,
-                    self.progress,
-                    self.input.get("sheet", ""),
-                )
-                if sum(f.rows for f in files) <= SAMPLE_THRESHOLD:
-                    frame = concat(parts).collect(engine="streaming")
-                else:
-                    self._report("讀取預覽樣本")
-                    frame = sample(parts, files, self.input["reader"], SAMPLE_HEAD, SAMPLE_TAIL)
-            except (InputError, DecodeError, LookupError, pl.exceptions.PolarsError) as err:
-                error = str(err)
-            if error:
-                raise SessionError(error)
-            self._source = (key, frame, files, None)
+            todo = [st for st in self.stages if self._reads_files(st) and st["input"]["files"]]
+            if not todo:
+                raise SessionError("還沒有加入資料檔")
+            multi = len(self.stages) > 1
+            for stage in todo:
+                missing = [
+                    e["path"]
+                    for e in check_entries(stage["input"]["files"], base)
+                    if not e["found"]
+                ]
+                if missing:
+                    where = f"（階段「{stage['name']}」）" if multi else ""
+                    raise SessionError(f"找不到：{'、'.join(missing)}{where}（請先從檔案清單移除）")
+            for stage in todo:
+                name, source = stage["name"], stage["input"]
+                key = self._source_key(stage)
+                if name in self._sources and self._sources[name][0] == key:
+                    continue  # 已經載入、檔案沒變
+                self._sources.pop(name, None)
+                self._stale.discard(name)
+                try:
+                    parts, files = scan_parts(
+                        source["files"],
+                        source["reader"],
+                        source["encoding"],
+                        base,
+                        self.progress,
+                        source.get("sheet", ""),
+                    )
+                    if sum(f.rows for f in files) <= SAMPLE_THRESHOLD:
+                        frame = concat(parts).collect(engine="streaming")
+                    else:
+                        self._report("讀取預覽樣本")
+                        frame = sample(parts, files, source["reader"], SAMPLE_HEAD, SAMPLE_TAIL)
+                except (InputError, DecodeError, LookupError, pl.exceptions.PolarsError) as err:
+                    where = f"階段「{name}」：" if multi else ""
+                    raise SessionError(f"{where}{err}") from None
+                self._sources[name] = (key, frame, files)
 
-    def _load_source(self) -> tuple[pl.DataFrame | None, list[SourceFile], str | None]:
-        """已載入的資料；設定或檔案變了就放掉（要重新按「載入資料」），不會自動讀檔。"""
-        if self._source is None:
-            return None, [], None
-        if self._source[0] != self._source_key():
-            self._source, self._computed, self._stale = None, [], True
-            return None, [], None
-        return self._source[1], self._source[2], self._source[3]
+    def _load_source(self, stage: dict[str, Any]) -> tuple[pl.DataFrame | None, list[SourceFile]]:
+        """這個階段已載入的資料；設定或檔案變了就放掉（要重新按「載入資料」），不會自動讀檔。"""
+        name = stage["name"]
+        entry = self._sources.get(name)
+        if entry is None:
+            return None, []
+        if entry[0] != self._source_key(stage):
+            del self._sources[name]
+            self._stale.add(name)
+            return None, []
+        return entry[1], entry[2]
 
     def _report(self, stage: str) -> None:
         if self.progress is not None:
             self.progress({"stage": stage, "file": "", "done": 0, "total": 0})
 
-    def _compute(self) -> list[_Computed]:
-        """依序計算每一步（有快取）。遇到參數不合法或執行失敗的步驟，之後的步驟都不算。"""
-        frame, _, _ = self._load_source()
-        source_key = self._source[0] if self._source else ""
+    # ── 計算 ─────────────────────────────────────────────────
+
+    def _stage_index(self, name: str, before: int) -> int | None:
+        for i, stage in enumerate(self.stages[:before]):
+            if stage["name"] == name:
+                return i
+        return None
+
+    def _stage_input(self, si: int) -> tuple[pl.DataFrame | None, str, bool, str | None]:
+        """第 si 個階段的輸入：（資料、指紋、是不是樣本、錯誤）。資料是 None 代表還不能算（等載入或前面的階段）。"""
+        stage = self.stages[si]
+        if self._reads_files(stage):
+            frame, files = self._load_source(stage)
+            if frame is None:
+                return None, "", False, None
+            sampled = bool(files) and sum(f.rows for f in files) > SAMPLE_THRESHOLD
+            return frame, self._sources[stage["name"]][0], sampled, None
+        names = list(stage["input"].get("stages") or [])
+        if not names:
+            return None, "", False, "要選至少一個前面的階段"
+        frames, keys, sampled = {}, [], False
+        for name in names:
+            index = self._stage_index(name, si)
+            if index is None:
+                return None, "", False, f"「{name}」不是前面的階段"
+            frame, key, part_sampled, _ = self._stage_result(index)
+            if frame is None:
+                return None, "", False, None
+            frames[name], sampled = frame, sampled or part_sampled
+            keys.append(key)
+        key = _digest({"stages": names, "keys": keys})
+        cached = self._inputs.get(stage["name"])
+        if cached and cached[0] == key:
+            return cached[1], key, sampled, None
+        try:
+            frame = stage_frame(names, frames)
+        except (InputError, pl.exceptions.PolarsError) as err:
+            return None, key, sampled, str(err)
+        self._inputs[stage["name"]] = (key, frame)
+        return frame, key, sampled, None
+
+    def _compute(self, si: int) -> tuple[list[_Computed], pl.DataFrame | None, str, bool]:
+        """依序計算第 si 個階段的每一步（有快取）。遇到參數不合法或執行失敗的步驟，之後的步驟都不算。
+
+        回傳（每一步的結果、這個階段的輸入、輸入的指紋、是不是樣本）。
+        """
+        stage = self.stages[si]
+        source, key, sampled, _ = self._stage_input(si)
+        frame = source
+        previous = self._computed.get(stage["name"], [])
         results: list[_Computed] = []
         broken = frame is None
-        for i, raw in enumerate(self.steps):
-            key = _digest({"source": source_key, "steps": self.steps[: i + 1]})
-            cached = self._computed[i] if i < len(self._computed) else None
+        for i, raw in enumerate(stage["steps"]):
+            refs = {}
+            for field_name in ref_fields().get(raw.get("type"), []):
+                ref = raw.get(field_name)
+                index = self._stage_index(ref, si) if isinstance(ref, str) else None
+                if index is not None:
+                    refs[ref] = self._stage_result(index)
+            key = _digest({"prev": key, "step": raw, "refs": {n: r[1] for n, r in refs.items()}})
+            cached = previous[i] if i < len(previous) else None
             if cached and cached.key == key:
                 results.append(cached)
                 frame = cached.frame
@@ -568,19 +850,36 @@ class Session:
                 continue
             item = _Computed(key)
             model = self._model(raw, item)
-            if model is not None and not broken:
+            waiting = any(r[0] is None for r in refs.values())
+            if model is not None and not broken and not (waiting and model.enabled):
                 if not model.enabled:
                     item.frame = frame
                 else:
+                    tables = {n: r[0] for n, r in refs.items()}
                     try:
-                        item.frame, item.warning_count, item.warnings = apply_step(model, frame)
+                        item.frame, item.warning_count, item.warnings = apply_step(
+                            model, frame, tables=tables
+                        )
                     except RunError as err:
                         item.run_error = str(err).split("失敗：", 1)[-1]
             broken = broken or item.frame is None
             frame = item.frame
             results.append(item)
-        self._computed = results
-        return results
+        self._computed[stage["name"]] = results
+        return results, source, key, sampled
+
+    def _stage_result(self, si: int) -> tuple[pl.DataFrame | None, str, bool, bool]:
+        """第 si 個階段的結果：（資料、指紋、是不是樣本、是不是「完整跑一次」的結果）。"""
+        computed, source, key, sampled = self._compute(si)
+        frame = source
+        if computed:
+            frame, key = computed[-1].frame, computed[-1].key
+        if frame is None:
+            return None, "", sampled, False
+        full = self._full.get(self.stages[si]["name"])
+        if sampled and full and full[0] == key:
+            return full[1], f"{key}:full", False, True
+        return frame, key, sampled, False
 
     def _model(self, raw: dict[str, Any], item: _Computed) -> Step | None:
         try:
@@ -601,27 +900,77 @@ class Session:
             return None
 
     def _frame_before(self, index: int) -> pl.DataFrame | None:
-        """第 index 步的輸入（index=0 是原始資料）。"""
+        """目前階段第 index 步的輸入（index=0 是這個階段的輸入）。"""
+        computed, source, _, _ = self._compute(self.current)
         if index <= 0:
-            return self._load_source()[0]
-        computed = self._compute()
+            return source
         return computed[index - 1].frame if index - 1 < len(computed) else None
 
     def frame_at(self, index: int) -> pl.DataFrame | None:
-        """第 index 步的輸出；-1 是原始資料。"""
+        """目前階段第 index 步的輸出；-1 是這個階段的輸入。"""
         with self._lock:
+            computed, source, _, _ = self._compute(self.current)
             if index < 0:
-                return self._load_source()[0]
-            computed = self._compute()
+                return source
             return computed[index].frame if index < len(computed) else None
+
+    def full_run(self, index: int) -> None:
+        """「完整跑一次」：用全部資料跑到第 index 個階段，之後的預覽用它完整的結果（合併查詢的右表）。"""
+        with self._lock:
+            self._check_stage(index)
+            base = self.require_loaded()
+            frame, key, sampled, _ = self._stage_result(index)
+            if frame is None or not sampled:
+                return
+            data = self.recipe_dict()
+            data["stages"] = data["stages"][: index + 1]
+            data["output"] = {**data["output"], "keep_system_columns": True, "manifest": False}
+            target = staging_dir() / f"full-{uuid.uuid4().hex}.parquet"
+            try:
+                execute(
+                    parse_recipe(data), base, output=target, mode="stream", progress=self.progress
+                )
+                self._full[self.stages[index]["name"]] = (key, pl.read_parquet(target))
+            finally:
+                target.unlink(missing_ok=True)
 
     # ── 給前端的畫面狀態 ─────────────────────────────────────────
 
+    def _stages_state(self) -> list[dict[str, Any]]:
+        """每個階段的概況（最左邊的階段分頁、合併查詢的右表選單）。"""
+        out = []
+        for i, stage in enumerate(self.stages):
+            frame, _, sampled, full = self._stage_result(i)
+            computed = self._computed.get(stage["name"], [])
+            error = any(c.errors or c.run_error for c in computed) or bool(self._stage_input(i)[3])
+            out.append(
+                {
+                    "index": i,
+                    "name": stage["name"],
+                    "reader": stage["input"].get("reader"),
+                    "last": i == len(self.stages) - 1,
+                    "status": "error" if error else ("ok" if frame is not None else "waiting"),
+                    "rows": frame.height if frame is not None else None,
+                    "columns": _data_columns(frame) if frame is not None else None,
+                    "sampled": sampled,
+                    "full": full,
+                    "uses": list(dict.fromkeys(ref for ref, _ in stage_refs(stage))),
+                }
+            )
+        return out
+
     def state(self) -> dict[str, Any]:
         with self._lock:
-            source, files, source_error = self._load_source()
-            entries = check_entries(self.input["files"], self.base_dir) if self.base_dir else []
-            computed = self._compute()
+            stage = self.stage
+            reads_files = self._reads_files(stage)
+            loaded, files = self._load_source(stage) if reads_files else (None, [])
+            entries = (
+                check_entries(self.input["files"], self.base_dir)
+                if self.base_dir and reads_files
+                else []
+            )
+            computed, source, _, sampled = self._compute(self.current)
+            input_error = self._stage_input(self.current)[3]
             steps, previous = [], source
             for i, (raw, item) in enumerate(zip(self.steps, computed, strict=True)):
                 cls = _safe_get(raw.get("type"))
@@ -685,6 +1034,7 @@ class Session:
                 if shown_index < 0
                 else [w.__dict__ for w in computed[shown_index].warnings[:200]]
             )
+            total_rows = sum(f.rows for f in files) if files else None
             return {
                 "version": {"tablade": __version__, "recipe": RECIPE_VERSION},
                 "recipe": {
@@ -695,20 +1045,27 @@ class Session:
                     "base_dir": str(self.base_dir) if self.base_dir else None,
                     "open": self.recipe_path is not None,
                 },
+                "stages": self._stages_state(),
+                "current": self.current,
                 "input": {
-                    **self.input,
+                    **{k: v for k, v in self.input.items()},
                     "sheets": self._sheet_names(),
                     "entries": entries,
-                    "can_load": bool(entries) and all(e["found"] for e in entries),
+                    "earlier": [st["name"] for st in self.stages[: self.current]],
+                    "can_load": any(
+                        self._reads_files(st) and st["input"]["files"] for st in self.stages
+                    )
+                    and all(e["found"] for e in entries)
+                    and (not reads_files or bool(entries)),
                     "loaded": source is not None,
-                    "stale": self._stale,
-                    "error": source_error,
-                    "total_rows": sum(f.rows for f in files) if files else None,
-                    "sampled": bool(files) and sum(f.rows for f in files) > SAMPLE_THRESHOLD,
+                    "stale": stage["name"] in self._stale,
+                    "error": input_error,
+                    "total_rows": total_rows,
+                    "sampled": sampled,
                     "sample": {"head": SAMPLE_HEAD, "tail": SAMPLE_TAIL},
                     "rows": source.height if source is not None else None,
                     "columns": _data_columns(source) if source is not None else None,
-                    "sources": [f.__dict__ for f in files],
+                    "sources": [f.__dict__ for f in files] if loaded is not None else [],
                 },
                 "output": self.output,
                 "steps": steps,
@@ -747,8 +1104,7 @@ class Session:
         """第 index 步輸出的每一欄型別與概況（下方面板的「型別」分頁）；資料跟預覽同一份。"""
         with self._lock:
             frame = self.frame_at(index)
-            files = self._load_source()[1]
-            sampled = bool(files) and sum(f.rows for f in files) > SAMPLE_THRESHOLD
+            sampled = self._stage_input(self.current)[2]
             if frame is None:
                 return {"step": index, "rows": 0, "sampled": sampled, "columns": []}
             return {
@@ -759,9 +1115,14 @@ class Session:
             }
 
     def find_row(
-        self, index: int, source_file: str, line_no: int, sheet: str | None = None
+        self,
+        index: int,
+        source_file: str,
+        line_no: int,
+        sheet: str | None = None,
+        stage: str | None = None,
     ) -> int | None:
-        """在第 index 步的結果裡找某個來源檔（工作表）某一行的位置（點警告時跳到那一列）。"""
+        """在第 index 步的結果裡找某個來源檔（工作表、從哪個階段讀進來）某一行的位置（點警告時跳到那一列）。"""
         with self._lock:
             frame = self.frame_at(index)
             if frame is None or "__line_no" not in frame.columns:
@@ -769,6 +1130,8 @@ class Session:
             match = (pl.col("__source_file") == source_file) & (pl.col("__line_no") == line_no)
             if sheet and SHEET in frame.columns:
                 match &= pl.col(SHEET) == sheet
+            if stage and STAGE in frame.columns:
+                match &= pl.col(STAGE) == stage
             hits = frame.with_row_index("__pos").filter(match).get_column("__pos")
             return int(hits[0]) if hits.len() else None
 
@@ -792,11 +1155,17 @@ class Session:
             return base, f"{stem}.parquet"
 
     def require_loaded(self) -> Path:
-        """「處理並匯出資料」前的檢查：要先按「載入資料」，而且載入後設定與檔案都沒變。"""
+        """「處理並匯出資料」前的檢查：每個讀實際檔的階段都要先按「載入資料」，而且載入後設定與檔案都沒變。"""
         with self._lock:
             base = self._require_recipe()
-            if self._load_source()[0] is None:
-                raise SessionError("請先在「讀取資料」按「載入資料」")
+            waiting = [
+                st["name"]
+                for st in self.stages
+                if self._reads_files(st) and self._load_source(st)[0] is None
+            ]
+            if waiting:
+                where = f"（{'、'.join(waiting)}）" if len(self.stages) > 1 else ""
+                raise SessionError(f"請先在「讀取資料」按「載入資料」{where}")
             return base
 
     def export(self, target: Path) -> dict[str, Any]:

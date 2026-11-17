@@ -124,7 +124,10 @@ def test_stream_mode_matches_eager_mode(workdir):
 
 def test_stream_mode_collects_warnings_with_line_numbers(workdir):
     data = json.loads(EXAMPLE.read_text(encoding="utf-8"))
-    data["steps"][6]["names"] = ["通路", "付款方式"]  # 備註有 3 段，只拆 2 欄 → 每列都有警告
+    data["stages"][0]["steps"][6]["names"] = [
+        "通路",
+        "付款方式",
+    ]  # 備註有 3 段，只拆 2 欄 → 每列都有警告
     (workdir / "warn.recipe.json").write_text(
         json.dumps(data, ensure_ascii=False), encoding="utf-8"
     )
@@ -142,7 +145,9 @@ def test_stream_matches_eager_with_reordered_merge(workdir):
     """合併來源檔（改順序）後，串流與整份讀進記憶體的結果一致。"""
     data = json.loads(EXAMPLE.read_text(encoding="utf-8"))
     # 每個檔先去掉標題雜訊與頁尾，倒過來接成一份，再對整份做向下填滿
-    data["steps"].insert(2, {"id": "m", "type": "merge_files", "order": ["data/明細_02.csv"]})
+    data["stages"][0]["steps"].insert(
+        2, {"id": "m", "type": "merge_files", "order": ["data/明細_02.csv"]}
+    )
     (workdir / "merge.recipe.json").write_text(
         json.dumps(data, ensure_ascii=False), encoding="utf-8"
     )
@@ -161,7 +166,7 @@ def test_stream_matches_eager_with_reordered_merge(workdir):
 def test_stream_matches_eager_with_conversions_and_removed_columns(workdir):
     """文字轉數字、文字轉日期、刪除欄：串流與整份讀進記憶體的結果和警告都一致。"""
     data = json.loads(EXAMPLE.read_text(encoding="utf-8"))
-    data["steps"] += [
+    data["stages"][0]["steps"] += [
         {"id": "n", "type": "parse_number", "columns": ["金額", "品號"]},  # 品號轉不了：每列都警告
         {
             "id": "d",
@@ -201,7 +206,7 @@ def test_stream_matches_eager_with_conversions_and_removed_columns(workdir):
 def test_stream_matches_eager_with_text_and_column_steps(workdir):
     """清理文字、取代值、改欄名、保留和排序欄位：串流與整份讀進記憶體的結果一致。"""
     data = json.loads(EXAMPLE.read_text(encoding="utf-8"))
-    data["steps"] += [
+    data["stages"][0]["steps"] += [
         {"id": "t", "type": "trim_clean", "columns": ["品名", "門市"], "collapse_spaces": True},
         {
             "id": "r",
@@ -231,7 +236,7 @@ def run_both(workdir: Path, steps: list[dict], name: str, same_warnings: bool = 
     所以後面有篩選、移除重複時只會是整份讀進記憶體的一部分（``same_warnings=False``）。
     """
     data = json.loads(EXAMPLE.read_text(encoding="utf-8"))
-    data["steps"] += steps
+    data["stages"][0]["steps"] += steps
     path = workdir / f"{name}.recipe.json"
     path.write_text(json.dumps(data, ensure_ascii=False), "utf-8")
     r = parse_recipe(load_json(path))
@@ -313,7 +318,17 @@ def test_stream_matches_eager_with_pivot_and_unpivot_after_merge(workdir):
     ]
     b, _, streamed = run_both(workdir, steps, "pivot")
     assert set(b["__source_file"]) == {"合併"} and b.height == 6
-    assert b.columns == ["__source_file", "__line_no", "付款方式", "通路", "值"]
+    assert b.columns == [
+        "__source_file",
+        "__line_no",
+        "__orig_source_file",
+        "__orig_line_no",
+        "付款方式",
+        "通路",
+        "值",
+    ]
+    # 合併前的位置：每一組第一筆的原始來源檔與行號
+    assert b["__orig_source_file"].is_in(["data/明細_01.csv", "data/明細_02.csv"]).all()
     assert b["通路"].to_list() == ["門市", "網路"] * 3
     pivot = next(s for s in streamed.steps if s.id == "p")
     assert pivot.warning_count == 3
@@ -333,7 +348,9 @@ def test_stream_matches_eager_with_dedupe_then_whole_file_summary(workdir):
         },
     ]
     b, eager, streamed = run_both(workdir, steps, "dedupe", same_warnings=False)
-    assert b.drop("__source_file", "__line_no").to_dicts() == [{"門市數": 3, "筆數": 6}]
+    data_only = b.select([c for c in b.columns if not c.startswith("__")])
+    assert data_only.to_dicts() == [{"門市數": 3, "筆數": 6}]
+    assert b["__orig_source_file"].to_list() == ["data/明細_01.csv"]
     assert b["__line_no"].to_list() == [1]
     # 移除重複之前的警告：串流時只算移除重複之後還在的列（每個檔 3 列，和篩選一樣），
     # 而且在合併來源檔之前就算好，指到原本的來源檔與行號
@@ -438,7 +455,7 @@ def test_stream_reports_progress_in_rows_and_cleans_up(workdir, monkeypatch):
 
 def test_stream_handles_an_empty_result(workdir):
     data = json.loads(EXAMPLE.read_text(encoding="utf-8"))
-    data["steps"].append({"id": "z", "type": "remove_top_rows", "n": 1_000_000})
+    data["stages"][0]["steps"].append({"id": "z", "type": "remove_top_rows", "n": 1_000_000})
     (workdir / "empty.recipe.json").write_text(json.dumps(data, ensure_ascii=False), "utf-8")
     r = parse_recipe(load_json(workdir / "empty.recipe.json"))
     _, report = execute(r, workdir, output=workdir / "s.parquet", mode="stream")
@@ -541,3 +558,72 @@ def test_parallel_transcode_falls_back_to_single_core(tmp_path, monkeypatch):
     out = tmp_path / "out.txt"
     sources._transcode(src, "cp950", out, None, parallel_min=0, segment=1024)
     assert out.read_bytes() == src.read_bytes().decode("cp950").encode("utf-8")
+
+
+# ── 多個階段 ─────────────────────────────────────────────────────
+
+COMBINED = ROOT / "examples" / "sales_combined.recipe.json"
+
+
+def run_stages(workdir: Path, mutate=None):
+    data = json.loads(COMBINED.read_text(encoding="utf-8"))
+    if mutate:
+        mutate(data)
+    path = workdir / "stages.recipe.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+    r = parse_recipe(load_json(path))
+    _, eager = execute(r, workdir, output=workdir / "e.parquet", mode="eager")
+    _, streamed = execute(r, workdir, output=workdir / "s.parquet", mode="stream")
+    a, b = pl.read_parquet(workdir / "e.parquet"), pl.read_parquet(workdir / "s.parquet")
+    assert a.equals(b)
+    pick = lambda rep: sorted(  # noqa: E731
+        (s.id, w.source_file, w.line_no, w.stage, w.orig_source_file, w.orig_line_no, w.message)
+        for s in rep.steps
+        for w in s.warnings
+    )
+    assert pick(streamed) == pick(eager)
+    assert [(s.name, s.rows) for s in streamed.stages] == [(s.name, s.rows) for s in eager.stages]
+    return b, eager, streamed
+
+
+def test_stream_matches_eager_with_stages_append_and_join(workdir):
+    """附加（讀兩個階段＋合併來源檔）再合併查詢：結果、警告（含原始位置）都和整份讀進記憶體一樣。"""
+    b, _, streamed = run_stages(workdir)
+    assert b.height == 90 and "類別" in b.columns
+    assert set(b["__orig_stage"]) == {"文字明細", "Excel明細"}
+    assert b.filter(pl.col("品號").str.starts_with("D"))["類別"].null_count() == 18
+    assert streamed.warning_count == 18
+    first = next(w for s in streamed.steps for w in s.warnings)
+    assert (first.source_file, first.orig_stage) == ("全部明細", "文字明細")
+    manifest = json.loads((workdir / "s.manifest.json").read_text(encoding="utf-8"))
+    assert [s["name"] for s in manifest["stages"]] == ["品項對照", "文字明細", "Excel明細"]
+    assert manifest["warnings"]["items"][0]["original"]["from_stage"] == "文字明細"
+    assert {i["stage"] for i in manifest["inputs"]} == {"品項對照", "文字明細", "Excel明細"}
+
+
+def test_stream_matches_eager_with_join_before_merge(workdir):
+    """合併來源檔之前 join：每個來源檔各自和整張右表 join；讀前面階段時每個來源各自處理。"""
+
+    def join_in_text_stage(data):
+        stages = data["stages"]
+        stages[1]["steps"].append(
+            {
+                "id": "tj",
+                "type": "join",
+                "right": "品項對照",
+                "on": [{"left": "品號", "right": "品號"}],
+                "columns": ["建議售價"],
+            }
+        )
+        stages[3]["steps"] = [
+            {"id": "d", "type": "dedupe", "columns": ["門市"]},  # 每個來源各自去重
+        ]
+
+    b, _, streamed = run_stages(workdir, join_in_text_stage)
+    # 3 個來源（@文字明細 的兩個檔＋@Excel明細）各自去重：每個來源最多 3 個門市
+    assert b.group_by("__stage", "__source_file").len()["len"].max() <= 3
+    assert set(b["__stage"]) == {"文字明細", "Excel明細"}
+    text_rows = b.filter(pl.col("__stage") == "文字明細")
+    assert text_rows["建議售價"].drop_nulls().len() > 0
+    tj = next(s for s in streamed.steps if s.id == "tj")
+    assert tj.warning_count > 0 and tj.stage == "文字明細"

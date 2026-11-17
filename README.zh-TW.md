@@ -41,10 +41,11 @@
 > 測試資料一律由 `scripts/gen_fixtures.py` 產生；pre-commit hook 會擋下資料檔與疑似個資。
 > 詳見 [不讓真實資料進入 repo](#️-不讓真實資料進入-repo)。
 
-> **目前進度：M5 進行中，移除重複、取消樞紐、群組彙總、樞紐完成。** 可以在視窗裡一步一步建立 recipe（套用的步驟、即時預覽、依步驟 schema 自動產生的表單），
-> 也可以用產生的 skill 讓 Microsoft 365 Copilot 撰寫，或從命令列執行。共 23 種步驟：除了移除雜訊列、拆欄（分隔符號或固定位置）、
+> **目前進度：M5，多階段 Recipe、合併查詢與附加查詢完成。** 可以在視窗裡一步一步建立 recipe（套用的步驟、即時預覽、依步驟 schema 自動產生的表單），
+> 也可以用產生的 skill 讓 Microsoft 365 Copilot 撰寫，或從命令列執行。Recipe 由依序執行的階段組成（每個階段讀實際檔或前面階段的結果），
+> 格式不同的資料可以各自整理，再上下接起來（附加）或左右對照（合併查詢）。共 24 種步驟：除了移除雜訊列、拆欄（分隔符號或固定位置）、
 > 向下填滿、篩選、合併來源檔，還有替列分類與正規表示式擷取（攤平分段的列印格式報表）、讀 Excel 工作表，以及清理文字（全形轉半形、看不見的字元）、取代值、文字轉數字與日期（轉不了的列附行號警告）、
-> 刪除、保留和排序、改欄名，移除重複、取消樞紐、群組彙總、樞紐（合併來源檔之前每個來源檔各自處理）；下方面板的「型別」分頁看得到每一欄的型別，匯出時附上處理紀錄（manifest）。見 [路線圖](#️-路線圖)。
+> 刪除、保留和排序、改欄名，移除重複、取消樞紐、群組彙總、樞紐（合併來源檔之前每個來源檔各自處理），以及到前面階段的結果查表（合併查詢）；下方面板的「型別」分頁看得到每一欄的型別，匯出時附上處理紀錄（manifest）。見 [路線圖](#️-路線圖)。
 
 ---
 
@@ -89,6 +90,8 @@
 | `csv` | 乾淨的 CSV | 所有欄位（一律文字） | ✅ M0（系統欄位在 M1） |
 | `text_lines` | 爛格式 CSV / TXT 報表：每個實體行原封不動 | `__source_file`、`__line_no`、`line` | M1 |
 | `excel` | XLSX / XLSM / XLS / ODS，指定工作表，或 `*` 讀每個檔的全部工作表：每一列都是資料（不當標題）、每一格都讀成文字 | `__source_file`、`__line_no`（Excel 的列號）、`A`、`B`、`C`…；`*` 時多一個 `__sheet`（每個工作表各自處理） | ✅ M4 |
+| `parquet` | Parquet 檔：欄位與型別照檔案；檔案自己帶的 `__` 開頭欄位改名成「原始…」的一般欄保留 | `__source_file`（檔名）、`__line_no`（第幾列）、各欄 | ✅ M5 |
+| `stages` | 前面階段的結果：每個來源各自是一個來源（名稱是「@階段／檔名」）；要接成一份（附加）就用「合併來源檔」 | `__stage`、上游的系統欄位（警告照樣指回原始檔的行號）、各欄 | ✅ M5 |
 
 - `__` 開頭的是系統欄位：UI 預設隱藏，匯出時可選擇是否保留。
 - Recipe 記一份**檔案清單**：Recipe 資料夾裡的檔存相對路徑，其他存絕對路徑，也可以手動輸入含 `*` 的路徑。清單裡的檔都找得到時，按「載入資料」才讀檔。
@@ -245,6 +248,7 @@ uv run python scripts/gen_fixtures.py examples/data
 uv run tablade run examples/sales_detail.recipe.json
 uv run tablade run examples/sales_report.recipe.json   # 分段的列印格式報表 → 每一列明細
 uv run tablade run examples/sales_excel.recipe.json    # Excel 工作表：去掉上面的標題列，轉成日期與數字
+uv run tablade run examples/sales_combined.recipe.json # 4 個階段：文字匯出檔與 Excel 附加起來，再對照品項表
 ```
 
 若有不能出現在 repo 的字詞（人名、公司名稱、專案代號等），寫進 repo 根目錄的 `.tablade-denylist`
@@ -294,14 +298,15 @@ tablade.spec          PyInstaller 設定（以 TABLADE_BUILD 切換 onefile / on
 | M2 UI | 步驟清單（新增、排序、停用、刪除）、預覽表格、參數表單、匯入 recipe 與錯誤報告、下載 skill | 不寫 JSON 也能完成範例清洗流程 ✅ |
 | M3 在地格式與追溯 | `parse_number`、`parse_date`（民國）、`trim_clean`、`replace_values`、`remove_columns`、`select_columns`、`rename_columns`、型別分頁、manifest | 輸出附 manifest，警告附行號 ✅ |
 | M4 多檔與 Excel | glob、diagonal concat、Excel 讀取、`classify_rows`、`extract_regex`、`split_fixed_width` | 分段報表的範例可以完整攤平 ✅ |
-| M5 進階步驟 | `dedupe`、`unpivot`、`group_by`、`pivot` ✅；join、附加查詢（要等多個 input） | — |
+| M5 進階步驟 | `dedupe`、`unpivot`、`group_by`、`pivot`、多階段 Recipe、`parquet` 讀取、`join`、附加查詢（讀好幾個階段＋合併來源檔） | 範例 `sales_combined`：文字匯出檔與 Excel 各自整理後附加，再到品項對照表查類別 ✅ |
 
 ---
 
 ## ⚠️ 已知限制
 
 - **Copilot skill 還沒在 Agent Builder 實測**：skill 的 script 能不能讀到對話中上傳的檔案、沙箱的 Python 版本，要用 probe 確認。
-- **一個 recipe 只能有一個 input**；合併或附加多個 input 在 M5 之後的批次加入。
+- **合併查詢的右表整份放進記憶體**（左邊串流）。右表的鍵重複時直接報錯，不會默默多出列。大檔時預覽的右表是樣本，
+  合併查詢的設定畫面可以「完整跑一次」那個階段。
 - **大檔的預覽是樣本。** 超過 20 萬行時，預覽只用每個檔案的前 10 萬行與最後 1,000 行，UI 上每一步的列數是樣本的；
   匯出時會串流處理全部資料，進度列顯示處理到第幾行與百分比。串流匯出只回報最後的列數，警告也只算最後還留著的列。群組彙總、樞紐的預覽也是用樣本算的（樞紐要變成欄的值從預覽的資料讀出，匯出時資料裡多出來的值會產生警告）。
 - **非 UTF-8 的檔案會先轉成 UTF-8 暫存檔**（cp950 單核心約每秒 230 MB；64 MB 以上的檔用多個程序同時轉，最多 8 個，結果和單核心相同；需要約原檔 1.5 倍的暫存空間），關閉視窗時刪除；當掉或被強制結束時留下的副本，下次啟動 Tablade 時清掉。

@@ -84,13 +84,13 @@ def test_build_the_example_recipe_like_a_user(data):
     def same(steps):
         return [{k: v for k, v in s._normalize(st).items() if k != "id"} for st in steps]
 
-    assert same(recipe["steps"]) == same(example["steps"])
-    assert recipe["steps"][3] == {
+    assert same(recipe["stages"][0]["steps"]) == same(example["stages"][0]["steps"])
+    assert recipe["stages"][0]["steps"][3] == {
         "id": "s4",
         "type": "split_delimited",
         "columns": [f"欄{k}" for k in range(1, 7)],
     }
-    assert recipe["inputs"][0]["files"] == ["data/明細_01.csv", "data/明細_02.csv"]
+    assert recipe["stages"][0]["input"]["files"] == ["data/明細_01.csv", "data/明細_02.csv"]
 
 
 def test_invalid_step_stops_the_pipeline_but_stays_in_the_list(data):
@@ -179,7 +179,7 @@ def test_cache_reuses_earlier_steps(data, monkeypatch):
     calls = []
     original = engine_run.apply_step
 
-    def counting(step, frame, limit=100):
+    def counting(step, frame, limit=100, tables=None):
         calls.append(step.id)
         return original(step, frame, limit)
 
@@ -193,13 +193,13 @@ def test_cache_reuses_earlier_steps(data, monkeypatch):
 
 def test_load_recipe_with_problems_and_error_report(data):
     recipe = json.loads(EXAMPLE.read_text(encoding="utf-8"))
-    recipe["steps"][5]["columns"] = ["門"]
+    recipe["stages"][0]["steps"][5]["columns"] = ["門"]
     path = data.parent / "bad.recipe.json"
     path.write_text(json.dumps(recipe, ensure_ascii=False), encoding="utf-8")
 
     s = Session()
     issues = s.load_recipe(path)
-    assert [i["path"] for i in issues] == ["steps[5].columns[0]"]
+    assert [i["path"] for i in issues] == ["stages[0].steps[5].columns[0]"]
     assert s.state()["steps"][5]["status"] == "waiting"  # 還沒載入資料
     s.load_data()
     state = s.state()
@@ -207,7 +207,7 @@ def test_load_recipe_with_problems_and_error_report(data):
     assert state["steps"][5]["status"] == "error"
 
     report = s.error_report()
-    assert "steps[5].columns[0]" in report and "是不是「門市」？" in report
+    assert "stages[0].steps[5].columns[0]" in report and "是不是「門市」？" in report
     assert f'tablade_recipe 維持 "{RECIPE_VERSION}"' in report
 
     s.update_step(5, {"columns": ["門市"]})
@@ -328,7 +328,14 @@ def test_new_recipe_is_written_right_away(tmp_path):
     s = Session()
     path = s.new(tmp_path / "門市整理.recipe.json")
     saved = json.loads(path.read_text(encoding="utf-8"))
-    assert saved["tablade_recipe"] == RECIPE_VERSION and saved["inputs"][0]["files"] == []
+    assert saved["tablade_recipe"] == RECIPE_VERSION
+    assert saved["stages"] == [
+        {
+            "name": "預設階段",
+            "input": {"files": [], "reader": "text_lines", "encoding": "auto"},
+            "steps": [],
+        }
+    ]
     state = s.state()
     assert state["recipe"]["open"] and state["recipe"]["name"] == "門市整理"
     assert not state["recipe"]["dirty"] and not state["input"]["can_load"]
@@ -445,3 +452,150 @@ def test_column_info_follows_conversions_and_positions(data):
     assert "單號" not in after and len(after["金額"]["examples"]) == 3
     assert s.state()["steps"][end + 2]["describe"] == f"刪除第 {positions.index('單號') + 1} 欄"
     assert s.column_info(-1)["columns"][2]["name"] == "line"  # 讀取資料（-1）也可以看
+
+
+# ── 階段 ──────────────────────────────────────────────────────
+
+
+def combined(data: Path) -> Session:
+    """開啟合計範例（4 個階段：品項對照、文字明細、Excel明細、預設階段）並載入資料。"""
+    target = data.parent / "combined.recipe.json"
+    target.write_text(
+        (ROOT / "examples" / "sales_combined.recipe.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    s = Session()
+    assert [i for i in s.load_recipe(target) if i["severity"] == "error"] == []
+    s.load_data()  # 一次載入所有讀實際檔的階段
+    return s
+
+
+def test_stages_preview_reads_earlier_stages_and_joins(data):
+    s = combined(data)
+    state = s.state()
+    assert [st["name"] for st in state["stages"]] == [
+        "品項對照",
+        "文字明細",
+        "Excel明細",
+        "預設階段",
+    ]
+    assert state["current"] == 3 and state["stages"][3]["last"]
+    assert [st["status"] for st in state["stages"]] == ["ok"] * 4
+    assert state["stages"][3]["uses"] == ["文字明細", "Excel明細", "品項對照"]
+    # 讀前面階段的輸出：每個來源各自是一個來源，名稱帶階段
+    assert state["input"]["reader"] == "stages" and state["input"]["earlier"][:2] == [
+        "品項對照",
+        "文字明細",
+    ]
+    assert state["steps"][0]["input_files"] == [
+        "@文字明細／data/明細_01.csv",
+        "@文字明細／data/明細_02.csv",
+        "@Excel明細／data/明細.xlsx",
+    ]
+    assert state["steps"][1]["warning_count"] == 18  # D300 不在品項對照表
+    out = s.frame_at(1)
+    assert out.height == 90 and "類別" in out.columns
+    warning = state["preview"]["warnings"][0]
+    assert warning["orig_source_file"] == "data/明細_01.csv" and warning["orig_stage"] == "文字明細"
+    # 合併查詢的建議值：右表用最近的前面階段
+    s.select_stage(3)
+    s.select(1)
+    index = s.add_step("join", {"column": "品號"})
+    assert s.steps[index]["right"] == "Excel明細"
+
+
+def test_stage_add_rename_move_delete(data):
+    s = combined(data)
+    s.select_stage(1)
+    s.add_stage("對照二")  # 預設插在目前階段（文字明細）的前面
+    assert [st["name"] for st in s.stages] == [
+        "品項對照",
+        "對照二",
+        "文字明細",
+        "Excel明細",
+        "預設階段",
+    ]
+    assert s.current == 1 and s.steps == []
+    with pytest.raises(SessionError, match="已經有叫「品項對照」的階段"):
+        s.add_stage("品項對照")
+    with pytest.raises(SessionError, match="請輸入階段名稱"):
+        s.add_stage("  ")
+    s.add_stage("最後", before=False)
+    assert [st["name"] for st in s.stages][2] == "最後"
+    s.delete_stage(2)
+    # 改名：引用它的地方一起改
+    s.rename_stage(0, "品項")
+    last = s.stages[-1]
+    assert last["steps"][1]["right"] == "品項"
+    s.rename_stage(2, "文字")
+    assert last["input"]["stages"] == ["文字", "Excel明細"]
+    assert s.state()["stages"][-1]["status"] == "ok"  # 改名不需要重新載入
+    # 會弄壞引用的刪除、移動都擋下來
+    with pytest.raises(SessionError, match="不能刪除「品項」：「預設階段」的j1（合併查詢）用到它"):
+        s.delete_stage(0)
+    with pytest.raises(SessionError, match="不能這樣排"):
+        s.move_stage(0, 4)
+    s.move_stage(1, 3)  # 對照二沒有人用：可以移到 Excel明細 後面
+    assert [st["name"] for st in s.stages] == ["品項", "文字", "Excel明細", "對照二", "預設階段"]
+    s.delete_stage(3)
+    assert len(s.stages) == 4
+    s.undo()
+    assert len(s.stages) == 5
+    with pytest.raises(SessionError, match="至少要有一個階段"):
+        lone = Session()
+        lone.delete_stage(0)
+
+
+def test_stage_input_must_read_earlier_stages(data):
+    s = combined(data)
+    s.select_stage(0)
+    with pytest.raises(SessionError, match="第一個階段只能讀實際檔"):
+        s.set_input({"reader": "stages"})
+    s.select_stage(1)
+    with pytest.raises(SessionError, match="只能讀前面的階段：預設階段"):
+        s.set_input({"reader": "stages", "stages": ["預設階段"]})
+    # 型別不一樣的同名欄：讀取時就報錯
+    s.select_stage(3)
+    s.set_input({"stages": ["品項對照", "文字明細"]})
+    state = s.state()
+    assert state["input"]["error"] is None  # 品號都是文字，沒有衝突
+    s.select_stage(0)
+    s.add_step("parse_number", {"column": "品號"})  # 品項對照的品號變成數字（全部轉不了）
+    s.select_stage(3)
+    assert "「品號」在各來源的型別不一樣" in s.state()["input"]["error"]
+
+
+def test_recipe_dict_and_old_format(data, tmp_path):
+    s = combined(data)
+    saved = s.recipe_dict()
+    assert saved["stages"][3]["input"] == {"reader": "stages", "stages": ["文字明細", "Excel明細"]}
+    assert "stages" not in saved["stages"][0]["input"] and "selected" not in saved["stages"][0]
+    old = tmp_path / "old.recipe.json"
+    old.write_text(
+        json.dumps({"tablade_recipe": "1.0", "inputs": [], "steps": [], "output": {}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(RecipeError, match="舊的 Recipe 寫法"):
+        Session().load_recipe(old)
+
+
+def test_full_run_replaces_a_sampled_right_table(data, monkeypatch):
+    """右表是樣本時，「完整跑一次」之後預覽用完整的右表。"""
+    from tablade import session as session_module
+
+    monkeypatch.setattr(session_module, "SAMPLE_THRESHOLD", 5)
+    monkeypatch.setattr(session_module, "SAMPLE_HEAD", 2)
+    monkeypatch.setattr(session_module, "SAMPLE_TAIL", 1)
+    s = combined(data)
+    state = s.state()
+    assert state["stages"][0]["sampled"] and state["stages"][0]["rows"] < 6
+    before = state["steps"][1]["warning_count"]
+    s.full_run(0)
+    state = s.state()
+    assert state["stages"][0]["full"] and not state["stages"][0]["sampled"]
+    assert state["stages"][0]["rows"] == 6
+    assert state["steps"][1]["warning_count"] <= before  # 完整的右表只會對得到更多
+    # 右表的階段（或它的上游）改了：回到樣本
+    s.select_stage(0)
+    s.add_step("remove_blank_rows")
+    assert not s.state()["stages"][0]["full"]

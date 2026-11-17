@@ -59,7 +59,7 @@ def test_manifest_records_inputs_steps_and_output(workdir, mode):
     rows = [s["rows"] for s in m["steps"]]
     assert rows[-1] == 70 if mode == "eager" else rows == [None] * 8
     # Recipe：完整內容與雜湊
-    assert m["recipe"]["content"]["steps"][0]["type"] == "remove_top_rows"
+    assert m["recipe"]["content"]["stages"][0]["steps"][0]["type"] == "remove_top_rows"
     assert m["recipe"]["sha256"] == recipe_sha256(m["recipe"]["content"])
 
 
@@ -67,13 +67,15 @@ def test_recipe_hash_is_stable_and_changes_with_parameters(workdir):
     a = recipe_sha256(recipe_content(recipe(workdir)))
     assert a == recipe_sha256(recipe_content(recipe(workdir)))
     data = load_json(workdir / EXAMPLE.name)
-    data["steps"][0]["n"] = 3
+    data["stages"][0]["steps"][0]["n"] = 3
     assert recipe_sha256(recipe_content(parse_recipe(data))) != a
 
 
 def test_manifest_lists_warnings(workdir):
     data = load_json(workdir / EXAMPLE.name)
-    data["steps"].append({"id": "n", "type": "parse_number", "columns": ["品號"]})  # 品號轉不了
+    data["stages"][0]["steps"].append(
+        {"id": "n", "type": "parse_number", "columns": ["品號"]}
+    )  # 品號轉不了
     out = workdir / "w.parquet"
     _, report = execute(parse_recipe(data), workdir, output=out, mode="eager")
     m = json.loads(manifest_path(out).read_text(encoding="utf-8"))

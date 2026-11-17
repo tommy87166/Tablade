@@ -3,7 +3,8 @@
  * 只在 import.meta.env.DEV 時載入，不會進正式版。
  *
  * 資料來自 `uv run python scripts/gen_frontend_dev_data.py` 產生的 src/dev/sample.json（不進版控）：
- * 用假資料跑過範例 recipe 的真實畫面狀態。選取步驟會切換畫面；其他修改只回傳目前的狀態。
+ * 用假資料跑過範例 recipe 的真實畫面狀態，鍵是「階段:步驟」。切換階段、選取步驟會切換畫面；其他修改只回傳目前的狀態。
+ * 看多個階段：`uv run python scripts/gen_frontend_dev_data.py --recipe sales_combined`。
  */
 import type { Cell, ColumnsInfo, Progress, ReadyInfo, RowsPage, TabladeApi, ViewState } from './bridge'
 
@@ -18,8 +19,13 @@ const files = import.meta.glob<Sample>('./dev/sample.json', { eager: true, impor
 const sample = Object.values(files)[0]
 
 const missing = '找不到 src/dev/sample.json：請先執行 uv run python scripts/gen_frontend_dev_data.py'
-// 跟開啟 recipe 一樣，一開始選最後一步（最大的鍵是「輸出資料」）
-let selected = sample ? Math.max(...Object.keys(sample.states).map(Number)) - 1 : -1
+const keys = sample ? Object.keys(sample.states).map((k) => k.split(':').map(Number)) : []
+/** 每個階段的最後一格（「輸出資料」）是第幾格 */
+const outputOf = (stage: number) => Math.max(...keys.filter(([s]) => s === stage).map(([, i]) => i))
+// 跟開啟 recipe 一樣，一開始選最後一個階段的最後一步
+let stageIndex = keys.length ? Math.max(...keys.map(([s]) => s)) : 0
+let selected = keys.length ? outputOf(stageIndex) - 1 : -1
+const key = (index = selected) => `${stageIndex}:${index}`
 
 // 網址加 ?start 看起始頁（還沒開 Recipe），加 ?unloaded 看還沒載入資料的畫面
 let open = !location.search.includes('start')
@@ -28,7 +34,7 @@ let loaded = !location.search.includes('unloaded')
 const delay = <T>(value: T, ms = 120) => new Promise<T>((r) => setTimeout(() => r(value), ms))
 // 每次回傳複本：React 才會察覺狀態變了
 const current = () => {
-  const state = structuredClone(sample.states[String(selected)])
+  const state = structuredClone(sample.states[key()])
   state.recipe.open = open
   if (!loaded) {
     state.input = { ...state.input, loaded: false, sources: [], rows: null, total_rows: null, columns: null }
@@ -108,7 +114,7 @@ export const mockApi: TabladeApi = sample
       smoke_example: () => withState({ issues: [] }),
       state: () => withState(),
       rows: (step, offset, limit) => {
-        const page = sample.rows[String(step)]
+        const page = sample.rows[key(step)]
         return delay({ ...page, offset, rows: page.rows.slice(offset, offset + limit) as Cell[][] })
       },
       find_row: () => delay({ ok: true, row: 0 }),
@@ -137,19 +143,31 @@ export const mockApi: TabladeApi = sample
         for (const s of Object.values(sample.states)) Object.assign(s.recipe, values, { dirty: true })
         return withState()
       },
+      add_stage: () => withState({ index: stageIndex }),
+      rename_stage: () => withState(),
+      move_stage: () => withState(),
+      delete_stage: () => withState(),
+      select_stage: (index) => {
+        if (keys.some(([s]) => s === index)) {
+          stageIndex = index
+          selected = outputOf(index) - 1
+        }
+        return withState()
+      },
+      full_run: () => withState(),
       add_step: () => withState({ index: selected }),
       update_step: () => withState(),
       move_step: () => withState(),
       toggle_step: () => withState(),
       delete_step: () => withState(),
       select_step: (index) => {
-        if (String(index) in sample.states) selected = index
+        if (key(index) in sample.states) selected = index
         return withState()
       },
       undo: () => withState(),
       redo: () => withState(),
       column_info: (step) =>
-        delay(sample.columns_info?.[String(loaded ? step : -2)] ?? { ok: true as const, step, rows: 0, sampled: false, columns: [] }),
+        delay(sample.columns_info?.[loaded ? key(step) : ''] ?? { ok: true as const, step, rows: 0, sampled: false, columns: [] }),
       export_parquet: fakeExport,
       error_report: () => delay({ ok: true, text: 'Tablade 驗證結果（開發用假資料）\n\n沒有發現問題。' }),
       download_skill: () => delay({ ok: true, cancelled: true }),

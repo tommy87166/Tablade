@@ -19,6 +19,7 @@ Tablade：本機執行、Power Query 式的資料清洗工具（Python + Polars 
   2. 實作 `apply()`（純函式）、`describe()`，需要時加 `warning_checks()` 與建立步驟時用的 `suggest_*()`。
   3. 新模組要加進 `steps/__init__.py`（匯入順序＝顯示順序），並在 `tests/test_steps.py` 補邊界情況的測試。
   4. 結構有變（新增步驟或參數、改預設值）就升 `RECIPE_VERSION`（相容升 minor），再執行 `uv run python scripts/update_schema_lock.py`；只改說明文字不用升。
+  5. 要用其他階段的結果（例如合併查詢的右表）時，參數標 `json_schema_extra={"ui": "stage"}`、`stage_refs()` 回傳要用的階段，`apply()` 裡用 `self.table(名稱)` 取得（引擎套用前用 `bind()` 交給步驟，步驟不讀檔）。
 - `src/tablade/recipe/validator.py` 只能用 Python 標準函式庫、不能 import tablade（它會原封不動放進 AI skill），有測試檢查。
 - 步驟 `apply()` 必須是純函式：不讀寫檔案、不 print、不碰 UI。
 - **串流規則**（DESIGN.md §8；幾 GB 的檔案要在固定記憶體內跑完）：
@@ -57,6 +58,7 @@ uv run python scripts/check_code_policy.py
 uv run tablade run examples/sales_detail.recipe.json      # 先 uv run python scripts/gen_fixtures.py examples/data
 uv run tablade run examples/sales_report.recipe.json      # 分段報表範例（同樣的假資料）
 uv run tablade run examples/sales_excel.recipe.json       # Excel 範例（同樣的假資料）
+uv run tablade run examples/sales_combined.recipe.json    # 多階段範例：附加＋合併查詢（同樣的假資料）
 uv run tablade validate recipe.json --run                 # 驗證＋用真實資料試跑
 uv run python scripts/update_schema_lock.py              # 升 RECIPE_VERSION 後
 uv run ruff check . && uv run ruff format --check .

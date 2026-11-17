@@ -83,8 +83,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--recipe",
         default="sales_detail",
-        choices=["sales_detail", "sales_report", "sales_excel"],
-        help="用哪一個範例 Recipe（sales_report 是分段報表、sales_excel 讀 Excel）",
+        choices=["sales_detail", "sales_report", "sales_excel", "sales_combined"],
+        help=(
+            "用哪一個範例 Recipe（sales_report 是分段報表、sales_excel 讀 Excel、"
+            "sales_combined 有 4 個階段：附加與合併查詢）"
+        ),
     )
     args = parser.parse_args(argv)
     api = Api()
@@ -99,16 +102,20 @@ def main(argv: list[str] | None = None) -> int:
         if args.recipe == "sales_detail":
             add_demo_steps(session)
         ready = api.ready()
+        # 每個階段的每一步各存一份畫面狀態，鍵是「階段:步驟」（-1 是讀取資料，步驟數是輸出資料）
         states, rows, columns_info = {}, {}, {}
-        count = len(session.steps)
-        for index in range(-1, count + 1):  # count 是「輸出資料」
-            state = api.select_step(index)["state"]
-            state["recipe"]["path"] = "（開發用假資料）/sales_detail.recipe.json"
-            state["recipe"]["base_dir"] = None
-            states[str(index)] = state
-            if index < count:
-                rows[str(index)] = api.rows(index, 0, 200)
-                columns_info[str(index)] = api.column_info(index)
+        for stage in range(len(session.stages)):
+            api.select_stage(stage)
+            count = len(session.steps)
+            for index in range(-1, count + 1):
+                state = api.select_step(index)["state"]
+                state["recipe"]["path"] = f"（開發用假資料）/{name}"
+                state["recipe"]["base_dir"] = None
+                key = f"{stage}:{index}"
+                states[key] = state
+                if index < count:
+                    rows[key] = api.rows(index, 0, 200)
+                    columns_info[key] = api.column_info(index)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     TARGET.parent.mkdir(parents=True, exist_ok=True)

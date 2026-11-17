@@ -46,12 +46,27 @@ def with_positions(parts: list[Part], files: list[SourceFile], reader: str) -> l
     return out
 
 
+def with_row_positions(parts: list[Part], rows: list[int]) -> list[Part]:
+    """讀前面階段的輸出時：位置是前面的 part 共有幾列，加上這一列是這個 part 的第幾列。"""
+    out, before = [], 0
+    for (name, lf), count in zip(parts, rows, strict=True):
+        indexed = lf.with_row_index(POSITION, offset=1).with_columns(
+            (pl.col(POSITION).cast(pl.Int64) + before).alias(POSITION)
+        )
+        out.append((name, indexed.select([c for c in lf.collect_schema().names()] + [POSITION])))
+        before += count
+    return out
+
+
 class Watcher:
     """看暫存資料夾裡寫完了哪些檔，回報處理到第幾行（另一條執行緒，不碰 Polars 的資料流）。"""
 
-    def __init__(self, folder: Path, files: list[SourceFile], progress: Progress) -> None:
+    def __init__(
+        self, folder: Path, files: list[SourceFile], progress: Progress, label: str = STAGE
+    ) -> None:
         self.folder = folder
         self.progress = progress
+        self.label = label
         self.rows = [f.rows for f in files]
         self.starts = pl.Series([0, *accumulate(self.rows)][: len(self.rows)], dtype=pl.Int64)
         self.total = sum(self.rows)
@@ -75,7 +90,7 @@ class Watcher:
     def _report(self, done: int) -> None:
         if self.progress is not None:
             self.progress(
-                {"stage": STAGE, "file": "", "done": done, "total": self.total, "unit": "rows"}
+                {"stage": self.label, "file": "", "done": done, "total": self.total, "unit": "rows"}
             )
 
     def _run(self) -> None:

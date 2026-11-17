@@ -2,21 +2,24 @@
   "tablade_recipe": "1.0",
   "name": "門市銷售明細整理",
   "description": "範例：先執行 uv run python scripts/gen_fixtures.py examples/data 產生假資料",
-  "inputs": [
-    { "id": "src", "files": ["data/明細_*.csv"], "reader": "text_lines", "encoding": "auto" }
-  ],
-  "steps": [
-    { "id": "s1", "type": "remove_top_rows", "n": 2 },
-    { "id": "s2", "type": "remove_bottom_rows", "n": 1 },
-    { "id": "s3", "type": "remove_blank_rows" },
-    { "id": "s4", "type": "split_delimited", "column": "line", "delimiter": ",", "quote": "\"",
-      "columns": ["欄1", "欄2", "欄3", "欄4", "欄5", "欄6"] },
-    { "id": "s5", "type": "promote_headers", "names": ["日期", "門市", "品號", "品名", "備註", "金額"] },
-    { "id": "s6", "type": "fill_down", "columns": ["門市"] },
-    { "id": "s7", "type": "split_column", "column": "備註", "delimiter": "|",
-      "names": ["通路", "付款方式", "單號"] },
-    { "id": "s8", "type": "filter",
-      "conditions": [{ "column": "金額", "op": "starts_with", "value": "(" }], "keep": "non_matching" }
+  "stages": [
+    {
+      "name": "預設階段",
+      "input": { "files": ["data/明細_*.csv"], "reader": "text_lines", "encoding": "auto" },
+      "steps": [
+        { "id": "s1", "type": "remove_top_rows", "n": 2 },
+        { "id": "s2", "type": "remove_bottom_rows", "n": 1 },
+        { "id": "s3", "type": "remove_blank_rows" },
+        { "id": "s4", "type": "split_delimited", "column": "line", "delimiter": ",", "quote": "\"",
+          "columns": ["欄1", "欄2", "欄3", "欄4", "欄5", "欄6"] },
+        { "id": "s5", "type": "promote_headers", "names": ["日期", "門市", "品號", "品名", "備註", "金額"] },
+        { "id": "s6", "type": "fill_down", "columns": ["門市"] },
+        { "id": "s7", "type": "split_column", "column": "備註", "delimiter": "|",
+          "names": ["通路", "付款方式", "單號"] },
+        { "id": "s8", "type": "filter",
+          "conditions": [{ "column": "金額", "op": "starts_with", "value": "(" }], "keep": "non_matching" }
+      ]
+    }
   ],
   "output": { "format": "parquet", "keep_system_columns": true }
 }

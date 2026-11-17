@@ -44,8 +44,13 @@ def recipe_of(pattern: str, reader: str, steps: list[dict]):
     return parse_recipe(
         {
             "tablade_recipe": RECIPE_VERSION,
-            "inputs": [{"id": "src", "files": [pattern], "reader": reader, "encoding": "auto"}],
-            "steps": steps,
+            "stages": [
+                {
+                    "name": "預設階段",
+                    "input": {"files": [pattern], "reader": reader, "encoding": "auto"},
+                    "steps": steps,
+                }
+            ],
             "output": {"format": "parquet", "keep_system_columns": True},
         }
     )
@@ -100,7 +105,7 @@ def test_per_file_steps_only_ever_see_one_file(tmp_path, monkeypatch):
             monkeypatch.setattr(cls, "apply", spy)
     write_all(tmp_path / "data")
     data = json.loads(EXAMPLE.read_text(encoding="utf-8"))
-    data["steps"].insert(2, {"id": "m", "type": "merge_files"})
+    data["stages"][0]["steps"].insert(2, {"id": "m", "type": "merge_files"})
     recipe = parse_recipe(data)
     both(recipe, tmp_path)
     assert seen and max(seen) == 1
@@ -261,7 +266,9 @@ def test_many_files_stream_equals_eager_and_warns_once(tmp_path):
         bad.read_text(encoding="utf-8").replace("日期,門市", "交易日期,門市", 1), encoding="utf-8"
     )
     data = json.loads(EXAMPLE.read_text(encoding="utf-8"))
-    data["steps"] = data["steps"][:-1]  # 不篩選，串流模式的警告才看得到同一列
+    data["stages"][0]["steps"] = data["stages"][0]["steps"][
+        :-1
+    ]  # 不篩選，串流模式的警告才看得到同一列
     out, eager, streamed = both(parse_recipe(data), tmp_path)
     keys = out.select(SOURCE_FILE, LINE_NO).rows()
     assert keys == sorted(keys)

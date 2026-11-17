@@ -8,7 +8,8 @@ registry 產生後傳進來；放進 skill 時會嵌入在 ``EMBEDDED_SPEC``。
 1. 結構：版本號、JSON Schema（步驟類型、參數型別、必填、列舉…）
 2. 語意：步驟 id 不重複、欄位引用存在、新欄名不衝突、欄位數相符
 
-每個問題是 ``{"path", "error", "hint"?, "severity"}``，``path`` 例如 ``steps[3].column``。
+每個問題是 ``{"path", "error", "hint"?, "severity"}``，``path`` 例如 ``stages[0].steps[3].column``。
+``severity`` 是 ``error``（不能執行）或 ``warning``（提醒，例如沒有被用到的階段）。
 
 命令列（給 AI skill 使用）::
 
@@ -29,7 +30,17 @@ from typing import Any
 EMBEDDED_SPEC: dict[str, Any] | None = None
 """放進 AI skill 時，build 會把步驟規格嵌在這裡。"""
 
-SYSTEM_COLUMNS = ("__source_file", "__line_no", "__sheet", "__row_type")
+SYSTEM_COLUMNS = (
+    "__source_file",
+    "__line_no",
+    "__sheet",
+    "__stage",
+    "__orig_source_file",
+    "__orig_line_no",
+    "__orig_sheet",
+    "__orig_stage",
+    "__row_type",
+)
 VERSION_RE = re.compile(r"^(\d+)\.(\d+)$")
 EFFECT_KINDS = (
     "keep",
@@ -43,6 +54,7 @@ EFFECT_KINDS = (
     "unpivot",
     "group",
     "pivot",
+    "join",
 )
 
 Issue = dict[str, Any]
@@ -78,8 +90,15 @@ def _check_new_names(names: list[str], existing: list[str]) -> None:
         seen.add(name)
 
 
-def apply_effect(columns: list[str] | None, effect: dict[str, Any]) -> list[str] | None:
-    """依欄位效果推算下一步的資料欄位；``None`` 表示目前不知道有哪些欄位。"""
+def apply_effect(
+    columns: list[str] | None,
+    effect: dict[str, Any],
+    stages: dict[str, list[str] | None] | None = None,
+) -> list[str] | None:
+    """依欄位效果推算下一步的資料欄位；``None`` 表示目前不知道有哪些欄位。
+
+    ``stages`` 是前面每個階段輸出的資料欄位（合併查詢檢查右表的欄位用；不知道時不檢查）。
+    """
     kind = effect["kind"]
     if kind == "keep":
         return columns
@@ -125,6 +144,8 @@ def apply_effect(columns: list[str] | None, effect: dict[str, Any]) -> list[str]
         return _group(columns, effect)
     if kind == "pivot":
         return _pivot(columns, effect)
+    if kind == "join":
+        return _join(columns, effect, stages or {})
     raise EffectError(f"未知的欄位效果：{kind}")
 
 
@@ -209,6 +230,36 @@ def _pivot(columns: list[str] | None, effect: dict[str, Any]) -> list[str] | Non
     return index + names
 
 
+def _join(
+    columns: list[str] | None, effect: dict[str, Any], stages: dict[str, list[str] | None]
+) -> list[str] | None:
+    """合併查詢：左連接、內連接時在後面接上從右表帶進來的欄；只留沒對到／有對到的欄位不變。"""
+    pairs = [p for p in effect.get("on") or [] if isinstance(p, dict)]
+    if not pairs:
+        raise EffectError("要設定至少一組鍵")
+    keep_only = effect.get("how") in ("anti", "semi")
+    names = [] if keep_only else list(effect.get("names") or [])
+    right_keys = [p.get("right") for p in pairs]
+    keyed = [n for n in names if n in right_keys]
+    if keyed:
+        raise EffectError(f"「{'、'.join(keyed)}」是右表的鍵，不用帶進來")
+    right = stages.get(effect.get("stage"))
+    if right is not None:
+        missing = [n for n in _unique(right_keys + names) if n not in right]
+        if missing:
+            raise EffectError(
+                f"階段「{effect.get('stage')}」沒有欄位：{'、'.join(missing)}"
+                f"（它的欄位：{'、'.join(right)}）"
+            )
+    if columns is None:
+        return None
+    _missing(columns, _unique([p.get("left") for p in pairs]))
+    if keep_only:
+        return columns
+    _check_new_names(names, columns)
+    return columns + names
+
+
 def _drop(columns: list[str] | None, effect: dict[str, Any]) -> list[str] | None:
     """刪除欄：依名稱（names）或依位置（positions，第幾個資料欄，從 1 起）。"""
     by_position = effect.get("by") == "position"
@@ -244,8 +295,10 @@ def _fmt(path: list[str | int]) -> str:
     return out or "(Recipe)"
 
 
-def _issue(path: list[str | int], error: str, hint: str | None = None) -> Issue:
-    item: Issue = {"path": _fmt(path), "error": error, "severity": "error"}
+def _issue(
+    path: list[str | int], error: str, hint: str | None = None, severity: str = "error"
+) -> Issue:
+    item: Issue = {"path": _fmt(path), "error": error, "severity": severity}
     if hint:
         item["hint"] = hint
     return item
@@ -466,12 +519,143 @@ def validate(
     if version_issue:
         issues.append(version_issue)
 
+    if "stages" not in recipe and any(k in recipe for k in ("inputs", "steps")):
+        issues.append(
+            _issue(
+                [],
+                "這是舊的 Recipe 寫法：最外層的 inputs / steps 要改成 stages",
+                'stages 的每一項是一個階段：{"name": "預設階段", "input": {原本 inputs[0]，去掉 id}, '
+                '"steps": [原本的 steps]}；output 留在最外層',
+            )
+        )
+        return issues
     schema = _Schema(spec["schema"])
     structural = [
         i for i in schema.check(recipe, spec["schema"], []) if i["path"] != "tablade_recipe"
     ]
     issues += structural
+    issues += link_issues(recipe, stage_ref_fields(spec))
     issues += _semantic(recipe, spec, schema, structural, input_columns or {})
+    return issues
+
+
+def stage_ref_fields(spec: dict[str, Any]) -> dict[str, list[str]]:
+    """每種步驟引用其他階段的參數（schema 標了 ``ui: stage``）。"""
+    defs = spec["schema"].get("$defs", {})
+    out = {}
+    for type_name, info in spec["steps"].items():
+        props = defs.get(info["schema_ref"], {}).get("properties", {})
+        names = [n for n, p in props.items() if p.get("ui") == "stage"]
+        if names:
+            out[type_name] = names
+    return out
+
+
+def _stage_hint(ref: str, earlier: list[str], later: list[str]) -> str | None:
+    if ref in later:
+        return f"「{ref}」在後面：只能讀前面的階段，請調整階段的順序"
+    if not earlier:
+        return "前面沒有階段"
+    return (_close(ref, earlier) or "") + f"前面的階段：{'、'.join(earlier)}"
+
+
+def link_issues(recipe: dict[str, Any], ref_fields: dict[str, list[str]]) -> list[Issue]:
+    """階段之間的關係：名稱不重複、只能讀前面的階段、步驟 id 整份 Recipe 不重複。
+
+    中間的階段沒有被後面的階段用到時給警告（``severity: warning``）。
+    """
+    stages = recipe.get("stages")
+    if not isinstance(stages, list):
+        return []
+    names = [s.get("name") if isinstance(s, dict) else None for s in stages]
+    issues: list[Issue] = []
+    first_index: dict[str, int] = {}
+    step_ids: dict[str, str] = {}
+    used: set[str] = set()
+    for si, stage in enumerate(stages):
+        if not isinstance(stage, dict):
+            continue
+        name = stage.get("name")
+        earlier = list(dict.fromkeys(n for n in names[:si] if isinstance(n, str)))
+        later = [n for n in names[si + 1 :] if isinstance(n, str)]
+        if isinstance(name, str) and name in first_index:
+            issues.append(
+                _issue(
+                    ["stages", si, "name"], f"階段名稱「{name}」和 stages[{first_index[name]}] 重複"
+                )
+            )
+        source = stage.get("input") if isinstance(stage.get("input"), dict) else {}
+        listed = source.get("stages") if isinstance(source.get("stages"), list) else []
+        if source.get("reader") == "stages":
+            if si == 0:
+                issues.append(
+                    _issue(
+                        ["stages", 0, "input", "reader"], "第一個階段只能讀實際檔（前面沒有階段）"
+                    )
+                )
+            elif not listed:
+                issues.append(_issue(["stages", si, "input", "stages"], "要選至少一個前面的階段"))
+            for k, ref in enumerate(listed):
+                if not isinstance(ref, str):
+                    continue
+                used.add(ref)
+                if si and ref not in earlier:
+                    issues.append(
+                        _issue(
+                            ["stages", si, "input", "stages", k],
+                            f"「{ref}」不是前面的階段",
+                            _stage_hint(ref, earlier, later),
+                        )
+                    )
+                elif listed.index(ref) != k:
+                    issues.append(_issue(["stages", si, "input", "stages", k], f"「{ref}」重複"))
+            if source.get("files"):
+                issues.append(
+                    _issue(["stages", si, "input", "files"], "讀前面階段的輸出時不能另外列檔案")
+                )
+        elif listed:
+            issues.append(
+                _issue(
+                    ["stages", si, "input", "stages"],
+                    "只有讀取方式是「前面階段的輸出」（stages）時才能列階段",
+                )
+            )
+        steps = stage.get("steps") if isinstance(stage.get("steps"), list) else []
+        for i, step in enumerate(steps):
+            if not isinstance(step, dict):
+                continue
+            path: list[str | int] = ["stages", si, "steps", i]
+            sid = step.get("id")
+            if isinstance(sid, str):
+                if sid in step_ids:
+                    issues.append(_issue(path + ["id"], f"步驟 id「{sid}」和 {step_ids[sid]} 重複"))
+                step_ids.setdefault(sid, _fmt(path))
+            for field in ref_fields.get(step.get("type"), []):
+                ref = step.get(field)
+                if not isinstance(ref, str):
+                    continue
+                if step.get("enabled", True) is not False:
+                    used.add(ref)
+                if ref not in earlier:
+                    issues.append(
+                        _issue(
+                            path + [field],
+                            f"「{ref}」不是前面的階段",
+                            _stage_hint(ref, earlier, later),
+                        )
+                    )
+        if isinstance(name, str):
+            first_index.setdefault(name, si)
+    for si, name in enumerate(names[:-1]):
+        if isinstance(name, str) and name not in used:
+            issues.append(
+                _issue(
+                    ["stages", si],
+                    f"階段「{name}」的結果沒有被後面的階段用到",
+                    "只有最後一個階段的結果會寫到輸出檔；用不到可以刪掉這個階段",
+                    severity="warning",
+                )
+            )
     return issues
 
 
@@ -482,69 +666,82 @@ def _semantic(
     structural: list[Issue],
     input_columns: dict[str, list[str]],
 ) -> list[Issue]:
+    """每個階段依序推算欄位，檢查欄位引用與欄位效果。``input_columns`` 依階段名稱提供讀到的欄位。"""
     issues: list[Issue] = []
-    steps = recipe.get("steps")
-    inputs = recipe.get("inputs")
-    if not isinstance(steps, list) or not isinstance(inputs, list) or not inputs:
+    stages = recipe.get("stages")
+    if not isinstance(stages, list):
         return issues
-
-    broken = {i["path"].split("]")[0] + "]" for i in structural if i["path"].startswith("steps[")}
-
-    seen: dict[str, int] = {}
-    for i, step in enumerate(steps):
-        sid = step.get("id") if isinstance(step, dict) else None
-        if isinstance(sid, str):
-            if sid in seen:
-                issues.append(
-                    _issue(["steps", i, "id"], f"步驟 id「{sid}」和 steps[{seen[sid]}] 重複")
-                )
-            seen.setdefault(sid, i)
-
-    first = inputs[0] if isinstance(inputs[0], dict) else {}
-    reader = first.get("reader", "text_lines")
-    columns = input_columns.get(first.get("id", "src")) or spec.get("readers", {}).get(
-        reader, {}
-    ).get("columns")
-    columns = list(columns) if columns is not None else None
-
+    broken = set()
+    for item in structural:
+        match = re.match(r"^stages\[(\d+)\]\.steps\[(\d+)\]", item["path"])
+        if match:
+            broken.add((int(match[1]), int(match[2])))
     step_schema = schema.root["$defs"]
-    for i, raw_step in enumerate(steps):
-        if not isinstance(raw_step, dict) or raw_step.get("enabled", True) is False:
+    outputs: dict[str, list[str] | None] = {}
+    for si, stage in enumerate(stages):
+        if not isinstance(stage, dict):
             continue
-        if f"steps[{i}]" in broken or raw_step.get("type") not in spec["steps"]:
-            columns = None  # 這一步有結構問題，之後的欄位無法推算
-            continue
-        info = spec["steps"][raw_step["type"]]
-        ref_schema = step_schema[info["schema_ref"]]
-        step = _with_defaults(raw_step, ref_schema)
-        before = len(issues)
-        if columns is not None:
-            for path, name in schema.column_refs(step, ref_schema, ["steps", i]):
-                if name.startswith("__"):
-                    if name not in SYSTEM_COLUMNS:
+        name = stage.get("name")
+        source = stage.get("input") if isinstance(stage.get("input"), dict) else {}
+        reader = source.get("reader", "text_lines")
+        if reader == "stages":
+            listed = source.get("stages") if isinstance(source.get("stages"), list) else []
+            columns = _union([outputs.get(n) if isinstance(n, str) else None for n in listed])
+        else:
+            known = input_columns.get(name) if isinstance(name, str) else None
+            columns = known or spec.get("readers", {}).get(reader, {}).get("columns")
+        columns = list(columns) if columns is not None else None
+        steps = stage.get("steps") if isinstance(stage.get("steps"), list) else []
+        for i, raw_step in enumerate(steps):
+            if not isinstance(raw_step, dict) or raw_step.get("enabled", True) is False:
+                continue
+            if (si, i) in broken or raw_step.get("type") not in spec["steps"]:
+                columns = None  # 這一步有結構問題，之後的欄位無法推算
+                continue
+            info = spec["steps"][raw_step["type"]]
+            ref_schema = step_schema[info["schema_ref"]]
+            step = _with_defaults(raw_step, ref_schema)
+            path: list[str | int] = ["stages", si, "steps", i]
+            before = len(issues)
+            if columns is not None:
+                for ref_path, ref in schema.column_refs(step, ref_schema, path):
+                    if ref.startswith("__"):
+                        if ref not in SYSTEM_COLUMNS:
+                            issues.append(
+                                _issue(
+                                    ref_path,
+                                    f"沒有系統欄位「{ref}」",
+                                    f"系統欄位有：{'、'.join(SYSTEM_COLUMNS)}",
+                                )
+                            )
+                    elif ref not in columns:
+                        hint = _close(ref, columns) or ""
                         issues.append(
                             _issue(
-                                path,
-                                f"沒有系統欄位「{name}」",
-                                f"系統欄位有：{'、'.join(SYSTEM_COLUMNS)}",
+                                ref_path,
+                                f"欄位「{ref}」在這一步之前不存在",
+                                f"目前的欄位：{'、'.join(columns)}。{hint}".rstrip("。"),
                             )
                         )
-                elif name not in columns:
-                    hint = _close(name, columns) or ""
-                    issues.append(
-                        _issue(
-                            path,
-                            f"欄位「{name}」在這一步之前不存在",
-                            f"目前的欄位：{'、'.join(columns)}。{hint}".rstrip("。"),
-                        )
-                    )
-        try:
-            columns = apply_effect(columns, resolve_effect(info["effect"], step))
-        except EffectError as err:
-            if len(issues) == before:  # 欄位引用已經報過錯時，不要再報一次同樣的問題
-                issues.append(_issue(["steps", i], str(err)))
-            columns = None
+            try:
+                columns = apply_effect(columns, resolve_effect(info["effect"], step), outputs)
+            except EffectError as err:
+                if len(issues) == before:  # 欄位引用已經報過錯時，不要再報一次同樣的問題
+                    issues.append(_issue(path, str(err)))
+                columns = None
+        if isinstance(name, str):
+            outputs.setdefault(name, columns)
     return issues
+
+
+def _union(lists: list[list[str] | None]) -> list[str] | None:
+    """讀好幾個階段時的欄位：依第一次出現的順序合在一起；有一個不知道就是不知道。"""
+    if not lists or any(c is None for c in lists):
+        return None
+    out: list[str] = []
+    for columns in lists:
+        out += [c for c in columns if c not in out]  # type: ignore[union-attr]
+    return out
 
 
 def _with_defaults(step: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
@@ -585,7 +782,9 @@ def main(argv: list[str] | None = None, spec: dict[str, Any] | None = None) -> i
     _utf8_output()
     parser = argparse.ArgumentParser(description="驗證 Tablade Recipe")
     parser.add_argument("recipe", type=Path)
-    parser.add_argument("--data", type=Path, help="input 為 csv 時，用這個檔案的標題列檢查欄位引用")
+    parser.add_argument(
+        "--data", type=Path, help="第一個階段讀 csv 時，用這個檔案的標題列檢查欄位引用"
+    )
     parser.add_argument("--spec", type=Path, help="步驟規格 JSON（預設用內嵌的）")
     parser.add_argument("--json", action="store_true", help="以 JSON 輸出")
     args = parser.parse_args(argv)
@@ -602,22 +801,27 @@ def main(argv: list[str] | None = None, spec: dict[str, Any] | None = None) -> i
         issues = [_issue([], f"不是合法的 JSON：第 {err.lineno} 行第 {err.colno} 欄，{err.msg}")]
     else:
         columns = None
-        if args.data and isinstance(recipe, dict) and recipe.get("inputs"):
-            first = recipe["inputs"][0]
-            if isinstance(first, dict) and first.get("reader") == "csv":
-                columns = {first.get("id", "src"): csv_header(args.data)}
+        stages = recipe.get("stages") if isinstance(recipe, dict) else None
+        if args.data and isinstance(stages, list) and stages and isinstance(stages[0], dict):
+            first = stages[0]
+            source = first.get("input") if isinstance(first.get("input"), dict) else {}
+            if source.get("reader") == "csv" and isinstance(first.get("name"), str):
+                columns = {first["name"]: csv_header(args.data)}
         issues = validate(recipe, spec, columns)
 
+    errors = [i for i in issues if i.get("severity", "error") == "error"]
     if args.json:
-        print(json.dumps({"ok": not issues, "issues": issues}, ensure_ascii=False, indent=2))
-    elif issues:
-        print(f"Recipe 有 {len(issues)} 個問題：")
+        print(json.dumps({"ok": not errors, "issues": issues}, ensure_ascii=False, indent=2))
+    else:
+        if errors:
+            print(f"Recipe 有 {len(errors)} 個問題：")
+        else:
+            print(f"Recipe 通過驗證（版本 {spec['recipe_version']}）")
         for item in issues:
             hint = f"（{item['hint']}）" if item.get("hint") else ""
-            print(f"  {item['path']}: {item['error']}{hint}")
-    else:
-        print(f"Recipe 通過驗證（版本 {spec['recipe_version']}）")
-    return 1 if issues else 0
+            mark = "提醒：" if item.get("severity") == "warning" else ""
+            print(f"  {item['path']}: {mark}{item['error']}{hint}")
+    return 1 if errors else 0
 
 
 if __name__ == "__main__":

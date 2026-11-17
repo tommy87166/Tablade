@@ -23,6 +23,9 @@ export type FieldKind =
   | 'conditions'
   | 'objects'
   | 'source_files'
+  | 'stage'
+  | 'right_column'
+  | 'right_columns'
   | 'unknown'
 
 export function resolve(schema: JsonSchema, root: JsonSchema): JsonSchema {
@@ -45,7 +48,10 @@ export function fieldKind(prop: JsonSchema, root: JsonSchema): FieldKind {
     schema.ui === 'int_list' ||
     schema.ui === 'new_columns' ||
     schema.ui === 'regex' ||
-    schema.ui === 'source_files'
+    schema.ui === 'source_files' ||
+    schema.ui === 'stage' ||
+    schema.ui === 'right_column' ||
+    schema.ui === 'right_columns'
   ) {
     return schema.ui
   }
@@ -64,14 +70,14 @@ export function editableFields(schema: JsonSchema): [string, JsonSchema][] {
   return Object.entries(schema.properties ?? {}).filter(([name]) => !HIDDEN_FIELDS.has(name))
 }
 
-/** ``ui_show_if`` 的條件都成立（其他參數是指定的值；沒填時用預設值）才顯示這個欄位。 */
+/** ``ui_show_if`` 的條件都成立（其他參數是指定的值、或是陣列裡的其中一個；沒填時用預設值）才顯示這個欄位。 */
 export function visible(prop: JsonSchema, values: Record<string, unknown>, root: JsonSchema): boolean {
   const when = resolve(prop, root).ui_show_if
   if (!when) return true
   return Object.entries(when).every(([name, expected]) => {
     const other = root.properties?.[name]
     const current = name in values ? values[name] : other ? resolve(other, root).default : undefined
-    return current === expected
+    return Array.isArray(expected) ? expected.includes(current) : current === expected
   })
 }
 

@@ -52,6 +52,10 @@ _EFFECT_TEXT = {
         "資料欄變成{by}列出的分組欄，後面接{aggregations}每一項的 name，最後是{count}指定的筆數欄"
         "（空字串代表不加）；其他欄都不保留。新欄名不能重複"
     ),
+    "join": (
+        "how 是 left / inner 時在後面新增{names}列出的右表欄位（不能和現有欄位重複，也不能是鍵）；"
+        "how 是 anti / semi 時欄位不變"
+    ),
     "pivot": (
         "資料欄變成{index}列出的欄，後面接{names}列出的欄（{on}的值變成欄名）；其他欄都不保留。"
         "新欄名不能重複，也不能和{index}列出的欄重複"
@@ -200,6 +204,11 @@ def steps_markdown(spec: dict[str, Any] | None = None) -> str:
                 json.dumps(step, ensure_ascii=False),
                 "```",
                 "",
+                *[
+                    line
+                    for name, data in (example.tables or {}).items()
+                    for line in (f"右表（階段「{name}」的結果）：", "", *_table(data), "")
+                ],
                 "輸入：",
                 "",
                 *_table(example.input),
@@ -239,14 +248,16 @@ Tablade 是本機執行的資料清洗工具。使用者描述要怎麼整理資
 2. **選讀取方式。** 凌亂的檔案用 `"reader": "text_lines"`（每一行原封不動讀成 `line` 欄）；
    只有乾淨、第一行就是標題的 CSV 才用 `"csv"`。Excel 用 `"reader": "excel"`：每一列都是資料（不當標題），
    欄名是 A、B、C…，`"sheet"` 寫工作表名稱（空白是第一個工作表，`"*"` 是每個檔的全部工作表：
-   每個工作表各自處理，系統欄位 `__sheet` 記工作表名稱）。
+   每個工作表各自處理，系統欄位 `__sheet` 記工作表名稱）。Parquet 檔用 `"parquet"`（欄位與型別照檔案）。
+   好幾份格式不同的資料要各自整理再接起來或對照時，分成好幾個階段（見下面「階段」）。
 3. **依序寫步驟。** 只能用下面列出的步驟類型，參數細節見 `references/steps.md`。
    決定欄位結構的步驟要把欄名寫死：`split_delimited` 的 `columns`、`promote_headers` 的 `names`。
 4. **驗證。** 執行 `python scripts/validate_recipe.py <recipe 檔> --json`
-   （`reader` 是 `csv` 時加上 `--data <資料檔>`，會用資料的標題列檢查欄位）。
+   （第一個階段的 `reader` 是 `csv` 時加上 `--data <資料檔>`，會用資料的標題列檢查欄位）。
+   `severity` 是 `warning` 的只是提醒（例如沒有被用到的階段），不影響執行。
    有問題就依 `path`、`error`、`hint` 修正，直到 `"ok": true`。
 5. **交給使用者。** 輸出檔名為 `<名稱>.recipe.json` 的 recipe，並提醒使用者：
-   把 recipe 放在資料檔旁邊（或依 `inputs[0].files` 的相對路徑），用 Tablade「開啟 recipe」後按「載入資料」。
+   把 recipe 放在資料檔旁邊（或依各階段 `input.files` 的相對路徑），用 Tablade「開啟 recipe」後按「載入資料」。
    Tablade 會用真實資料試跑；有問題時按「複製錯誤報告」貼回來，你再依報告修正。
 
 ## recipe 格式
@@ -255,9 +266,14 @@ Tablade 是本機執行的資料清洗工具。使用者描述要怎麼整理資
 {{
   "tablade_recipe": "{RECIPE_VERSION}",
   "name": "名稱",
-  "inputs": [{{ "id": "src", "files": ["明細_*.csv"], "reader": "text_lines", "encoding": "auto" }}],
-  "steps": [
-    {{ "id": "s1", "type": "remove_top_rows", "n": 2 }}
+  "stages": [
+    {{
+      "name": "預設階段",
+      "input": {{ "files": ["明細_*.csv"], "reader": "text_lines", "encoding": "auto" }},
+      "steps": [
+        {{ "id": "s1", "type": "remove_top_rows", "n": 2 }}
+      ]
+    }}
   ],
   "output": {{ "format": "parquet", "keep_system_columns": true }}
 }}
@@ -266,9 +282,22 @@ Tablade 是本機執行的資料清洗工具。使用者描述要怎麼整理資
 - `tablade_recipe` 一定要是 `"{RECIPE_VERSION}"`。
 - `files` 是檔案清單：每一項是**相對於 recipe 檔所在資料夾**的路徑（或絕對路徑），可用 `*` 一次讀多個檔案；依清單順序讀取。
 - recipe 不記輸出位置：使用者在 Tablade 按「處理並匯出資料」時才選存檔位置（`output` 裡沒有 `path`）。
-- 目前一個 recipe 只能有一個 input。
+- 只有一份資料時就一個階段，名稱用 `"預設階段"`。舊的寫法（最外層的 `inputs` / `steps`）已經不支援。
 - 每一列都帶系統欄位 `__source_file`（來源檔）與 `__line_no`（原始行號），可以在條件裡引用。
-- 「前 N 列」「後 N 列」「向下填滿」「提升標題列」都是**每個來源檔各自計算**。
+- 「前 N 列」「後 N 列」「向下填滿」「提升標題列」「移除重複」「群組彙總」「樞紐」都是**每個來源檔各自計算**；
+  要整份一起算就先用 `merge_files`（合併來源檔），之後 `__source_file` 是合併的名稱、`__line_no` 重新編號，
+  原本的位置留在 `__orig_source_file`、`__orig_line_no`。
+
+## 階段
+
+- `stages` 依序執行。每個階段：`name`（不能重複，也是引用名稱）、`input`（讀什麼）、`steps`。
+- 只有最後一個階段的結果寫到輸出檔；前面的階段是給後面的階段用的（暫存，不會輸出）。
+- 讀前面階段的結果：`"input": {{ "reader": "stages", "stages": ["階段A", "階段B"] }}`（第一個階段不能這樣讀）。
+  每個來源檔各自是一個來源，名稱是「@階段／檔名」，系統欄位 `__stage` 記階段；
+  **附加**（上下接）就是讀好幾個階段，再用 `merge_files` 接成一份（同名欄的型別要一樣，缺的欄補空值）。
+- **合併查詢**（左右接、查表）用 `join` 步驟：`right` 寫前面某個階段的名稱，那個階段的結果就是右表。
+  右表的鍵不能重複（要先在右表的階段 `dedupe`）；沒對到的列預設產生警告。
+- 只能引用**前面**的階段；步驟 `id` 在整份 recipe 裡不能重複。
 - 拆出來的值一律是文字；數值條件（`gt`、`le`…）比較前會去掉千分位逗號。
 - 正規表示式是 Rust regex 語法：不支援 lookaround 與反向參照。
 

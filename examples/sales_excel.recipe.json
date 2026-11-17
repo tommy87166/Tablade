@@ -2,14 +2,17 @@
   "tablade_recipe": "1.0",
   "name": "門市銷售明細（Excel）",
   "description": "範例：讀 Excel 工作表，去掉上面的標題列，轉成日期與數字。先執行 uv run python scripts/gen_fixtures.py examples/data 產生假資料",
-  "inputs": [
-    { "id": "src", "files": ["data/明細.xlsx"], "reader": "excel", "sheet": "明細" }
-  ],
-  "steps": [
-    { "id": "s1", "type": "remove_top_rows", "n": 3 },
-    { "id": "s2", "type": "promote_headers", "names": ["日期", "門市", "品號", "品名", "數量", "金額"] },
-    { "id": "s3", "type": "parse_date", "columns": ["日期"], "pattern": "dash", "calendar": "ad" },
-    { "id": "s4", "type": "parse_number", "columns": ["數量", "金額"], "kind": "integer" }
+  "stages": [
+    {
+      "name": "預設階段",
+      "input": { "files": ["data/明細.xlsx"], "reader": "excel", "sheet": "明細" },
+      "steps": [
+        { "id": "s1", "type": "remove_top_rows", "n": 3 },
+        { "id": "s2", "type": "promote_headers", "names": ["日期", "門市", "品號", "品名", "數量", "金額"] },
+        { "id": "s3", "type": "parse_date", "columns": ["日期"], "pattern": "dash", "calendar": "ad" },
+        { "id": "s4", "type": "parse_number", "columns": ["數量", "金額"], "kind": "integer" }
+      ]
+    }
   ],
   "output": { "format": "parquet", "keep_system_columns": true }
 }

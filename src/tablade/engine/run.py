@@ -9,19 +9,23 @@
 
 三種模式都「各檔分開處理」：資料是一串 part（每個來源檔一個），分檔的步驟一次只套在一個 part 上，
 到「合併來源檔」（``combines``）或寫出前才接起來（DESIGN.md §8）。
+
+Recipe 由好幾個階段組成，依序執行：每個階段讀實際檔或前面階段的結果（每個來源各自是一個 part，
+名稱是「@階段／檔名」，系統欄位 ``__stage`` 記階段），跑自己的步驟。中間階段的結果在 eager / sample
+模式留在記憶體，在 stream 模式寫成暫存 Parquet；合併查詢的右表就是前面階段的結果（``Step.bind``）。
 """
 
 from __future__ import annotations
 
 import shutil
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
 import polars as pl
 
-from tablade.engine.progress import Watcher, rows_per_file, with_positions
+from tablade.engine.progress import Watcher, rows_per_file, with_positions, with_row_positions
 from tablade.export.manifest import write_manifest
 from tablade.export.parquet import write_parquet
 from tablade.ingest.sources import (
@@ -29,17 +33,23 @@ from tablade.ingest.sources import (
     PartsMismatch,
     Progress,
     SourceFile,
+    align,
     concat,
     sample,
     scan_parts,
     staging_dir,
 )
-from tablade.recipe.schema import Recipe
+from tablade.recipe.schema import Recipe, Stage
 from tablade.recipe.validator import EffectError
 from tablade.steps.base import (
     LINE_NO,
+    ORIG_LINE_NO,
+    ORIG_SHEET,
+    ORIG_SOURCE_FILE,
+    ORIG_STAGE,
     SHEET,
     SOURCE_FILE,
+    STAGE,
     SYSTEM_PREFIX,
     TEMP_PREFIX,
     Step,
@@ -52,6 +62,8 @@ SAMPLE_THRESHOLD = 200_000
 """輸入超過這麼多行時，預覽與試跑改用樣本，完整執行改用串流。"""
 SAMPLE_HEAD = 100_000
 SAMPLE_TAIL = 1_000
+PART = f"{TEMP_PREFIX}part"
+"""串流執行時，中間階段的暫存結果裡每一列屬於第幾個 part（下一個階段讀回來時依它分開）。"""
 
 Mode = Literal["auto", "eager", "sample", "stream"]
 
@@ -64,6 +76,13 @@ class RowWarning:
     line_no: int | None
     sheet: str | None = None
     """讀 Excel 全部工作表時，這一列在哪個工作表。"""
+    stage: str | None = None
+    """從前面的階段讀進來的列：從哪個階段讀的（__stage）。"""
+    orig_source_file: str | None = None
+    orig_line_no: int | None = None
+    orig_sheet: str | None = None
+    orig_stage: str | None = None
+    """合併來源檔之後的列：合併前的來源檔、行號、工作表、階段。"""
 
 
 @dataclass
@@ -76,6 +95,15 @@ class StepReport:
     columns: list[str] | None
     warning_count: int = 0
     warnings: list[RowWarning] = field(default_factory=list)
+    stage: str = ""
+    """這一步屬於哪個階段。"""
+
+
+@dataclass
+class StageReport:
+    name: str
+    rows: int | None
+    columns: list[str] | None
 
 
 @dataclass
@@ -90,6 +118,8 @@ class RunReport:
     sample_rows: int | None = None
     manifest: str | None = None
     """處理紀錄（xxx.manifest.json）的位置；沒有寫出時是 None。"""
+    stages: list[StageReport] = field(default_factory=list)
+    """每個階段的結果（最後一個階段就是輸出）。"""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -119,15 +149,17 @@ def _apply(step: Step, lf: pl.LazyFrame, source: str = "") -> pl.LazyFrame:
         raise RunError(step, f"{type(err).__name__}: {err}{where}") from None
 
 
-def split_parts(frame: pl.DataFrame) -> list[Part]:
+def split_parts(frame: pl.DataFrame, with_stage: bool = True) -> list[Part]:
     """把讀進記憶體的資料依來源切成 parts（每段連續的同一個來源；不複製資料）。
 
-    來源通常是 ``__source_file``；讀 Excel 全部工作表時每個工作表各自是一個來源。
+    來源通常是 ``__source_file``；讀 Excel 全部工作表時每個工作表各自是一個來源；從前面的階段讀進來的
+    名稱是「@階段／檔名」（``with_stage=False`` 時不加，給下一個階段讀的時候換成新的階段）。
     """
     if frame.height == 0 or SOURCE_FILE not in frame.columns:
         return [("", frame.lazy())]
     parts, offset = [], 0
-    names = frame.select(source_name(frame.columns)).to_series()
+    columns = frame.columns if with_stage else [c for c in frame.columns if c != STAGE]
+    names = frame.select(source_name(columns)).to_series()
     for length, name in names.rle().struct.unnest().iter_rows():
         parts.append((name, frame.slice(offset, length).lazy()))
         offset += length
@@ -169,13 +201,22 @@ def apply_parts(step: Step, parts: list[Part], progress: Progress = None) -> lis
     return out
 
 
+_WHERE = (SHEET, STAGE, ORIG_SOURCE_FILE, ORIG_LINE_NO, ORIG_SHEET, ORIG_STAGE)
+"""警告除了來源檔與行號，另外帶的位置（有這些欄位時）。"""
+
+
 def _warnings(
-    step: Step, frame: pl.DataFrame | pl.LazyFrame, limit: int
+    step: Step, frame: pl.DataFrame | pl.LazyFrame, limit: int, on_input: bool = False
 ) -> tuple[int, list[RowWarning]]:
+    """依步驟的警告條件找出要警告的列；``on_input`` 是對這一步的輸入檢查的那些條件。"""
     total, found = 0, []
     lazy = frame.lazy()
     names = lazy.collect_schema().names()
-    for check in step.warning_checks():
+    try:
+        checks = [c for c in step.warning_checks() if c.on_input == on_input]
+    except (StepError, EffectError) as err:
+        raise RunError(step, str(err)) from None
+    for check in checks:
         detail = check.detail if check.detail is not None else pl.lit(None)
         hits = lazy.filter(check.condition.fill_null(False))
         total += hits.select(pl.len()).collect(engine="streaming").item()
@@ -184,24 +225,40 @@ def _warnings(
                 pl.col(SOURCE_FILE) if SOURCE_FILE in names else pl.lit(None).alias(SOURCE_FILE),
                 pl.col(LINE_NO) if LINE_NO in names else pl.lit(None).alias(LINE_NO),
                 detail.alias("__detail"),
-                pl.col(SHEET) if SHEET in names else pl.lit(None, dtype=pl.String).alias(SHEET),
+                *[pl.col(c) if c in names else pl.lit(None).alias(c) for c in _WHERE],
             )
             .head(limit)
             .collect(engine="streaming")
         )
-        for source_file, line_no, value, sheet in rows.iter_rows():
+        for source_file, line_no, value, *where in rows.iter_rows():
             message = check.message.format(value) if "{}" in check.message else check.message
-            found.append(RowWarning(step.id, message, source_file, line_no, sheet))
+            found.append(RowWarning(step.id, message, source_file, line_no, *where))
     return total, found
 
 
+def _has_input_checks(step: Step) -> bool:
+    try:
+        return any(c.on_input for c in step.warning_checks())
+    except (StepError, EffectError) as err:
+        raise RunError(step, str(err)) from None
+
+
+Tables = dict[str, pl.DataFrame] | dict[str, pl.LazyFrame]
+
+
 def apply_step(
-    step: Step, frame: pl.DataFrame, limit: int = MAX_WARNINGS_PER_CHECK
+    step: Step,
+    frame: pl.DataFrame,
+    limit: int = MAX_WARNINGS_PER_CHECK,
+    tables: Tables | None = None,
 ) -> tuple[pl.DataFrame, int, list[RowWarning]]:
     """套用一個步驟（eager），回傳（移除暫存欄位後的結果、警告總數、前幾則警告）。
 
     分檔與合併型步驟依來源檔切開再套用；一列一列的步驟直接套在整張表上（結果一樣，比較快）。
+    ``tables`` 是前面階段的結果（合併查詢的右表）。
     """
+    step = step.bind(tables)
+    before = _warnings(step, frame, limit, on_input=True) if _has_input_checks(step) else (0, [])
     try:
         if step.per_file or step.combines:
             lf = concat_parts(apply_parts(step, split_parts(frame)), step)
@@ -212,7 +269,42 @@ def apply_step(
         raise RunError(step, f"{type(err).__name__}: {err}") from None
     total, warnings = _warnings(step, out, limit)
     temp = [c for c in out.columns if c.startswith(TEMP_PREFIX)]
-    return out.drop(temp), total, warnings
+    return out.drop(temp), before[0] + total, before[1] + warnings
+
+
+def stage_parts(names: list[str], results: dict[str, list[Part]]) -> list[Part]:
+    """讀前面階段的結果：每個來源各自是一個 part，名稱加上「@階段／」、系統欄位 __stage 記階段。
+
+    欄位對齊成同一組（缺的欄是空值）；同名欄的型別不一樣時丟出 ``InputError``。
+    """
+    parts = []
+    for name in names:
+        for base, lf in results[name]:
+            staged = lf.with_columns(pl.lit(name, dtype=pl.String).alias(STAGE))
+            parts.append((f"@{name}／{base}", staged))
+    return align(parts)
+
+
+def stage_frame(names: list[str], frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
+    """讀前面階段的結果（資料在記憶體裡時）。"""
+    results = {n: split_parts(frames[n], with_stage=False) for n in names}
+    return concat(stage_parts(names, results)).collect(engine="streaming")
+
+
+def scan_stages(
+    recipe: Recipe, base_dir: Path, progress: Progress = None
+) -> dict[str, tuple[list[Part], list[SourceFile]]]:
+    """掃描每個讀實際檔的階段（還不讀資料內容）。"""
+    out = {}
+    for stage in recipe.stages:
+        source = stage.input
+        if source.reader == "stages":
+            continue
+        parts, files = scan_parts(
+            source.files, source.reader, source.encoding, base_dir, progress, source.sheet
+        )
+        out[stage.name] = (parts, [replace(f, stage=stage.name) for f in files])
+    return out
 
 
 def choose_mode(files: list[SourceFile], write_output: bool, mode: Mode) -> Mode:
@@ -233,49 +325,63 @@ def execute(
     limit: int = MAX_WARNINGS_PER_CHECK,
     progress: Progress = None,
 ) -> tuple[pl.DataFrame | None, RunReport]:
-    """執行 recipe。``stream`` 模式不回傳 DataFrame（結果直接寫到檔案）。"""
-    source = recipe.inputs[0]
-    parts, files = scan_parts(
-        source.files, source.reader, source.encoding, base_dir, progress, source.sheet
-    )
-    input_rows = sum(f.rows for f in files)
-    mode = choose_mode(files, write_output, mode)
+    """依序執行每個階段。``stream`` 模式不回傳 DataFrame（結果直接寫到檔案）。"""
     if write_output and output is None:
         raise ValueError("寫出檔案時要指定 output（recipe 不記輸出位置）")
+    scanned = scan_stages(recipe, base_dir, progress)
+    files = [f for _, found in scanned.values() for f in found]
+    input_rows = sum(f.rows for f in files)
+    mode = choose_mode(files, write_output, mode)
     if mode == "stream":
         if output is None:
             raise ValueError("stream 模式一定會寫出檔案")
-        # 每一列帶著在所有輸入裡的位置，執行中才能回報進度（寫出前拿掉）
-        parts = with_positions(parts, files, source.reader)
-        report = _execute_stream(recipe, parts, files, input_rows, output, limit, progress)
+        report = _execute_stream(recipe, scanned, files, input_rows, output, limit, progress)
         return None, _with_manifest(recipe, report, output)
 
-    frame = (
-        concat(parts).collect(engine="streaming")
-        if mode == "eager"
-        else sample(parts, files, source.reader, SAMPLE_HEAD, SAMPLE_TAIL)
-    )
-    sample_rows = frame.height if mode == "sample" else None
-    reports = []
-    for step in recipe.steps:
-        if not step.enabled:
+    results: dict[str, pl.DataFrame] = {}
+    reports, stages, sample_rows = [], [], 0
+    for stage in recipe.stages:
+        if stage.name in scanned:
+            parts, found = scanned[stage.name]
+            frame = (
+                concat(parts).collect(engine="streaming")
+                if mode == "eager"
+                else sample(parts, found, stage.input.reader, SAMPLE_HEAD, SAMPLE_TAIL)
+            )
+            sample_rows += frame.height
+        else:
+            frame = stage_frame(stage.input.stages, results)
+        for step in stage.steps:
+            if not step.enabled:
+                reports.append(
+                    StepReport(
+                        step.id,
+                        step.type_name(),
+                        step.describe(),
+                        False,
+                        None,
+                        None,
+                        stage=stage.name,
+                    )
+                )
+                continue
+            frame, total, warnings = apply_step(step, frame, limit, results)
             reports.append(
-                StepReport(step.id, step.type_name(), step.describe(), False, None, None)
+                StepReport(
+                    step.id,
+                    step.type_name(),
+                    step.describe(),
+                    True,
+                    frame.height,
+                    _data_columns(frame.columns),
+                    total,
+                    warnings,
+                    stage.name,
+                )
             )
-            continue
-        frame, total, warnings = apply_step(step, frame, limit)
-        reports.append(
-            StepReport(
-                step.id,
-                step.type_name(),
-                step.describe(),
-                True,
-                frame.height,
-                _data_columns(frame.columns),
-                total,
-                warnings,
-            )
-        )
+        results[stage.name] = frame
+        stages.append(StageReport(stage.name, frame.height, _data_columns(frame.columns)))
+    frame = results[recipe.stages[-1].name]
     if not recipe.output.keep_system_columns:
         frame = frame.select(_data_columns(frame.columns))
     written = None
@@ -290,7 +396,8 @@ def execute(
         _data_columns(frame.columns),
         written,
         mode,
-        sample_rows,
+        sample_rows if mode == "sample" else None,
+        stages=stages,
     )
     if written is not None and output is not None:
         _with_manifest(recipe, report, output)
@@ -304,9 +411,55 @@ def _with_manifest(recipe: Recipe, report: RunReport, output: Path) -> RunReport
     return report
 
 
+def _strip_stage(name: str, stages: list[str]) -> str:
+    """part 名稱去掉「@階段／」（下一個階段讀的時候換成新的階段）。"""
+    for stage in stages:
+        prefix = f"@{stage}／"
+        if name.startswith(prefix):
+            return name[len(prefix) :]
+    return name
+
+
+def _stream_steps(
+    stage: Stage,
+    parts: list[Part],
+    tables: dict[str, pl.LazyFrame],
+    limit: int,
+    progress: Progress,
+    report: Any,
+) -> tuple[list[Part], dict[str, tuple[int, list[RowWarning]]], list[Step], Step | None]:
+    """一個階段的步驟接成串流查詢。回傳（parts、已經先算好的警告、要從結果算警告的步驟、最後一步）。
+
+    彙總類的步驟與合併來源檔之前，先算好之前步驟的警告（之後列的意義或行號變了）；
+    對輸入檢查的警告（合併查詢沒對到的列）在套用那一步之前算。每項檢查另外串流掃一次資料。
+    """
+    found: dict[str, tuple[int, list[RowWarning]]] = {}
+    pending: list[Step] = []
+    last: Step | None = None
+    for step in stage.enabled_steps():
+        bound = step.bind(tables)
+        if (step.reshapes or step.combines) and pending:
+            report("檢查警告")
+            before = concat_parts(parts, last)
+            for done in pending:
+                found[done.id] = _warnings(done, before, limit)
+            pending = []
+        if _has_input_checks(bound):
+            report("檢查警告")
+            found[f"{step.id}:input"] = _warnings(
+                bound, concat_parts(parts, last), limit, on_input=True
+            )
+        report(f"準備 {step.id}")
+        # 每個檔各自一條流水線；暫存欄位（__w_）一路保留到最後，才能取出警告
+        parts = apply_parts(bound, parts, progress)
+        pending.append(bound)
+        last = step
+    return parts, found, pending, last
+
+
 def _execute_stream(
     recipe: Recipe,
-    parts: list[Part],
+    scanned: dict[str, tuple[list[Part], list[SourceFile]]],
     files: list[SourceFile],
     input_rows: int,
     target: Path,
@@ -317,72 +470,106 @@ def _execute_stream(
         if progress is not None:
             progress({"stage": stage, "file": "", "done": 0, "total": 0})
 
-    last = None
-    early: dict[str, tuple[int, list[RowWarning]]] = {}
-    pending: list[Step] = []
-    for step in recipe.enabled_steps():
-        if (step.reshapes or step.combines) and pending:
-            # 群組彙總、樞紐、取消樞紐之後列的意義變了，合併來源檔之後來源檔與行號變了：
-            # 之前步驟的警告要在這裡先算好，才會指到原本的列（每項檢查另外串流掃一次資料，記憶體用量照樣固定）
-            report("檢查警告")
-            before = concat_parts(parts, last)
-            for done in pending:
-                early[done.id] = _warnings(done, before, limit)
-            pending = []
-        report(f"準備 {step.id}")
-        # 每個檔各自一條流水線；暫存欄位（__w_）一路保留到最後，才能取出警告
-        parts = apply_parts(step, parts, progress)
-        pending.append(step)
-        last = step
-    lf = concat_parts(parts, last)
-
     staged = staging_dir() / f"run-{uuid.uuid4().hex}"
+    results: dict[str, list[Part]] = {}
+    tables: dict[str, pl.LazyFrame] = {}
+    found: dict[str, tuple[int, list[RowWarning]]] = {}
+    stage_reports: list[StageReport] = []
+    multi = len(recipe.stages) > 1
     try:
-        # 分成很多個檔寫（大約每 1% 一個），另一條執行緒看寫完了幾個來回報進度
-        with Watcher(staged, files, progress) as watcher:
-            try:
-                lf.sink_parquet(
-                    pl.PartitionBy(staged, max_rows_per_file=rows_per_file(input_rows)),
-                    engine="streaming",
-                    mkdir=True,
-                )
-            except pl.exceptions.PolarsError as err:
-                raise RuntimeError(f"執行失敗：{type(err).__name__}: {err}") from None
-        watcher.poll(finished=True)
-        if progress is not None:
-            progress(
-                {
-                    "stage": "執行（串流）",
-                    "file": "",
-                    "done": input_rows,
-                    "total": input_rows,
-                    "unit": "rows",
-                }
-            )
-        # 檔名是補零的流水號（00000000.parquet…），排序就是寫出的順序
-        result = pl.scan_parquet(sorted(staged.glob("*.parquet")))
-        reports = []
-        for step in recipe.steps:
-            if not step.enabled:
-                total, warnings = 0, []
-            elif step.id in early:
-                total, warnings = early[step.id]
+        for k, stage in enumerate(recipe.stages):
+            final = k == len(recipe.stages) - 1
+            label = f"階段「{stage.name}」：執行（串流）" if multi else "執行（串流）"
+            if stage.name in scanned:
+                parts, sources = scanned[stage.name]
+                # 每一列帶著在這個階段的輸入裡的位置，執行中才能回報進度（寫出前拿掉）
+                parts = with_positions(parts, sources, stage.input.reader)
             else:
-                total, warnings = _warnings(step, result, limit)
-            reports.append(
-                StepReport(
-                    step.id,
-                    step.type_name(),
-                    step.describe(),
-                    step.enabled,
-                    None,
-                    None,
-                    total,
-                    warnings,
+                parts = stage_parts(stage.input.stages, results)
+                counts = [lf.select(pl.len()).collect(engine="streaming").item() for _, lf in parts]
+                sources = [
+                    SourceFile(name, 0, "", "stage", n)
+                    for (name, _), n in zip(parts, counts, strict=True)
+                ]
+                parts = with_row_positions(parts, counts)
+            parts, early, pending, last = _stream_steps(
+                stage, parts, tables, limit, progress, report
+            )
+            found.update(early)
+            if not final:
+                # 記下每一列屬於第幾個 part，讀回來時依它分開（每個來源各自處理）
+                parts = [
+                    (n, lf.with_columns(pl.lit(i, dtype=pl.Int32).alias(PART)))
+                    for i, (n, lf) in enumerate(parts)
+                ]
+            lf = concat_parts(parts, last)
+            folder = staged / f"stage-{k}"
+            stage_rows = sum(f.rows for f in sources)
+            # 分成很多個檔寫（大約每 1% 一個），另一條執行緒看寫完了幾個來回報進度
+            with Watcher(folder, sources, progress, label) as watcher:
+                try:
+                    lf.sink_parquet(
+                        pl.PartitionBy(folder, max_rows_per_file=rows_per_file(stage_rows)),
+                        engine="streaming",
+                        mkdir=True,
+                    )
+                except pl.exceptions.PolarsError as err:
+                    raise RuntimeError(f"執行失敗：{type(err).__name__}: {err}") from None
+            watcher.poll(finished=True)
+            if progress is not None:
+                progress(
+                    {
+                        "stage": label,
+                        "file": "",
+                        "done": stage_rows,
+                        "total": stage_rows,
+                        "unit": "rows",
+                    }
+                )
+            # 檔名是補零的流水號（00000000.parquet…），排序就是寫出的順序
+            result = pl.scan_parquet(sorted(folder.glob("*.parquet")))
+            for step in pending:
+                found[step.id] = _warnings(step, result, limit)
+            names = result.collect_schema().names()
+            clean = [c for c in names if not c.startswith(TEMP_PREFIX)]
+            if final:
+                break
+            kept = result.select(clean)
+            results[stage.name] = [
+                (
+                    _strip_stage(n, stage.input.stages),
+                    result.filter(pl.col(PART) == i).select(clean),
+                )
+                for i, (n, _) in enumerate(parts)
+            ]
+            tables[stage.name] = kept
+            stage_reports.append(
+                StageReport(
+                    stage.name,
+                    kept.select(pl.len()).collect(engine="streaming").item(),
+                    _data_columns(clean),
                 )
             )
-        names = result.collect_schema().names()
-        keep = [c for c in names if not c.startswith(TEMP_PREFIX)]
+
+        reports = []
+        for stage in recipe.stages:
+            for step in stage.steps:
+                total, warnings = found.get(step.id, (0, []))
+                more_total, more = found.get(f"{step.id}:input", (0, []))
+                reports.append(
+                    StepReport(
+                        step.id,
+                        step.type_name(),
+                        step.describe(),
+                        step.enabled,
+                        None,
+                        None,
+                        more_total + total if step.enabled else 0,
+                        more + warnings if step.enabled else [],
+                        stage.name,
+                    )
+                )
+        keep = clean
         if not recipe.output.keep_system_columns:
             keep = _data_columns(keep)
         report("寫出 Parquet")
@@ -397,4 +584,14 @@ def _execute_stream(
     finally:
         shutil.rmtree(staged, ignore_errors=True)
     columns = _data_columns(keep)
-    return RunReport(files, input_rows, reports, rows, columns, target.as_posix(), "stream")
+    stage_reports.append(StageReport(recipe.stages[-1].name, rows, columns))
+    return RunReport(
+        files,
+        input_rows,
+        reports,
+        rows,
+        columns,
+        target.as_posix(),
+        "stream",
+        stages=stage_reports,
+    )

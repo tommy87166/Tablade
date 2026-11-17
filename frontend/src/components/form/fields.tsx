@@ -1,5 +1,5 @@
 /** 表單欄位元件：依 JSON Schema 的型別與 ui 提示挑選（DESIGN.md §16.5）。 */
-import { ArrowDown, ArrowUp, Plus, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ArrowUpRight, Play, Plus, X } from 'lucide-react'
 import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -9,6 +9,28 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrig
 import { Switch } from '@/components/ui/switch'
 import type { Issue, JsonSchema } from '../../bridge'
 import { defaultFor, fieldKind, issuesAt, resolve, variants, type FieldKind } from '../../lib/schema'
+
+/** 前面的階段（合併查詢的右表選單、右表的欄位）。 */
+export interface FormStage {
+  index: number
+  name: string
+  /** 這個階段結果的資料欄；還算不出來時是 null */
+  columns: string[] | null
+  sampled: boolean
+  full: boolean
+}
+
+/** 表單用到、但不在步驟參數裡的資訊。 */
+export interface FormContext {
+  /** 目前階段前面的階段 */
+  stages: FormStage[]
+  /** 這一步目前的參數（右表的欄位要看選了哪個階段） */
+  params: Record<string, unknown>
+  /** 「前往」：切到那個階段、選它的結果 */
+  onGoStage?: (index: number) => void
+  /** 「完整跑一次」：用全部資料跑到那個階段 */
+  onFullRun?: (index: number) => void
+}
 
 export interface FieldProps {
   name: string
@@ -22,6 +44,7 @@ export interface FieldProps {
   files?: string[] | null
   issues: Issue[]
   required: boolean
+  context?: FormContext
 }
 
 export function FieldErrors({ issues }: { issues: Issue[] }) {
@@ -152,6 +175,59 @@ function ColumnChecklist({ value, onChange, columns }: { value: unknown; onChang
             {c}（不存在）
           </span>
         ))}
+    </div>
+  )
+}
+
+/** 參數裡選的右表（schema 標了 ui: stage 的參數）是哪個階段。 */
+function rightStage(root: JsonSchema, context?: FormContext): FormStage | undefined {
+  if (!context) return undefined
+  const field = Object.entries(root.properties ?? {}).find(([, prop]) => resolve(prop, root).ui === 'stage')?.[0]
+  const name = field ? context.params[field] : undefined
+  return context.stages.find((s) => s.name === name)
+}
+
+/** 選前面的階段（合併查詢的右表）；下面可以「前往」那個階段，右表是樣本時可以「完整跑一次」。 */
+function StageSelect({ value, onChange, context }: { value: unknown; onChange: (v: unknown) => void; context?: FormContext }) {
+  const current = asString(value)
+  const stages = context?.stages ?? []
+  if (!stages.length) return <p className="text-xs text-muted-foreground">前面沒有階段：先在最左邊新增一個階段（例如對照表）。</p>
+  const names = stages.map((s) => s.name)
+  const options = names.includes(current) || !current ? names : [current, ...names]
+  const picked = stages.find((s) => s.name === current)
+  return (
+    <div className="space-y-1.5">
+      <Select value={current} onValueChange={onChange}>
+        <SelectTrigger className="w-full">
+          <SelectValue placeholder="選擇前面的階段" />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((n) => (
+            <SelectItem key={n} value={n}>
+              @{n}
+              {names.includes(n) ? '' : '（不是前面的階段）'}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {picked ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Button variant="outline" size="xs" onClick={() => context?.onGoStage?.(picked.index)}>
+            <ArrowUpRight /> 前往 @{picked.name}
+          </Button>
+          {picked.sampled ? (
+            <Button variant="outline" size="xs" onClick={() => context?.onFullRun?.(picked.index)}>
+              <Play /> 完整跑一次
+            </Button>
+          ) : null}
+          {picked.full ? <span className="text-xs text-muted-foreground">用完整的結果</span> : null}
+        </div>
+      ) : null}
+      {picked?.sampled ? (
+        <p className="text-xs text-amber-700 dark:text-amber-400">
+          右表是樣本：預覽時有些列可能對不到，匯出時會用完整的資料。按「完整跑一次」用全部資料算出右表。
+        </p>
+      ) : null}
     </div>
   )
 }
@@ -582,6 +658,12 @@ function control(kind: FieldKind, props: FieldProps) {
       return <ConditionsEditor {...props} />
     case 'source_files':
       return <SourceFilesOrder value={value} onChange={onChange} files={props.files ?? null} />
+    case 'stage':
+      return <StageSelect value={value} onChange={onChange} context={props.context} />
+    case 'right_column':
+      return <ColumnSelect value={value} onChange={onChange} columns={rightStage(props.root, props.context)?.columns ?? null} />
+    case 'right_columns':
+      return <ColumnChecklist value={value} onChange={onChange} columns={rightStage(props.root, props.context)?.columns ?? null} />
     case 'column_order':
       return <ColumnOrderEditor value={value} onChange={onChange} columns={columns} />
     case 'rename_map':

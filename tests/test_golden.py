@@ -64,12 +64,12 @@ def test_validate_with_dry_run_reports_each_step(workdir, capsys):
 
 def test_run_reports_problems_instead_of_running(workdir, capsys):
     recipe = json.loads(EXAMPLE.read_text(encoding="utf-8"))
-    recipe["steps"][5]["columns"] = ["門"]
+    recipe["stages"][0]["steps"][5]["columns"] = ["門"]
     path = workdir / "bad.recipe.json"
     path.write_text(json.dumps(recipe, ensure_ascii=False), encoding="utf-8")
     assert main(["run", str(path)]) == 1
     printed = capsys.readouterr().out
-    assert "steps[5].columns[0]" in printed and "是不是「門市」？" in printed
+    assert "stages[0].steps[5].columns[0]" in printed and "是不是「門市」？" in printed
     assert not list(workdir.glob("*.parquet"))
 
 

@@ -32,19 +32,35 @@ from typing import Any
 
 import polars as pl
 
+from tablade.dtypes import type_label
+
 from . import excel
 from .encoding import AUTO_ORDER, SUPPORTED, DecodeError
 from .transcode import CHUNK, decode_range, segment_bounds, transcode_segment
 
-SOURCE_FILE, LINE_NO, SHEET = "__source_file", "__line_no", "__sheet"
+SOURCE_FILE, LINE_NO, SHEET, STAGE = "__source_file", "__line_no", "__sheet", "__stage"
 ORDER = (SOURCE_FILE, LINE_NO)
-SYSTEM = (SOURCE_FILE, SHEET, LINE_NO)
-"""讀檔產生的系統欄位（依這個順序）；__sheet 只有讀 Excel 全部工作表時才有。"""
+SYSTEM = (STAGE, SOURCE_FILE, SHEET, LINE_NO)
+"""讀檔產生的系統欄位（依這個順序）；__sheet 只有讀 Excel 全部工作表時才有，
+__stage 只有讀前面階段的輸出時才有。其他系統欄位（合併來源檔留下的 __orig_*）排在後面。"""
+PARQUET_LABELS = {
+    "source_file": "來源檔",
+    "line_no": "行號",
+    "sheet": "工作表",
+    "stage": "階段",
+    "orig_source_file": "合併前來源檔",
+    "orig_line_no": "合併前行號",
+    "orig_sheet": "合併前工作表",
+    "orig_stage": "合併前階段",
+}
+"""讀 parquet 檔時，檔案自己帶的 __ 開頭欄位改名成「原始…」的一般欄保留（例如 __line_no → 原始行號）。"""
 
 
-def part_name(file: str, sheet: str | None = None) -> str:
-    """一個來源的名稱：檔名；讀 Excel 全部工作表時每個工作表各自是一個來源，名稱是「檔名［工作表］」。"""
-    return file if sheet is None else f"{file}［{sheet}］"
+def part_name(file: str, sheet: str | None = None, stage: str | None = None) -> str:
+    """一個來源的名稱：檔名；讀 Excel 全部工作表時每個工作表各自是一個來源，名稱是「檔名［工作表］」；
+    從前面的階段讀進來時前面加「@階段／」。"""
+    name = file if sheet is None else f"{file}［{sheet}］"
+    return name if stage is None else f"@{stage}／{name}"
 
 
 Progress = Callable[[dict[str, Any]], None] | None
@@ -70,6 +86,8 @@ class SourceFile:
     rows: int
     sheet: str | None = None
     """讀 Excel 全部工作表時，這一個來源是哪個工作表。"""
+    stage: str | None = None
+    """這個檔是哪個階段讀的（處理紀錄用；不影響來源名稱）。"""
 
     @property
     def name(self) -> str:
@@ -499,30 +517,50 @@ def _scan_one(prepared: Prepared, reader: str, name: str) -> tuple[pl.LazyFrame,
     raise InputError(f"不支援的讀取方式：{reader}")
 
 
-def _align(parts: list[Part]) -> list[Part]:
-    """csv、Excel 各檔欄位可能不同：補成同一組欄位（依第一次出現的順序），缺的欄是 null。"""
-    names = [lf.collect_schema().names() for _, lf in parts]
-    system = [c for c in SYSTEM if any(c in found for found in names)]
-    columns: list[str] = []
-    for found in names:
-        columns += [c for c in found if c not in SYSTEM and c not in columns]
-    if all(found == [*system, *columns] for found in names):
+def _common_type(column: str, found: list[tuple[str, pl.DataType]]) -> pl.DataType:
+    """同名欄在各來源的型別要一樣：整欄都是空值的不算，小數位數不同時取位數多的；其他不一樣就報錯。"""
+    typed = [(name, t) for name, t in found if t != pl.Null]
+    if not typed:
+        return found[0][1]
+    first = typed[0][1]
+    if all(t == first for _, t in typed):
+        return first
+    if all(isinstance(t, pl.Decimal) for _, t in typed):
+        return pl.Decimal(38, max(t.scale for _, t in typed))  # type: ignore[attr-defined]
+    shown = "、".join(f"{name}：{type_label(t)}" for name, t in typed)
+    raise InputError(f"「{column}」在各來源的型別不一樣（{shown}），請先轉成一樣的型別")
+
+
+def align(parts: list[Part]) -> list[Part]:
+    """各來源的欄位可能不同：補成同一組欄位（依第一次出現的順序），缺的欄是空值；同名欄的型別要一樣。"""
+    schemas = [lf.collect_schema() for _, lf in parts]
+    seen: list[str] = []
+    for schema in schemas:
+        seen += [c for c in schema.names() if c not in seen]
+    system = [c for c in SYSTEM if c in seen]
+    system += [c for c in seen if c.startswith("__") and c not in SYSTEM]
+    columns = system + [c for c in seen if not c.startswith("__")]
+    target = {
+        c: _common_type(
+            c, [(name, s[c]) for (name, _), s in zip(parts, schemas, strict=True) if c in s]
+        )
+        for c in columns
+    }
+    if all(s.names() == columns and all(s[c] == target[c] for c in columns) for s in schemas):
         return parts
     return [
         (
             name,
             lf.select(
-                *[
-                    pl.col(c) if c in found else pl.lit(None, dtype=pl.String).alias(c)
-                    for c in system
-                ],
-                *[
-                    pl.col(c) if c in found else pl.lit(None, dtype=pl.String).alias(c)
+                [
+                    (pl.col(c) if s[c] == target[c] else pl.col(c).cast(target[c]))
+                    if c in s
+                    else pl.lit(None, dtype=target[c]).alias(c)
                     for c in columns
-                ],
+                ]
             ),
         )
-        for (name, lf), found in zip(parts, names, strict=True)
+        for (name, lf), s in zip(parts, schemas, strict=True)
     ]
 
 
@@ -548,11 +586,50 @@ def scan_parts(
             continue
         if excel.is_excel(path):
             raise InputError(f"「{name}」是 Excel 檔：讀取方式請選「Excel 工作表」")
+        if reader == "parquet":
+            lf, info = _scan_parquet(path, name, progress)
+            parts.append((name, lf))
+            files.append(info)
+            continue
         prepared = prepare(path, encoding, progress)
         lf, rows = _scan_one(prepared, reader, name)
         parts.append((name, lf))
         files.append(SourceFile(name, prepared.bytes, prepared.sha256, prepared.encoding, rows))
-    return _align(parts), files
+    return align(parts), files
+
+
+def parquet_names(columns: list[str]) -> dict[str, str]:
+    """parquet 檔的欄名 → 讀進來的欄名：__ 開頭的改名成「原始…」（例如 __line_no → 原始行號）。"""
+    renamed = {
+        c: f"原始{PARQUET_LABELS.get(c[2:], c[2:])}" if c.startswith("__") else c for c in columns
+    }
+    values = list(renamed.values())
+    clash = sorted({v for v in values if values.count(v) > 1})
+    if clash:
+        raise InputError(f"改名後欄名重複：{'、'.join(clash)}")
+    return renamed
+
+
+def _scan_parquet(path: Path, name: str, progress: Progress) -> tuple[pl.LazyFrame, SourceFile]:
+    """一個 parquet 檔是一個來源：欄位與型別照檔案；__source_file 是檔名、__line_no 是第幾列（從 1 起）。"""
+    _report(progress, "讀取 Parquet", name, 0, 0)
+    try:
+        raw = pl.scan_parquet(path)
+        renamed = parquet_names(raw.collect_schema().names())
+        rows = raw.select(pl.len()).collect().item()
+    except (OSError, pl.exceptions.PolarsError) as err:
+        raise InputError(f"「{name}」讀不了（不是 Parquet 檔？）：{err}") from None
+    lf = (
+        raw.select([pl.col(c).alias(n) for c, n in renamed.items()])
+        .with_row_index(LINE_NO, offset=1)
+        .select(
+            pl.lit(name).alias(SOURCE_FILE),
+            pl.col(LINE_NO).cast(pl.Int64),
+            *[pl.col(n) for n in renamed.values()],
+        )
+    )
+    info = SourceFile(name, path.stat().st_size, excel.sha256(path), "parquet", rows)
+    return lf, info
 
 
 def _scan_excel(
@@ -642,6 +719,12 @@ def peek_columns(
     first = resolve(entries, base_dir)[0]  # 找不到檔案時丟出 InputError
     if reader == "text_lines":
         return ["line"]
+    if reader == "parquet":
+        try:
+            names = list(parquet_names(pl.read_parquet_schema(first).keys()).values())
+        except (OSError, pl.exceptions.PolarsError) as err:
+            raise InputError(f"「{first.name}」讀不了（不是 Parquet 檔？）：{err}") from None
+        return names
     if reader == "excel":
         try:
             return excel.peek_columns(first, sheet)

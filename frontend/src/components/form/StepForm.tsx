@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { CatalogItem, StepState } from '../../bridge'
 import { editableFields, resolve, visible } from '../../lib/schema'
 import { StepScope } from '../StepScope'
-import { Field, FieldErrors } from './fields'
+import { Field, FieldErrors, type FormContext } from './fields'
 
 const DEBOUNCE_MS = 350
 
@@ -16,9 +16,11 @@ interface Props {
   step: StepState
   item: CatalogItem
   onChange: (values: Record<string, unknown>) => void
+  /** 前面的階段與「前往」「完整跑一次」（合併查詢用）；params 由表單自己帶目前的草稿 */
+  context?: Omit<FormContext, 'params'>
 }
 
-export function StepForm({ step, item, onChange }: Props) {
+export function StepForm({ step, item, onChange, context }: Props) {
   const [draft, setDraft] = useState<Record<string, unknown>>(step.params)
   const timer = useRef<number | undefined>(undefined)
   const pending = useRef(false)
@@ -86,6 +88,7 @@ export function StepForm({ step, item, onChange }: Props) {
             files={step.input_files}
             issues={step.errors}
             required={required.has(name)}
+            context={context ? { ...context, params: draft } : undefined}
           />
         ))}
       {fields.length === 0 ? <p className="text-sm text-muted-foreground">這個步驟沒有參數。</p> : null}

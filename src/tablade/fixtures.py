@@ -384,6 +384,28 @@ def write_excel_export(path: str | Path, n: int = 20, seed: int = 0) -> Path:
     return write_xlsx(path, {"明細": rows, "說明": [["這是假資料，只用來測試讀 Excel"]]})
 
 
+CATEGORIES = {"A": "文具", "B": "生活用品", "C": "3C"}
+"""品項對照表的類別（依品號第一個字母）；D 開頭的品號故意不放進對照表，示範「沒對到」的警告。"""
+
+
+def item_table() -> list[dict[str, str]]:
+    """品項對照表：品號、類別、建議售價（合併查詢的右表）。"""
+    return [
+        {"品號": code, "類別": CATEGORIES[code[0]], "建議售價": str(price)}
+        for code, _, price in ITEMS
+        if code[0] in CATEGORIES
+    ]
+
+
+def write_item_table(path: str | Path, encoding: str = "utf-8-sig") -> Path:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    rows = item_table()
+    lines = [",".join(rows[0])] + [",".join(r.values()) for r in rows]
+    target.write_bytes(("\r\n".join(lines) + "\r\n").encode(encoding))
+    return target
+
+
 def write_many(
     directory: str | Path, count: int, rows: int = 20, seed: int = 0, encoding: str = "utf-8"
 ) -> list[Path]:
@@ -421,7 +443,7 @@ def write_all(directory: str | Path, seed: int = 0) -> list[Path]:
     """產生所有範例假資料到指定資料夾。
 
     examples/sales_detail.recipe.json 讀 明細_*.csv；examples/sales_report.recipe.json 讀 銷售報表.txt；
-    examples/sales_excel.recipe.json 讀 明細.xlsx。
+    examples/sales_excel.recipe.json 讀 明細.xlsx；examples/sales_combined.recipe.json 另外讀 品項對照.csv。
     """
     out = Path(directory)
     return [
@@ -431,4 +453,5 @@ def write_all(directory: str | Path, seed: int = 0) -> list[Path]:
         write_simple_csv(out / "乾淨_utf8.csv", n=20, seed=seed + 2, encoding="utf-8-sig"),
         write_report(out / "銷售報表.txt", seed=seed, entries=20),
         write_excel_export(out / "明細.xlsx", n=20, seed=seed + 4),
+        write_item_table(out / "品項對照.csv"),
     ]

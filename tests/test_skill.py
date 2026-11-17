@@ -62,7 +62,7 @@ def test_embedded_validator_runs_alone_on_python_39_syntax(tmp_path):
     good = tmp_path / "good.recipe.json"
     good.write_text(EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
     bad_data = json.loads(EXAMPLE.read_text(encoding="utf-8"))
-    bad_data["steps"][5]["columns"] = ["門"]
+    bad_data["stages"][0]["steps"][5]["columns"] = ["門"]
     bad = tmp_path / "bad.recipe.json"
     bad.write_text(json.dumps(bad_data, ensure_ascii=False), encoding="utf-8")
 
@@ -79,7 +79,7 @@ def test_embedded_validator_runs_alone_on_python_39_syntax(tmp_path):
     result = run(str(bad), "--json")
     assert result.returncode == 1
     issue = json.loads(result.stdout)["issues"][0]
-    assert issue["path"] == "steps[5].columns[0]" and "是不是「門市」？" in issue["hint"]
+    assert issue["path"] == "stages[0].steps[5].columns[0]" and "是不是「門市」？" in issue["hint"]
 
 
 def test_steps_markdown_examples_are_the_registry_examples():

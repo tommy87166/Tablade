@@ -51,6 +51,7 @@ import { RecipeTitle } from './components/RecipeTitle'
 import { SelftestDialog } from './components/SelftestDialog'
 import { ReportDialog } from './components/ReportDialog'
 import { InputPanel, OutputPanel } from './components/SourcePanel'
+import { StagesBar } from './components/StagesBar'
 import { StepsPanel } from './components/StepsPanel'
 import { TypesPane } from './components/TypesPane'
 import { UpdateNotice } from './components/UpdateNotice'
@@ -306,6 +307,13 @@ export default function App() {
     if (res) setReport({ open: true, issues: issues ?? state?.issues ?? [], text: res.text })
   }
 
+  /** 切到某個階段，選它的結果（「輸出資料」那一格）。 */
+  const goStage = async (index: number) => {
+    if (!api) return
+    const res = await call('切換階段', () => api.select_stage(index))
+    if (res) await call('選取', () => api.select_step(res.state.steps.length))
+  }
+
   const addStep = async (type: string, context: AddStepRequest['context'] = {}) => {
     if (!api) return
     const res = await call('新增步驟', () => api.add_step(type, context))
@@ -445,7 +453,22 @@ export default function App() {
 
   const outputSelected = state.selected === state.steps.length
   const warnings = state.preview.warnings
-  const previewLabel = state.selected < 0 ? '讀取資料' : outputSelected ? '輸出資料' : `步驟 ${state.selected + 1}`
+  const stage = state.stages[state.current]
+  const outputLabel = stage && !stage.last ? '階段結果' : '輸出資料'
+  const stagePrefix = state.stages.length > 1 && stage ? `${stage.name}・` : ''
+  const previewLabel = stagePrefix + (state.selected < 0 ? '讀取資料' : outputSelected ? outputLabel : `步驟 ${state.selected + 1}`)
+  const earlierStages = state.stages
+    .slice(0, state.current)
+    .map((s) => ({ index: s.index, name: s.name, columns: s.columns, sampled: s.sampled, full: s.full }))
+  /** 警告指到的位置：「@階段／檔名［工作表］:行號（原始：…）」 */
+  const place = (w: (typeof warnings)[number]) => {
+    let where = `${w.stage ? `@${w.stage}／` : ''}${w.source_file}${w.sheet ? `［${w.sheet}］` : ''}:${w.line_no}`
+    if (w.orig_source_file != null || w.orig_line_no != null) {
+      const orig = `${w.orig_stage ? `@${w.orig_stage}／` : ''}${w.orig_source_file}${w.orig_sheet ? `［${w.orig_sheet}］` : ''}`
+      where += `（原始：${orig}:${w.orig_line_no}）`
+    }
+    return where
+  }
   const errorCount = state.steps.filter((s) => s.status === 'error').length
 
   return (
@@ -532,188 +555,205 @@ export default function App() {
         </header>
         {busy && progress ? <ProgressBar progress={progress} /> : null}
 
-        <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
-          <ResizablePanel defaultSize="22" minSize={220} collapsible collapsedSize={RAIL_WIDTH} panelRef={leftPanel}>
-            <CollapsiblePane side="left" label="步驟" onExpand={() => leftPanel.current?.expand()}>
-              <StepsPanel
-                state={state}
-                catalog={info.catalog}
-                busy={busy}
-                onSelect={(i) => void call('選取', () => api.select_step(i))}
-                onAdd={(type) => void addStep(type)}
-                onMove={(i, to) => void call('移動步驟', () => api.move_step(i, to))}
-                onToggle={(i) => void call('切換步驟', () => api.toggle_step(i))}
-                onDelete={(i) => void call('刪除步驟', () => api.delete_step(i))}
-                onCollapse={() => leftPanel.current?.collapse()}
-              />
-            </CollapsiblePane>
-          </ResizablePanel>
-          <ResizableHandle />
-          <ResizablePanel defaultSize="53" minSize="30">
-            <ResizablePanelGroup orientation="vertical">
-              <ResizablePanel defaultSize="78" minSize="30">
+        <div className="flex min-h-0 flex-1">
+          <StagesBar
+            state={state}
+            busy={busy}
+            onSelect={(i) => void call('切換階段', () => api.select_stage(i))}
+            onAdd={async (name, before) => {
+              const res = await call('新增階段', () => api.add_stage(name, before))
+              if (res) setStatus({ text: `已新增階段「${name}」。接著在「讀取資料」選擇要讀的檔案或前面的階段。` })
+              return res !== null
+            }}
+            onRename={async (i, name) => (await call('階段改名', () => api.rename_stage(i, name))) !== null}
+            onMove={(i, to) => void call('移動階段', () => api.move_stage(i, to))}
+            onDelete={(i) => void call('刪除階段', () => api.delete_stage(i))}
+          />
+          <ResizablePanelGroup orientation="horizontal" className="min-h-0 min-w-0 flex-1">
+            <ResizablePanel defaultSize="22" minSize={220} collapsible collapsedSize={RAIL_WIDTH} panelRef={leftPanel}>
+              <CollapsiblePane side="left" label="步驟" onExpand={() => leftPanel.current?.expand()}>
+                <StepsPanel
+                  state={state}
+                  catalog={info.catalog}
+                  busy={busy}
+                  onSelect={(i) => void call('選取', () => api.select_step(i))}
+                  onAdd={(type) => void addStep(type)}
+                  onMove={(i, to) => void call('移動步驟', () => api.move_step(i, to))}
+                  onToggle={(i) => void call('切換步驟', () => api.toggle_step(i))}
+                  onDelete={(i) => void call('刪除步驟', () => api.delete_step(i))}
+                  onCollapse={() => leftPanel.current?.collapse()}
+                />
+              </CollapsiblePane>
+            </ResizablePanel>
+            <ResizableHandle />
+            <ResizablePanel defaultSize="53" minSize="30">
+              <ResizablePanelGroup orientation="vertical">
+                <ResizablePanel defaultSize="78" minSize="30">
+                  <div className="flex h-full flex-col">
+                    <PaneHeader>
+                      <PaneTitle>資料</PaneTitle>
+                      <PaneMeta>
+                        {previewLabel}
+                        {state.preview.rows !== null
+                          ? `・${state.preview.rows.toLocaleString()} 列 × ${state.preview.columns.filter((c) => !c.system).length} 欄`
+                          : ''}
+                      </PaneMeta>
+                      {state.input.sampled ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Badge variant="outline" className="border-amber-500/50 text-amber-700 dark:text-amber-400">
+                              預覽樣本
+                            </Badge>
+                          </TooltipTrigger>
+                          <TooltipContent className="max-w-80">
+                            資料共 {state.input.total_rows?.toLocaleString()} 行，預覽只用每個檔案的前{' '}
+                            {state.input.sample.head.toLocaleString()} 行與最後 {state.input.sample.tail.toLocaleString()} 行，
+                            步驟的列數也是樣本的。匯出時會處理全部資料。
+                          </TooltipContent>
+                        </Tooltip>
+                      ) : null}
+                      {state.preview.step !== state.preview.requested ? (
+                        <Badge variant="destructive">
+                          {outputSelected ? '最後一步' : '這一步'}
+                          還算不出來，下面是
+                          {state.preview.step < 0 ? '讀取的資料' : `第 ${state.preview.step + 1} 步的結果`}
+                        </Badge>
+                      ) : null}
+                    </PaneHeader>
+                    <div className="min-h-0 flex-1">
+                      {input.loaded ? (
+                        <PreviewGrid
+                          ref={grid}
+                          api={api}
+                          preview={state.preview}
+                          resetKey={previewKey}
+                          showSystem={showSystem}
+                          maxLine={state.input.total_rows}
+                          onAddStep={(r) => void addStep(r.type, r.context)}
+                          onLoaded={onGridLoaded}
+                        />
+                      ) : (
+                        <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-muted-foreground">
+                          <p>{emptyPreview}</p>
+                          {state.selected !== -1 ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                rightPanel.current?.expand()
+                                void call('選取', () => api.select_step(-1))
+                              }}
+                            >
+                              前往「讀取資料」
+                            </Button>
+                          ) : null}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </ResizablePanel>
+                <ResizableHandle />
+                <ResizablePanel defaultSize="22" minSize={90} collapsible collapsedSize={HEADER_HEIGHT} panelRef={warnPanel}>
+                  {/* 收合到只剩標題列時，右邊的按鈕改成「展開」（index.css 的 .warn-pane） */}
+                  <div className="warn-pane flex h-full flex-col">
+                    <PaneHeader className={warnings.length ? 'bg-amber-500/10' : ''}>
+                      <div role="tablist" aria-label="下方面板" className="flex items-center gap-1">
+                        <BottomTab active={bottomTab === 'warnings'} onClick={() => openBottomTab('warnings')}>
+                          {warnings.length ? (
+                            <TriangleAlert className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                          ) : (
+                            <CircleCheck className="size-4 shrink-0 text-green-600" />
+                          )}
+                          <span className={warnings.length ? 'text-amber-700 dark:text-amber-400' : ''}>
+                            {warnings.length ? `警告（${warnings.length.toLocaleString()}）` : '沒有警告'}
+                          </span>
+                        </BottomTab>
+                        <BottomTab active={bottomTab === 'types'} onClick={() => openBottomTab('types')}>
+                          <Shapes className="size-4 shrink-0" />
+                          型別
+                        </BottomTab>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        className="ml-auto"
+                        aria-label="收合或展開下方面板"
+                        title="收合或展開下方面板"
+                        onClick={() => (warnPanel.current?.isCollapsed() ? warnPanel.current.expand() : warnPanel.current?.collapse())}
+                      >
+                        <ChevronDown className="warn-collapse" />
+                        <ChevronUp className="warn-expand" />
+                      </Button>
+                    </PaneHeader>
+                    {bottomTab === 'types' ? (
+                      <div className="min-h-0 flex-1 overflow-auto">
+                        <TypesPane api={api} step={state.preview.step} resetKey={previewKey} showSystem={showSystem} />
+                      </div>
+                    ) : (
+                      <ul className="flex-1 overflow-auto text-sm">
+                        {warnings.map((w, i) => (
+                          <li key={i}>
+                            <button
+                              type="button"
+                              className="flex w-full gap-2 px-3 py-1 text-left hover:bg-muted"
+                              onClick={async () => {
+                                if (w.source_file === null || w.line_no === null) return
+                                const res = await api.find_row(state.preview.step, w.source_file, w.line_no, w.sheet, w.stage)
+                                if (res.ok && res.row !== null) grid.current?.scrollToRow(res.row)
+                              }}
+                            >
+                              <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-600" />
+                              <span className="shrink-0 font-mono text-xs text-muted-foreground">{place(w)}</span>
+                              <span>{w.message}</span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </ResizablePanel>
+              </ResizablePanelGroup>
+            </ResizablePanel>
+            <ResizableHandle />
+            <ResizablePanel defaultSize="25" minSize={280} collapsible collapsedSize={RAIL_WIDTH} panelRef={rightPanel}>
+              <CollapsiblePane side="right" label="設定" onExpand={() => rightPanel.current?.expand()}>
                 <div className="flex h-full flex-col">
                   <PaneHeader>
-                    <PaneTitle>資料</PaneTitle>
-                    <PaneMeta>
-                      {previewLabel}
-                      {state.preview.rows !== null
-                        ? `・${state.preview.rows.toLocaleString()} 列 × ${state.preview.columns.filter((c) => !c.system).length} 欄`
-                        : ''}
-                    </PaneMeta>
-                    {state.input.sampled ? (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Badge variant="outline" className="border-amber-500/50 text-amber-700 dark:text-amber-400">
-                            預覽樣本
-                          </Badge>
-                        </TooltipTrigger>
-                        <TooltipContent className="max-w-80">
-                          資料共 {state.input.total_rows?.toLocaleString()} 行，預覽只用每個檔案的前{' '}
-                          {state.input.sample.head.toLocaleString()} 行與最後 {state.input.sample.tail.toLocaleString()} 行，
-                          步驟的列數也是樣本的。匯出時會處理全部資料。
-                        </TooltipContent>
-                      </Tooltip>
-                    ) : null}
-                    {state.preview.step !== state.preview.requested ? (
-                      <Badge variant="destructive">
-                        {outputSelected ? '最後一步' : '這一步'}
-                        還算不出來，下面是
-                        {state.preview.step < 0 ? '讀取的資料' : `第 ${state.preview.step + 1} 步的結果`}
-                      </Badge>
-                    ) : null}
+                    <CollapseButton side="right" label="設定" onClick={() => rightPanel.current?.collapse()} />
+                    <PaneTitle>設定</PaneTitle>
                   </PaneHeader>
-                  <div className="min-h-0 flex-1">
-                    {input.loaded ? (
-                      <PreviewGrid
-                        ref={grid}
-                        api={api}
-                        preview={state.preview}
-                        resetKey={previewKey}
-                        showSystem={showSystem}
-                        maxLine={state.input.total_rows}
-                        onAddStep={(r) => void addStep(r.type, r.context)}
-                        onLoaded={onGridLoaded}
+                  <div className="min-h-0 flex-1 overflow-auto p-4">
+                    {selected && catalogItem ? (
+                      <StepForm
+                        key={selected.id}
+                        step={selected}
+                        item={catalogItem}
+                        onChange={(values) => void call('更新步驟', () => api.update_step(selected.index, values))}
+                        context={{
+                          stages: earlierStages,
+                          onGoStage: (i) => void goStage(i),
+                          onFullRun: (i) => void call('完整跑一次', () => api.full_run(i)),
+                        }}
                       />
+                    ) : outputSelected ? (
+                      <OutputPanel state={state} onOutput={(v) => void call('更新輸出設定', () => api.set_output(v))} />
                     ) : (
-                      <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-muted-foreground">
-                        <p>{emptyPreview}</p>
-                        {state.selected !== -1 ? (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => {
-                              rightPanel.current?.expand()
-                              void call('選取', () => api.select_step(-1))
-                            }}
-                          >
-                            前往「讀取資料」
-                          </Button>
-                        ) : null}
-                      </div>
+                      <InputPanel
+                        state={state}
+                        busy={busy}
+                        onLoad={() => void act.loadData()}
+                        onAddFiles={() => void act.addFiles()}
+                        onAddEntry={(text) => void call('加入路徑', () => api.add_file_entry(text))}
+                        onRemove={(i) => void call('移除檔案', () => api.remove_file(i))}
+                        onInput={(v) => void call('更新資料設定', () => api.set_input(v))}
+                      />
                     )}
                   </div>
                 </div>
-              </ResizablePanel>
-              <ResizableHandle />
-              <ResizablePanel defaultSize="22" minSize={90} collapsible collapsedSize={HEADER_HEIGHT} panelRef={warnPanel}>
-                {/* 收合到只剩標題列時，右邊的按鈕改成「展開」（index.css 的 .warn-pane） */}
-                <div className="warn-pane flex h-full flex-col">
-                  <PaneHeader className={warnings.length ? 'bg-amber-500/10' : ''}>
-                    <div role="tablist" aria-label="下方面板" className="flex items-center gap-1">
-                      <BottomTab active={bottomTab === 'warnings'} onClick={() => openBottomTab('warnings')}>
-                        {warnings.length ? (
-                          <TriangleAlert className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
-                        ) : (
-                          <CircleCheck className="size-4 shrink-0 text-green-600" />
-                        )}
-                        <span className={warnings.length ? 'text-amber-700 dark:text-amber-400' : ''}>
-                          {warnings.length ? `警告（${warnings.length.toLocaleString()}）` : '沒有警告'}
-                        </span>
-                      </BottomTab>
-                      <BottomTab active={bottomTab === 'types'} onClick={() => openBottomTab('types')}>
-                        <Shapes className="size-4 shrink-0" />
-                        型別
-                      </BottomTab>
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      className="ml-auto"
-                      aria-label="收合或展開下方面板"
-                      title="收合或展開下方面板"
-                      onClick={() => (warnPanel.current?.isCollapsed() ? warnPanel.current.expand() : warnPanel.current?.collapse())}
-                    >
-                      <ChevronDown className="warn-collapse" />
-                      <ChevronUp className="warn-expand" />
-                    </Button>
-                  </PaneHeader>
-                  {bottomTab === 'types' ? (
-                    <div className="min-h-0 flex-1 overflow-auto">
-                      <TypesPane api={api} step={state.preview.step} resetKey={previewKey} showSystem={showSystem} />
-                    </div>
-                  ) : (
-                    <ul className="flex-1 overflow-auto text-sm">
-                      {warnings.map((w, i) => (
-                        <li key={i}>
-                          <button
-                            type="button"
-                            className="flex w-full gap-2 px-3 py-1 text-left hover:bg-muted"
-                            onClick={async () => {
-                              if (w.source_file === null || w.line_no === null) return
-                              const res = await api.find_row(state.preview.step, w.source_file, w.line_no, w.sheet)
-                              if (res.ok && res.row !== null) grid.current?.scrollToRow(res.row)
-                            }}
-                          >
-                            <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-600" />
-                            <span className="shrink-0 font-mono text-xs text-muted-foreground">
-                              {w.source_file}
-                              {w.sheet ? `［${w.sheet}］` : ''}:{w.line_no}
-                            </span>
-                            <span>{w.message}</span>
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </ResizablePanel>
-            </ResizablePanelGroup>
-          </ResizablePanel>
-          <ResizableHandle />
-          <ResizablePanel defaultSize="25" minSize={280} collapsible collapsedSize={RAIL_WIDTH} panelRef={rightPanel}>
-            <CollapsiblePane side="right" label="設定" onExpand={() => rightPanel.current?.expand()}>
-              <div className="flex h-full flex-col">
-                <PaneHeader>
-                  <CollapseButton side="right" label="設定" onClick={() => rightPanel.current?.collapse()} />
-                  <PaneTitle>設定</PaneTitle>
-                </PaneHeader>
-                <div className="min-h-0 flex-1 overflow-auto p-4">
-                  {selected && catalogItem ? (
-                    <StepForm
-                      key={selected.id}
-                      step={selected}
-                      item={catalogItem}
-                      onChange={(values) => void call('更新步驟', () => api.update_step(selected.index, values))}
-                    />
-                  ) : outputSelected ? (
-                    <OutputPanel state={state} onOutput={(v) => void call('更新輸出設定', () => api.set_output(v))} />
-                  ) : (
-                    <InputPanel
-                      state={state}
-                      busy={busy}
-                      onLoad={() => void act.loadData()}
-                      onAddFiles={() => void act.addFiles()}
-                      onAddEntry={(text) => void call('加入路徑', () => api.add_file_entry(text))}
-                      onRemove={(i) => void call('移除檔案', () => api.remove_file(i))}
-                      onInput={(v) => void call('更新資料設定', () => api.set_input(v))}
-                    />
-                  )}
-                </div>
-              </div>
-            </CollapsiblePane>
-          </ResizablePanel>
-        </ResizablePanelGroup>
+              </CollapsiblePane>
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        </div>
 
         {footer}
       </div>

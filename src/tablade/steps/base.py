@@ -27,11 +27,12 @@
 from __future__ import annotations
 
 import csv
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar
 
 import polars as pl
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, StringConstraints
 
 from tablade.ingest.sources import Part
 from tablade.recipe.validator import apply_effect, resolve_effect
@@ -40,6 +41,19 @@ SOURCE_FILE = "__source_file"
 LINE_NO = "__line_no"
 SHEET = "__sheet"
 """讀 Excel 全部工作表時才有：這一列來自哪個工作表（每個工作表各自是一個來源）。"""
+STAGE = "__stage"
+"""讀前面階段的輸出時才有：這一列是從哪個階段讀進來的（來源名稱變成「@階段／檔名」）。"""
+ORIG_SOURCE_FILE = "__orig_source_file"
+ORIG_LINE_NO = "__orig_line_no"
+ORIG_SHEET = "__orig_sheet"
+ORIG_STAGE = "__orig_stage"
+ORIGINAL = {
+    SOURCE_FILE: ORIG_SOURCE_FILE,
+    LINE_NO: ORIG_LINE_NO,
+    SHEET: ORIG_SHEET,
+    STAGE: ORIG_STAGE,
+}
+"""合併來源檔時，原本的來源檔、行號、工作表、階段存到這些系統欄位（再合併一次時保留最早的）。"""
 ORDER = (SOURCE_FILE, LINE_NO)
 SYSTEM_PREFIX = "__"
 TEMP_PREFIX = "__w_"
@@ -64,6 +78,8 @@ class Example:
     input: dict[str, list[Any]]
     """不含系統欄位；測試時自動補上 ``__source_file`` / ``__line_no``。"""
     output: dict[str, list[Any]]
+    tables: dict[str, dict[str, list[Any]]] | None = None
+    """前面階段的結果（合併查詢的右表）：{階段名稱: 資料}，同樣自動補上系統欄位。"""
 
 
 @dataclass(frozen=True)
@@ -73,6 +89,8 @@ class WarningCheck:
     message: str
     """可含一個 ``{}``，會換成 ``detail`` 的值。"""
     detail: pl.Expr | None = None
+    on_input: bool = False
+    """True：對這一步的**輸入**檢查（例如合併查詢沒對到的列：內連接之後那些列就不在了）。"""
 
 
 class Step(BaseModel):
@@ -80,6 +98,9 @@ class Step(BaseModel):
 
     id: str = Field(title="步驟 id", min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     enabled: bool = Field(default=True, title="啟用")
+
+    _tables: dict[str, pl.LazyFrame] = PrivateAttr(default_factory=dict)
+    """引擎套用前交給步驟的其他階段的結果（``bind()``）；步驟自己不讀檔。"""
 
     label: ClassVar[str] = ""
     category: ClassVar[str] = ""
@@ -143,6 +164,24 @@ class Step(BaseModel):
         """這一步專用的暫存欄位名稱。"""
         return f"{TEMP_PREFIX}{self.id}_{name}"
 
+    def stage_refs(self) -> list[str]:
+        """這一步要用到哪些前面階段的結果（例如合併查詢的右表）。"""
+        return []
+
+    def bind(self, tables: Mapping[str, pl.LazyFrame | pl.DataFrame] | None) -> Step:
+        """交給步驟它要用的其他階段的結果（回傳新的物件，不改原本的）。"""
+        if not self.stage_refs():
+            return self
+        bound = self.model_copy()
+        bound._tables = {n: tables[n].lazy() for n in self.stage_refs() if tables and n in tables}
+        return bound
+
+    def table(self, name: str) -> pl.LazyFrame:
+        """其他階段的結果（含系統欄位）。"""
+        if name not in self._tables:
+            raise StepError(f"沒有階段「{name}」的結果")
+        return self._tables[name]
+
     def output_order(self, lf: pl.LazyFrame) -> list[str]:
         """依欄位效果推算輸出欄位順序：系統欄位、資料欄位，再保留前面步驟留下的暫存欄位。"""
         names = lf.collect_schema().names()
@@ -169,11 +208,16 @@ def system_columns(names: list[str]) -> list[str]:
 
 
 def source_name(columns: list[str]) -> pl.Expr:
-    """每一列屬於哪個來源：檔名；讀 Excel 全部工作表時是「檔名［工作表］」（和讀檔時的 part 名稱相同）。"""
-    if SHEET not in columns:
-        return pl.col(SOURCE_FILE)
-    labeled = pl.concat_str([pl.col(SOURCE_FILE), pl.lit("［"), pl.col(SHEET), pl.lit("］")])
-    return pl.when(pl.col(SHEET).is_null()).then(pl.col(SOURCE_FILE)).otherwise(labeled)
+    """每一列屬於哪個來源（和讀檔時的 part 名稱相同）：檔名；讀 Excel 全部工作表時是「檔名［工作表］」；
+    從前面的階段讀進來時前面加「@階段／」。"""
+    name = pl.col(SOURCE_FILE)
+    if SHEET in columns:
+        labeled = pl.concat_str([name, pl.lit("［"), pl.col(SHEET), pl.lit("］")])
+        name = pl.when(pl.col(SHEET).is_null()).then(name).otherwise(labeled)
+    if STAGE in columns:
+        staged = pl.concat_str([pl.lit("@"), pl.col(STAGE), pl.lit("／"), name])
+        name = pl.when(pl.col(STAGE).is_null()).then(name).otherwise(staged)
+    return name
 
 
 def data_columns(lf: pl.LazyFrame) -> list[str]:

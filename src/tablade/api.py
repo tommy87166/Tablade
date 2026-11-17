@@ -28,8 +28,9 @@ from .selftest import run_selftest
 from .session import Session, catalog
 
 DATA_TYPES = (
-    "資料檔 (*.csv;*.txt;*.tsv;*.prn;*.dat;*.xlsx;*.xlsm;*.xls)",
+    "資料檔 (*.csv;*.txt;*.tsv;*.prn;*.dat;*.xlsx;*.xlsm;*.xls;*.parquet)",
     "Excel (*.xlsx;*.xlsm;*.xlsb;*.xls;*.ods)",
+    "Parquet (*.parquet)",
     "所有檔案 (*.*)",
 )
 RECIPE_TYPES = ("Tablade Recipe (*.json)", "所有檔案 (*.*)")
@@ -167,10 +168,19 @@ class Api:
 
     @_wrap
     def find_row(
-        self, step: int, source_file: str, line_no: int, sheet: str | None = None
+        self,
+        step: int,
+        source_file: str,
+        line_no: int,
+        sheet: str | None = None,
+        stage: str | None = None,
     ) -> dict[str, Any]:
         found = self._session.find_row(
-            int(step), str(source_file), int(line_no), str(sheet) if sheet else None
+            int(step),
+            str(source_file),
+            int(line_no),
+            str(sheet) if sheet else None,
+            str(stage) if stage else None,
         )
         return {"row": found}
 
@@ -255,6 +265,40 @@ class Api:
     @_wrap
     def set_meta(self, values: dict[str, Any]) -> dict[str, Any]:
         self._session.set_meta(values)
+        return self._state()
+
+    # ── 階段 ───────────────────────────────────────────────────
+
+    @_wrap
+    def add_stage(self, name: str, before: bool = True) -> dict[str, Any]:
+        """新增階段（一定要命名）：預設插在目前階段的前面。"""
+        index = self._session.add_stage(str(name), bool(before))
+        return self._state(index=index)
+
+    @_wrap
+    def rename_stage(self, index: int, name: str) -> dict[str, Any]:
+        self._session.rename_stage(int(index), str(name))
+        return self._state()
+
+    @_wrap
+    def move_stage(self, index: int, to: int) -> dict[str, Any]:
+        self._session.move_stage(int(index), int(to))
+        return self._state()
+
+    @_wrap
+    def delete_stage(self, index: int) -> dict[str, Any]:
+        self._session.delete_stage(int(index))
+        return self._state()
+
+    @_wrap
+    def select_stage(self, index: int) -> dict[str, Any]:
+        self._session.select_stage(int(index))
+        return self._state()
+
+    @_wrap
+    def full_run(self, index: int) -> dict[str, Any]:
+        """「完整跑一次」：用全部資料跑到這個階段，預覽改用完整的結果（合併查詢的右表）。"""
+        self._session.full_run(int(index))
         return self._state()
 
     # ── 步驟 ───────────────────────────────────────────────────
