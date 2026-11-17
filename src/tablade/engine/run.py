@@ -12,7 +12,7 @@
 
 Recipe 由好幾個階段組成，依序執行：每個階段讀實際檔或前面階段的結果（每個來源各自是一個 part，
 名稱是「@階段／檔名」，系統欄位 ``__stage`` 記階段），跑自己的步驟。中間階段的結果在 eager / sample
-模式留在記憶體，在 stream 模式寫成暫存 Parquet；合併查詢的右表就是前面階段的結果（``Step.bind``）。
+模式留在記憶體，在 stream 模式寫成暫存 Parquet；結合的右表就是前面階段的結果（``Step.bind``）。
 """
 
 from __future__ import annotations
@@ -255,7 +255,7 @@ def apply_step(
     """套用一個步驟（eager），回傳（移除暫存欄位後的結果、警告總數、前幾則警告）。
 
     分檔與合併型步驟依來源檔切開再套用；一列一列的步驟直接套在整張表上（結果一樣，比較快）。
-    ``tables`` 是前面階段的結果（合併查詢的右表）。
+    ``tables`` 是前面階段的結果（結合的右表）。
     """
     step = step.bind(tables)
     before = _warnings(step, frame, limit, on_input=True) if _has_input_checks(step) else (0, [])
@@ -431,7 +431,7 @@ def _stream_steps(
     """一個階段的步驟接成串流查詢。回傳（parts、已經先算好的警告、要從結果算警告的步驟、最後一步）。
 
     彙總類的步驟與合併來源檔之前，先算好之前步驟的警告（之後列的意義或行號變了）；
-    對輸入檢查的警告（合併查詢沒對到的列）在套用那一步之前算。每項檢查另外串流掃一次資料。
+    對輸入檢查的警告（結合沒對到的列）在套用那一步之前算。每項檢查另外串流掃一次資料。
     """
     found: dict[str, tuple[int, list[RowWarning]]] = {}
     pending: list[Step] = []

@@ -1,4 +1,4 @@
-"""合併：合併查詢（join）。「合併來源檔」在 files.py。
+"""合併：結合（join）。「合併來源檔」在 files.py。
 
 右表是前面某個階段的結果（引擎在套用前用 ``bind()`` 交給步驟，步驟自己不讀檔）。左邊還沒合併時，
 每個來源檔各自和整張右表 join：join 是一列一列查表，結果和怎麼分檔無關（``per_file = False``）。
@@ -30,12 +30,20 @@ from .base import (
 )
 from .registry import register
 
-HOW_LABELS = {
-    "left": "左連接：保留每一列，帶進右表的欄",
-    "inner": "內連接：只留對得到的列，帶進右表的欄",
-    "anti": "只留沒對到的列",
-    "semi": "只留有對到的列",
+HOW_LABELS = {"left": "左連接", "inner": "內連接", "anti": "檢查", "semi": "篩選"}
+HOW_HINTS = {
+    "left": "以這一張表為準，保留這一張表每一列，加入另一張表的欄。",
+    "inner": "取交集，只留下兩張表都有的列，加入另一張表的欄。",
+    "anti": "以這一張表為準，只留沒對到另一張表的列。",
+    "semi": "以這一張表為準，只留有對到另一張表的列。",
 }
+HOW_ICONS = {
+    "left": "venn_left",
+    "inner": "venn_inner",
+    "anti": "venn_left_only",
+    "semi": "venn_inner_filter",
+}
+"""四宮格的文氏圖（前端 OptionIcon）：左邊的圓是這一張表、右邊是另一張表，虛線代表不帶另一張表的欄。"""
 BRINGS = ("left", "inner")
 SEPARATOR = "\x1f"
 """好幾個鍵接成一個字串比對時的分隔字元（資料裡不會有）。"""
@@ -45,23 +53,30 @@ SHOWN_DUPLICATES = 5
 class JoinKey(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, title="鍵")
 
-    left: ColumnRef = Field(title="這一邊的欄")
-    right: NonEmpty = Field(title="右表的欄", json_schema_extra={"ui": "right_column"})
+    left: ColumnRef = Field(title="這一張表")
+    right: NonEmpty = Field(title="另一張表", json_schema_extra={"ui": "right_column"})
 
 
 @register
 class Join(Step):
-    """合併查詢：依鍵到前面某個階段的結果（右表）查表，把右表的欄帶進來；也可以只留對得到或對不到的列。"""
+    """結合：依兩張表相同鍵值進行結合。"""
 
     type: Literal["join"] = "join"
-    right: NonEmpty = Field(title="右表（前面的階段）", json_schema_extra={"ui": "stage"})
+    right: NonEmpty = Field(title="另一張表（來自前面階段）", json_schema_extra={"ui": "stage"})
     on: list[JoinKey] = Field(
         min_length=1,
-        title="鍵",
-        description="這一邊的欄＝右表的欄；可以有好幾組（全部相同才算對到）",
+        title="鍵值",
+        description="這一張表的欄＝另一張表的欄；可以有好幾組（全部相同才算對到）",
     )
     how: Literal["left", "inner", "anti", "semi"] = Field(
-        default="left", title="方式", json_schema_extra={"ui_labels": HOW_LABELS}
+        default="left",
+        title="方式",
+        json_schema_extra={
+            "ui": "option_cards",
+            "ui_labels": HOW_LABELS,
+            "ui_option_hints": HOW_HINTS,
+            "ui_option_icons": HOW_ICONS,
+        },
     )
     columns: list[NonEmpty] = Field(
         default_factory=list,
@@ -71,20 +86,21 @@ class Join(Step):
     warn_unmatched: bool = Field(
         default=True,
         title="沒對到的列產生警告",
+        description="當這一張表的鍵值在另一張表找不到時，產生警告",
         json_schema_extra={"ui_show_if": {"how": list(BRINGS)}},
     )
 
-    label = "合併查詢"
+    label = "結合"
     category = "合併"
     effect = {"kind": "join", "stage": "$right", "how": "$how", "names": "$columns", "on": "$on"}
     ai_notes = (
-        "right 是前面某個階段的名稱（只能引用前面的階段），右表就是那個階段的結果。"
-        "on 每一組是 {left: 這一邊的欄, right: 右表的欄}，兩邊型別要一樣（文字對文字、日期對日期）；"
+        "right 是前面某個階段的名稱（只能引用前面的階段），另一張表就是那個階段的結果。"
+        "on 每一組是 {left: 這一張表的欄, right: 另一張表的欄}，兩邊型別要一樣（文字對文字、日期對日期）；"
         "鍵是空值的不算對到。how：left 保留每一列、inner 只留對得到的、anti 只留沒對到的、semi 只留有對到的；"
-        "columns 列出要帶進來的右表欄（不能是鍵、不能和這一邊的欄同名；anti / semi 不帶欄）。"
-        "右表的鍵重複時直接報錯（不會默默多出列），要先在右表的階段移除重複。"
+        "columns 列出要帶進來的另一張表的欄（不能是鍵值、不能和這一張表的欄同名；anti / semi 不帶欄）。"
+        "另一張表的鍵值重複時直接報錯（不會默默多出列），要先在那個階段移除重複。"
         "warn_unmatched（預設 true）讓 left / inner 沒對到的列產生附行號的警告。"
-        "合併來源檔之前每個來源檔各自和整張右表 join，順序與行號不變。"
+        "合併來源檔之前每個來源檔各自和整張另一張表 join，順序與行號不變。"
     )
     examples = (
         Example(
@@ -139,7 +155,7 @@ class Join(Step):
         bring = self._bring()
         keyed = [c for c in bring if c in rights]
         if keyed:
-            raise StepError(f"「{'、'.join(keyed)}」是右表的鍵，不用帶進來")
+            raise StepError(f"「{'、'.join(keyed)}」是另一張表的鍵值，不用帶進來")
         right_names = data_columns(right)
         missing = [c for c in dict.fromkeys(rights + bring) if c not in right_names]
         if missing:
@@ -252,4 +268,4 @@ class Join(Step):
             return f"只留在 @{self.right} 找得到的列（{keys}）"
         way = "左連接" if self.how == "left" else "內連接"
         bring = f"：帶進 {quote_list(self.columns)}" if self.columns else ""
-        return f"合併查詢（{way} @{self.right}，{keys}）{bring}"
+        return f"結合（{way} @{self.right}，{keys}）{bring}"

@@ -175,7 +175,7 @@ EXCEL = ROOT / "examples" / "sales_excel.recipe.json"
 
 @pytest.mark.parametrize("mode", ["eager", "stream"])
 def test_excel_example_reads_the_sheet_and_converts_types(tmp_path, mode):
-    """Excel 工作表：去掉標題、匯出時間、空白列，提升標題列，日期與數字轉型。"""
+    """Excel 工作表：去掉標題、匯出時間、空白列，把第一列作為欄位標題，日期與數字轉型。"""
     from datetime import date
 
     from tablade.engine.run import execute

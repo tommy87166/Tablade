@@ -40,6 +40,7 @@ API_METHODS = {
     "full_run",
     "add_step",
     "update_step",
+    "refresh_values",
     "move_step",
     "toggle_step",
     "delete_step",

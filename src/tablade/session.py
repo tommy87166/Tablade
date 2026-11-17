@@ -4,7 +4,7 @@
   匯出時才串流處理全部資料（DESIGN.md §8）。
 
 - Recipe 由好幾個階段組成：畫面上一次編輯一個階段（``current``），``input`` / ``steps`` / ``selected``
-  都是目前這個階段的。讀前面階段的輸出、合併查詢的右表，都用前面階段算好的結果。
+  都是目前這個階段的。讀前面階段的輸出、結合的右表，都用前面階段算好的結果。
 - 步驟以原始 dict 保存：參數還不完整（剛新增、正在填）的步驟也能留在清單裡，顯示錯誤，
   預覽算到它的前一步為止，跟 Power Query 的步驟錯誤一樣。
 - 每一步的結果依「輸入＋到這一步為止的步驟＋用到的其他階段」的內容快取；改了第 k 步，k 之前的結果直接沿用。
@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import json
@@ -63,7 +64,16 @@ from .recipe.schema import (
 )
 from .recipe.validator import stage_ref_fields
 from .steps import all_steps, get
-from .steps.base import SHEET, SOURCE_FILE, STAGE, SYSTEM_PREFIX, Step, source_name
+from .steps.base import (
+    SHEET,
+    SOURCE_FILE,
+    STAGE,
+    SYSTEM_PREFIX,
+    Step,
+    data_values,
+    source_name,
+    too_many_values,
+)
 
 MAX_UNDO = 100
 DEFAULT_INPUT = {"files": [], "reader": "text_lines", "encoding": "auto", "sheet": "", "stages": []}
@@ -128,7 +138,7 @@ def _new_stage(name: str) -> dict[str, Any]:
 
 
 def _ref_fields() -> dict[str, list[str]]:
-    """每種步驟引用其他階段的參數（合併查詢的 right）。"""
+    """每種步驟引用其他階段的參數（結合的 right）。"""
     from .recipe.spec import build_spec
 
     return stage_ref_fields(build_spec())
@@ -158,6 +168,19 @@ def stage_refs(stage: dict[str, Any]) -> list[tuple[str, str]]:
             if isinstance(ref, str):
                 out.append((ref, f"{step.get('id')}（{_label(step.get('type'))}）"))
     return out
+
+
+def data_value_fields(type_name: Any) -> dict[str, str]:
+    """這種步驟「從資料讀出」的參數（schema 標了 ``ui: data_values``）：{參數: 從哪個參數指定的欄讀}。"""
+    try:
+        props = get(type_name).model_json_schema().get("properties", {})
+    except KeyError:
+        return {}
+    return {
+        name: prop["ui_from"]
+        for name, prop in props.items()
+        if prop.get("ui") == "data_values" and prop.get("ui_from")
+    }
 
 
 def _label(type_name: Any) -> str:
@@ -435,7 +458,7 @@ class Session:
             return position
 
     def rename_stage(self, index: int, name: str) -> None:
-        """改階段名稱：所有引用它的地方（讀取資料、合併查詢的右表）一併改掉。"""
+        """改階段名稱：所有引用它的地方（讀取資料、結合的右表）一併改掉。"""
         with self._lock:
             self._check_stage(index)
             new = self._stage_name(name, exclude=index)
@@ -590,7 +613,7 @@ class Session:
         return f"s{n}"
 
     def _earlier_columns(self) -> dict[str, list[str] | None]:
-        """目前階段前面每個階段的結果有哪些資料欄（合併查詢的建議值、右表的欄位選單）。"""
+        """目前階段前面每個階段的結果有哪些資料欄（結合的建議值、右表的欄位選單）。"""
         out = {}
         for i in range(self.current):
             frame = self._stage_result(i)[0]
@@ -618,10 +641,68 @@ class Session:
     def update_step(self, index: int, values: dict[str, Any]) -> None:
         with self._lock:
             self._check_index(index)
-            self._change()
-            step = {"id": self.steps[index].get("id"), "type": self.steps[index].get("type")}
+            old = self.steps[index]
+            step = {"id": old.get("id"), "type": old.get("type")}
             step.update({k: v for k, v in values.items() if k not in ("id", "type")})
+            # 「從資料讀出」的值：依據的欄改了、值本身沒動時，自動從資料重新讀（讀不到就保留原本的）
+            for field_name, source in data_value_fields(step.get("type")).items():
+                changed = step.get(source) != old.get(source)
+                if changed and step.get(field_name) == old.get(field_name):
+                    with contextlib.suppress(SessionError):
+                        step[field_name] = self._read_values(index, step.get(source))
+            self._change()
             self.steps[index] = self._normalize(step)
+
+    def _read_values(self, index: int, column: Any) -> list[str]:
+        """第 index 步的輸入裡，某一欄有哪些不同的值（「從資料讀出」用；大檔時是預覽的樣本）。"""
+        frame = self._frame_before(index)
+        if frame is None:
+            raise SessionError("還沒有資料：請先在「讀取資料」按「載入資料」")
+        if not isinstance(column, str) or column not in frame.columns:
+            raise SessionError(f"欄位「{column}」不存在" if column else "先選要從哪一欄讀")
+        found = data_values(frame, column)
+        if not found:
+            raise SessionError(f"「{column}」沒有值")
+        problem = too_many_values(column, len(found))
+        if problem:
+            raise SessionError(problem)
+        return found
+
+    def _value_errors(self, index: int, raw: dict[str, Any], errors: list[dict]) -> list[dict]:
+        """「從資料讀出」的值是空的時，說明為什麼（值太多、還沒有資料、沒有這一欄），取代「至少要有一項」。"""
+        notes = {}
+        for field_name, source in data_value_fields(raw.get("type")).items():
+            if raw.get(field_name):
+                continue
+            try:
+                found = self._read_values(index, raw.get(source))
+            except SessionError as err:
+                notes[field_name] = str(err)
+            else:
+                notes[field_name] = f"按「重新從資料讀取」帶入 {len(found)} 個值"
+        if not notes:
+            return errors
+        kept = [e for e in errors if e.get("path") not in notes]
+        return kept + [{"path": f, "error": m, "severity": "error"} for f, m in notes.items()]
+
+    def refresh_values(
+        self, index: int, field_name: str, values: dict[str, Any] | None = None
+    ) -> list[str]:
+        """「重新從資料讀取」：依目前的參數（``values`` 是表單上還沒送出的版本）重新讀出值。"""
+        with self._lock:
+            self._check_index(index)
+            old = self.steps[index]
+            step = dict(old) if values is None else {"id": old.get("id"), "type": old.get("type")}
+            if values is not None:
+                step.update({k: v for k, v in values.items() if k not in ("id", "type")})
+            source = data_value_fields(step.get("type")).get(field_name)
+            if source is None:
+                raise SessionError(f"「{field_name}」不是從資料讀出的參數")
+            found = self._read_values(index, step.get(source))
+            self._change()
+            step[field_name] = found
+            self.steps[index] = self._normalize(step)
+            return found
 
     def _normalize(self, step: dict[str, Any]) -> dict[str, Any]:
         """參數合法時去掉跟預設值相同的欄位，recipe 比較好讀；不合法就原樣保留。"""
@@ -915,7 +996,7 @@ class Session:
             return computed[index].frame if index < len(computed) else None
 
     def full_run(self, index: int) -> None:
-        """「完整跑一次」：用全部資料跑到第 index 個階段，之後的預覽用它完整的結果（合併查詢的右表）。"""
+        """「完整跑一次」：用全部資料跑到第 index 個階段，之後的預覽用它完整的結果（結合的右表）。"""
         with self._lock:
             self._check_stage(index)
             base = self.require_loaded()
@@ -937,7 +1018,7 @@ class Session:
     # ── 給前端的畫面狀態 ─────────────────────────────────────────
 
     def _stages_state(self) -> list[dict[str, Any]]:
-        """每個階段的概況（最左邊的階段分頁、合併查詢的右表選單）。"""
+        """每個階段的概況（最左邊的階段分頁、結合的右表選單）。"""
         out = []
         for i, stage in enumerate(self.stages):
             frame, _, sampled, full = self._stage_result(i)
@@ -1014,7 +1095,7 @@ class Session:
                         else None,
                         "input_files": _files(previous) if previous is not None else None,
                         "warning_count": item.warning_count,
-                        "errors": item.errors,
+                        "errors": self._value_errors(i, raw, item.errors),
                         "run_error": item.run_error,
                         "params": raw,
                     }

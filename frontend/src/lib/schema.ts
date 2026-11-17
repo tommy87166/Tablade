@@ -26,6 +26,8 @@ export type FieldKind =
   | 'stage'
   | 'right_column'
   | 'right_columns'
+  | 'data_values'
+  | 'option_cards'
   | 'unknown'
 
 export function resolve(schema: JsonSchema, root: JsonSchema): JsonSchema {
@@ -51,13 +53,15 @@ export function fieldKind(prop: JsonSchema, root: JsonSchema): FieldKind {
     schema.ui === 'source_files' ||
     schema.ui === 'stage' ||
     schema.ui === 'right_column' ||
-    schema.ui === 'right_columns'
+    schema.ui === 'right_columns' ||
+    schema.ui === 'data_values' ||
+    schema.ui === 'option_cards'
   ) {
     return schema.ui
   }
   if (schema.enum) return 'enum'
   if (schema.type === 'array' && schema.items?.discriminator) return 'conditions'
-  // 物件的陣列（例如取代值的「找 → 換成」）：每一項依子 schema 畫欄位
+  // 物件的陣列（例如取代文字的「找 → 換成」）：每一項依子 schema 畫欄位
   if (schema.type === 'array' && schema.items?.$ref && resolve(schema.items, root).properties) return 'objects'
   if (schema.type === 'boolean') return 'boolean'
   if (schema.type === 'integer') return 'integer'

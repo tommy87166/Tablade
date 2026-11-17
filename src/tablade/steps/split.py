@@ -183,7 +183,7 @@ class SplitColumn(Step):
     type: Literal["split_column"] = "split_column"
     column: ColumnRef = Field(title="要拆的欄位")
     delimiter: str = Field(title="分隔符號", min_length=1)
-    names: NewColumns = Field(title="新欄位名稱")
+    names: NewColumns = Field(title="拆出來的欄名")
     on_extra: OnExtra = Field(
         default="warn", title="段數比欄名多時", json_schema_extra={"ui_labels": ON_EXTRA_LABELS}
     )

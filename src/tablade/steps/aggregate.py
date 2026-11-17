@@ -23,17 +23,17 @@ from .base import (
     ColumnRef,
     ColumnRefs,
     Example,
-    NewColumns,
     NonEmpty,
     Step,
     StepError,
     WarningCheck,
     data_columns,
+    data_values,
     is_blank,
     pick_column,
     quote_list,
-    sample_values,
     system_columns,
+    too_many_values,
 )
 from .registry import register
 
@@ -280,19 +280,22 @@ class Pivot(Step):
     type: Literal["pivot"] = "pivot"
     index: list[NonEmpty] = Field(
         default_factory=list,
-        title="每一列依哪些欄",
+        title="樞紐表格列依據欄位",
         description="只能是文字或日期欄；不選代表整個來源檔一列",
         json_schema_extra={"ui": "columns"},
     )
-    on: ColumnRef = Field(title="哪一欄的值變成欄名")
-    values: ColumnRef = Field(title="值從哪一欄來")
+    on: ColumnRef = Field(title="樞紐表格欄依據欄位")
+    values: ColumnRef = Field(title="樞紐表格值依據欄位")
     op: PivotOp = Field(
         default="sum",
-        title="同一格有好幾筆時",
+        title="彙總方式",
         json_schema_extra={"ui_labels": {k: v for k, v in OP_LABELS.items() if k != "n_unique"}},
     )
-    columns: NewColumns = Field(
-        title="要變成欄的值", description="建立步驟時從資料讀出；資料裡多出來的值會產生警告"
+    columns: list[NonEmpty] = Field(
+        min_length=1,
+        title="要變成欄的值",
+        description="從「樞紐表格欄依據欄位」的資料讀出；資料裡多出來的值會產生警告",
+        json_schema_extra={"ui": "data_values", "ui_from": "on"},
     )
 
     label = "樞紐"
@@ -330,13 +333,14 @@ class Pivot(Step):
         on = pick_column(frame, context)
         if on is None:
             return {}
-        seen = [v for v in dict.fromkeys(sample_values(frame, on, 5_000)) if v not in (None, "")]
-        return {"on": on, "columns": seen[:50]}
+        found = data_values(frame, on)
+        # 超過上限就不帶入（表單上會說明原因），不默默只取前面幾個
+        return {"on": on, "columns": [] if too_many_values(on, len(found)) else found}
 
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
         index = list(dict.fromkeys(self.index))
         schema = check_columns(lf, [*index, self.on, self.values])
-        check_keys(schema, index, "每一列依的欄")
+        check_keys(schema, index, "樞紐表格列依據欄位")
         check_numeric(schema, self.values, self.op)
         on = pl.col(self.on).cast(pl.String)
         aggs = []

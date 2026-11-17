@@ -79,7 +79,7 @@ class Example:
     """不含系統欄位；測試時自動補上 ``__source_file`` / ``__line_no``。"""
     output: dict[str, list[Any]]
     tables: dict[str, dict[str, list[Any]]] | None = None
-    """前面階段的結果（合併查詢的右表）：{階段名稱: 資料}，同樣自動補上系統欄位。"""
+    """前面階段的結果（結合的右表）：{階段名稱: 資料}，同樣自動補上系統欄位。"""
 
 
 @dataclass(frozen=True)
@@ -90,7 +90,7 @@ class WarningCheck:
     """可含一個 ``{}``，會換成 ``detail`` 的值。"""
     detail: pl.Expr | None = None
     on_input: bool = False
-    """True：對這一步的**輸入**檢查（例如合併查詢沒對到的列：內連接之後那些列就不在了）。"""
+    """True：對這一步的**輸入**檢查（例如結合沒對到的列：內連接之後那些列就不在了）。"""
 
 
 class Step(BaseModel):
@@ -165,7 +165,7 @@ class Step(BaseModel):
         return f"{TEMP_PREFIX}{self.id}_{name}"
 
     def stage_refs(self) -> list[str]:
-        """這一步要用到哪些前面階段的結果（例如合併查詢的右表）。"""
+        """這一步要用到哪些前面階段的結果（例如結合的右表）。"""
         return []
 
     def bind(self, tables: Mapping[str, pl.LazyFrame | pl.DataFrame] | None) -> Step:
@@ -246,6 +246,24 @@ def pick_column(
 
 def sample_values(frame: pl.DataFrame, column: str, n: int = 200) -> list[str | None]:
     return frame.get_column(column).head(n).cast(pl.String).to_list()
+
+
+MAX_DATA_VALUES = 100
+"""「從資料讀出」的值最多幾個（例如樞紐要變成欄的值）；超過時要使用者先篩選或換一欄。"""
+
+
+def data_values(frame: pl.DataFrame, column: str) -> list[str]:
+    """某一欄有哪些不同的值（依第一次出現的順序，轉成文字；空值與空白不算）。"""
+    series = frame.get_column(column).cast(pl.String).drop_nulls()
+    return series.filter(series.str.strip_chars() != "").unique(maintain_order=True).to_list()
+
+
+def too_many_values(column: str, count: int) -> str | None:
+    """不同的值超過上限時的說明（不默默截掉）；沒超過時是 None。"""
+    limit = MAX_DATA_VALUES
+    if count <= limit:
+        return None
+    return f"「{column}」有 {count:,} 個不同的值，超過 {limit} 個；請先篩選，或換一欄"
 
 
 def guess_delimiter(

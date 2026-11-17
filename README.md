@@ -47,8 +47,8 @@ version check against GitHub at start-up (nothing is sent, nothing is downloaded
 > generated from the step schemas), let Microsoft 365 Copilot write one with the generated skill, or run it
 > from the command line. A recipe is a list of stages run in order (each stage reads files or the results of
 > earlier stages), so differently formatted data can be cleaned separately, then appended or looked up with a join.
-> 24 step types: besides removing junk rows, splitting (by delimiter or fixed position),
-> filling down, filtering and merging source files, you can classify rows and extract with regular expressions to
+> 25 step types: besides removing junk rows, splitting (by delimiter or fixed position),
+> copying a column on matching rows (e.g. a section title) and filling down, filtering and merging source files, you can classify rows and extract with regular expressions to
 > flatten sectioned print-format reports, read Excel sheets, clean text (full-width to half-width, invisible characters), replace values,
 > convert text to numbers and dates (rows that fail are reported with their line numbers), and remove, keep /
 > reorder or rename columns, remove duplicates, unpivot, group by and pivot (each source file on its own until you

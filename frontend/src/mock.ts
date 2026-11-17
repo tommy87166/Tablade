@@ -157,6 +157,7 @@ export const mockApi: TabladeApi = sample
       full_run: () => withState(),
       add_step: () => withState({ index: selected }),
       update_step: () => withState(),
+      refresh_values: () => withState({ values: [] }),
       move_step: () => withState(),
       toggle_step: () => withState(),
       delete_step: () => withState(),

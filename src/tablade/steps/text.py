@@ -1,4 +1,4 @@
-"""文字：清理文字、取代值。全部用 Polars 原生運算（不呼叫 Python），可以串流處理大檔。"""
+"""文字：清理文字、取代文字。全部用 Polars 原生運算（不呼叫 Python），可以串流處理大檔。"""
 
 from __future__ import annotations
 
@@ -136,7 +136,7 @@ class Replacement(BaseModel):
 
 @register
 class ReplaceValues(Step):
-    """取代值：依序套用一組或多組「找 → 換成」，可以部分相符、整格相符或用正規表示式。"""
+    """把格子裡找到的文字換掉（預設）；也可以只在整格相符時才換。"""
 
     type: Literal["replace_values"] = "replace_values"
     columns: ColumnRefs = Field(title="要取代的欄位")
@@ -147,7 +147,7 @@ class ReplaceValues(Step):
         title="取代清單", min_length=1, description="由上往下依序取代"
     )
 
-    label = "取代值"
+    label = "取代文字"
     category = "欄"
     ai_notes = (
         "只能用在文字欄；replacements 由上往下依序套用，null 維持 null。"
@@ -213,4 +213,4 @@ class ReplaceValues(Step):
         pairs = "、".join(f"「{r.find}」→「{r.replace}」" for r in self.replacements[:3])
         more = f"…共 {len(self.replacements)} 組" if len(self.replacements) > 3 else ""
         how = {"contains": "", "whole": "（整格相符）", "regex": "（正規表示式）"}[self.match]
-        return f"取代{how}：{pairs}{more}，欄位 {quote_list(self.columns)}"
+        return f"取代文字{how}：{pairs}{more}，欄位 {quote_list(self.columns)}"

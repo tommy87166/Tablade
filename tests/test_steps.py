@@ -117,6 +117,7 @@ def test_registry_metadata_is_complete():
         "extract_regex",
         "split_fixed_width",
         "promote_headers",
+        "conditional_copy",
         "fill_down",
         "remove_columns",
         "select_columns",
@@ -436,7 +437,10 @@ def test_replace_values_validation():
         match="whole",
         replacements=[{"find": str(i), "replace": ""} for i in range(5)],
     )
-    assert step.describe() == "取代（整格相符）：「0」→「」、「1」→「」、「2」→「」…共 5 組，欄位 t"
+    assert (
+        step.describe()
+        == "取代文字（整格相符）：「0」→「」、「1」→「」、「2」→「」…共 5 組，欄位 t"
+    )
 
 
 def test_validator_checks_new_effects_and_maps():
@@ -482,7 +486,7 @@ def test_classify_rows_first_match_wins_and_otherwise():
     with pytest.raises(RunError, match="新欄名「line」和現有欄位重複"):
         run(make("classify_rows", column="line", rules=rules), df)
     assert make("classify_rows", rules=rules).describe() == (
-        "替列分類到「類型」：段落、小計、空白，其他是「其他」"
+        "將列分類到「類型」：段落、小計、空白，其他是「其他」"
     )
 
 
@@ -996,11 +1000,11 @@ def test_aggregate_effects():
     assert apply_effect(None, pivot) == ["門市", "1月"]
     with pytest.raises(EffectError, match="欄位不存在：月、金額"):
         apply_effect(cols, pivot)
-    with pytest.raises(EffectError, match="已經是每一列依的欄"):
+    with pytest.raises(EffectError, match="已經是樞紐表格列依據欄位"):
         apply_effect(cols, {**pivot, "on": "門市"})
 
 
-# ── 合併查詢 ─────────────────────────────────────────────────────
+# ── 結合 ─────────────────────────────────────────────────────
 
 
 def right_table(data: dict) -> dict:
@@ -1062,7 +1066,7 @@ def test_join_errors():
         run(make("join", right="對照", on=on, columns=["名稱"]), df, tables)
     with pytest.raises(RunError, match="@對照 沒有欄位：區域"):
         run(make("join", right="對照", on=on, columns=["區域"]), df, tables)
-    with pytest.raises(RunError, match="「代號」是右表的鍵，不用帶進來"):
+    with pytest.raises(RunError, match="「代號」是另一張表的鍵值，不用帶進來"):
         run(make("join", right="對照", on=on, columns=["代號"]), df, tables)
     with pytest.raises(RunError, match="沒有階段「對照」的結果"):
         run(make("join", right="對照", on=on, columns=["類別"]), df)
@@ -1087,3 +1091,66 @@ def test_join_effect_checks_right_columns():
     assert apply_effect(None, effect, {}) is None  # 不知道欄位時不檢查
     with pytest.raises(EffectError, match="要設定至少一組鍵"):
         apply_effect(["品號"], {**effect, "on": []})
+
+
+# ── 依條件複製欄位 ─────────────────────────────────────────────────
+
+
+def test_conditional_copy_then_fill_down_brings_section_titles_to_details():
+    df = frame(
+        {
+            "A": ["門市：", "115/01/05", None, "門市：", "115/01/07"],
+            "B": ["北區門市", "原子筆", "保溫瓶", "中區門市", "滑鼠"],
+        },
+        files=["a", "a", "a", "a", "b"],
+    )
+    copy = make(
+        "conditional_copy",
+        conditions=[{"column": "A", "op": "starts_with", "value": "門市："}],
+        column="B",
+        name="門市",
+    )
+    out, total, _ = run(copy, df)
+    assert out["門市"].to_list() == [
+        "北區門市",
+        None,
+        None,
+        "中區門市",
+        None,
+    ]  # 空值的條件欄不算符合
+    assert lines(out) == [("a", 1), ("a", 2), ("a", 3), ("a", 4), ("b", 1)] and total == 0
+    filled, _, _ = run(make("fill_down", columns=["門市"]), out)
+    assert filled["門市"].to_list() == ["北區門市", "北區門市", "北區門市", "中區門市", None]
+    assert copy.describe() == "符合「A 開頭是「門市：」」的列，把「B」複製到「門市」"
+
+
+def test_conditional_copy_any_and_errors():
+    df = frame({"A": ["x", "y", "z"], "B": ["1", "2", "3"]})
+    either = make(
+        "conditional_copy",
+        conditions=[
+            {"column": "A", "op": "equals", "value": "x"},
+            {"column": "A", "op": "equals", "value": "z"},
+        ],
+        match="any",
+        column="B",
+        name="C",
+    )
+    assert run(either, df)[0]["C"].to_list() == ["1", None, "3"]
+    with pytest.raises(RunError, match="新欄名「A」和現有欄位重複"):
+        run(either.model_copy(update={"name": "A"}), df)
+    with pytest.raises(RunError, match="欄位不存在：D"):
+        run(either.model_copy(update={"column": "D"}), df)
+
+
+def test_step_errors_are_in_chinese():
+    from pydantic import ValidationError
+
+    from tablade.recipe.schema import pydantic_issues
+
+    with pytest.raises(ValidationError) as err:
+        get("conditional_copy").model_validate(
+            {"id": "c", "type": "conditional_copy", "conditions": [], "column": ""}
+        )
+    issues = {i["path"]: i["error"] for i in pydantic_issues(err.value)}
+    assert issues == {"conditions": "至少要有 1 項", "column": "不能是空白", "name": "必填，請填寫"}

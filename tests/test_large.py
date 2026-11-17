@@ -204,7 +204,7 @@ def test_stream_matches_eager_with_conversions_and_removed_columns(workdir):
 
 
 def test_stream_matches_eager_with_text_and_column_steps(workdir):
-    """清理文字、取代值、改欄名、保留和排序欄位：串流與整份讀進記憶體的結果一致。"""
+    """清理文字、取代文字、改欄名、保留和排序欄位：串流與整份讀進記憶體的結果一致。"""
     data = json.loads(EXAMPLE.read_text(encoding="utf-8"))
     data["stages"][0]["steps"] += [
         {"id": "t", "type": "trim_clean", "columns": ["品名", "門市"], "collapse_spaces": True},
@@ -587,7 +587,7 @@ def run_stages(workdir: Path, mutate=None):
 
 
 def test_stream_matches_eager_with_stages_append_and_join(workdir):
-    """附加（讀兩個階段＋合併來源檔）再合併查詢：結果、警告（含原始位置）都和整份讀進記憶體一樣。"""
+    """附加（讀兩個階段＋合併來源檔）再結合：結果、警告（含原始位置）都和整份讀進記憶體一樣。"""
     b, _, streamed = run_stages(workdir)
     assert b.height == 90 and "類別" in b.columns
     assert set(b["__orig_stage"]) == {"文字明細", "Excel明細"}

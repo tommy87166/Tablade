@@ -37,9 +37,15 @@ export type JsonSchema = {
     | 'stage'
     | 'right_column'
     | 'right_columns'
+    | 'data_values'
+    | 'option_cards'
+  /** ui 是 data_values 時：從哪個參數指定的欄讀出值 */
+  ui_from?: string
   ui_labels?: Record<string, string>
-  /** 選到某個選項時，顯示在選單下面的說明（例如日期樣式的正規表示式） */
+  /** 選到某個選項時，顯示在選單下面的說明（例如日期樣式的正規表示式）；選項卡片時是每張卡片的說明 */
   ui_option_hints?: Record<string, string>
+  /** 選項卡片的小圖（OptionIcon 的名稱，例如 venn_left） */
+  ui_option_icons?: Record<string, string>
   /** 其他參數是這些值時才顯示這個欄位（例如刪除欄依位置時才顯示 positions）；值是陣列時是其中之一 */
   ui_show_if?: Record<string, unknown>
   properties?: Record<string, JsonSchema>
@@ -142,7 +148,7 @@ export interface StageState {
   last: boolean
   status: 'ok' | 'waiting' | 'error'
   rows: number | null
-  /** 這個階段結果的資料欄（合併查詢的右表欄位選單） */
+  /** 這個階段結果的資料欄（結合的右表欄位選單） */
   columns: string[] | null
   /** 結果是用樣本算的 */
   sampled: boolean
@@ -318,6 +324,7 @@ export interface TabladeApi {
   full_run(index: number): Promise<WithState>
   add_step(type_name: string, context?: { column?: string; value?: Cell; exclude?: boolean }): Promise<WithState<{ index: number }>>
   update_step(index: number, values: Record<string, unknown>): Promise<WithState>
+  refresh_values(index: number, field: string, values?: Record<string, unknown>): Promise<WithState<{ values: string[] }>>
   move_step(index: number, to: number): Promise<WithState>
   toggle_step(index: number): Promise<WithState>
   delete_step(index: number): Promise<WithState>

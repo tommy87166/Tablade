@@ -297,7 +297,7 @@ class Api:
 
     @_wrap
     def full_run(self, index: int) -> dict[str, Any]:
-        """「完整跑一次」：用全部資料跑到這個階段，預覽改用完整的結果（合併查詢的右表）。"""
+        """「完整跑一次」：用全部資料跑到這個階段，預覽改用完整的結果（結合的右表）。"""
         self._session.full_run(int(index))
         return self._state()
 
@@ -312,6 +312,14 @@ class Api:
     def update_step(self, index: int, values: dict[str, Any]) -> dict[str, Any]:
         self._session.update_step(int(index), values)
         return self._state()
+
+    @_wrap
+    def refresh_values(
+        self, index: int, field: str, values: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """「重新從資料讀取」：參數的值從資料重新讀出（例如樞紐要變成欄的值）。"""
+        found = self._session.refresh_values(int(index), str(field), values)
+        return self._state(values=found)
 
     @_wrap
     def move_step(self, index: int, to: int) -> dict[str, Any]:

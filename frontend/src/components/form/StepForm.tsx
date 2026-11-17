@@ -16,11 +16,13 @@ interface Props {
   step: StepState
   item: CatalogItem
   onChange: (values: Record<string, unknown>) => void
-  /** 前面的階段與「前往」「完整跑一次」（合併查詢用）；params 由表單自己帶目前的草稿 */
-  context?: Omit<FormContext, 'params'>
+  /** 前面的階段與「前往」「完整跑一次」（結合用）；params 由表單自己帶目前的草稿 */
+  context?: Omit<FormContext, 'params' | 'onRefresh'>
+  /** 「重新從資料讀取」：帶著表單上目前的參數（可能還沒送出） */
+  onRefresh?: (field: string, values: Record<string, unknown>) => void
 }
 
-export function StepForm({ step, item, onChange, context }: Props) {
+export function StepForm({ step, item, onChange, context, onRefresh }: Props) {
   const [draft, setDraft] = useState<Record<string, unknown>>(step.params)
   const timer = useRef<number | undefined>(undefined)
   const pending = useRef(false)
@@ -88,7 +90,19 @@ export function StepForm({ step, item, onChange, context }: Props) {
             files={step.input_files}
             issues={step.errors}
             required={required.has(name)}
-            context={context ? { ...context, params: draft } : undefined}
+            context={{
+              stages: [],
+              ...context,
+              params: draft,
+              onRefresh: onRefresh
+                ? (field) => {
+                    // 還沒送出的修改一起帶過去（Python 依這份參數讀），不再另外送
+                    window.clearTimeout(timer.current)
+                    pending.current = false
+                    onRefresh(field, latest.current.draft)
+                  }
+                : undefined,
+            }}
           />
         ))}
       {fields.length === 0 ? <p className="text-sm text-muted-foreground">這個步驟沒有參數。</p> : null}

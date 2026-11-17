@@ -497,7 +497,7 @@ def test_stages_preview_reads_earlier_stages_and_joins(data):
     assert out.height == 90 and "類別" in out.columns
     warning = state["preview"]["warnings"][0]
     assert warning["orig_source_file"] == "data/明細_01.csv" and warning["orig_stage"] == "文字明細"
-    # 合併查詢的建議值：右表用最近的前面階段
+    # 結合的建議值：右表用最近的前面階段
     s.select_stage(3)
     s.select(1)
     index = s.add_step("join", {"column": "品號"})
@@ -531,7 +531,7 @@ def test_stage_add_rename_move_delete(data):
     assert last["input"]["stages"] == ["文字", "Excel明細"]
     assert s.state()["stages"][-1]["status"] == "ok"  # 改名不需要重新載入
     # 會弄壞引用的刪除、移動都擋下來
-    with pytest.raises(SessionError, match="不能刪除「品項」：「預設階段」的j1（合併查詢）用到它"):
+    with pytest.raises(SessionError, match="不能刪除「品項」：「預設階段」的j1（結合）用到它"):
         s.delete_stage(0)
     with pytest.raises(SessionError, match="不能這樣排"):
         s.move_stage(0, 4)
@@ -599,3 +599,47 @@ def test_full_run_replaces_a_sampled_right_table(data, monkeypatch):
     s.select_stage(0)
     s.add_step("remove_blank_rows")
     assert not s.state()["stages"][0]["full"]
+
+
+def test_pivot_values_are_read_from_data(data, monkeypatch):
+    """樞紐要變成欄的值：建立時從資料讀出；改了依據的欄會自動重新讀；也可以按「重新從資料讀取」。"""
+    s = combined(data)
+    s.select_stage(1)  # 文字明細
+    s.select(len(s.steps) - 1)
+    index = s.add_step("pivot", {"column": "門市"})
+    assert s.steps[index]["on"] == "門市"
+    assert s.steps[index]["columns"] == ["北區門市", "中區門市", "南區門市"]
+    params = {k: v for k, v in s.steps[index].items() if k not in ("id", "type")}
+    s.update_step(index, {**params, "on": "品號"})  # 依據的欄改了、值沒動：自動重新讀
+    assert s.steps[index]["columns"][:2] == ["D300", "C100"]
+    edited = {**params, "on": "品號", "columns": ["A001"]}
+    s.update_step(index, edited)
+    s.update_step(index, {**edited, "values": "品名"})  # 依據的欄沒改：手改的值保留
+    assert s.steps[index]["columns"] == ["A001"]
+    found = s.refresh_values(index, "columns", {**edited, "on": "門市"})  # 帶著還沒送出的參數
+    assert found == ["北區門市", "中區門市", "南區門市"] and s.steps[index]["on"] == "門市"
+    s.undo()
+    assert s.steps[index]["columns"] == ["A001"]
+    with pytest.raises(SessionError, match="不是從資料讀出的參數"):
+        s.refresh_values(index, "index")
+    monkeypatch.setattr("tablade.steps.base.MAX_DATA_VALUES", 5)
+    with pytest.raises(SessionError, match=r"「金額」有 \d+ 個不同的值，超過 5 個"):
+        s.refresh_values(index, "columns", {**edited, "on": "金額"})  # 值太多：不默默截掉
+
+
+def test_too_many_pivot_values_are_not_cut_silently(data, monkeypatch):
+    """新增樞紐時，依據欄的不同值超過上限：不帶入，表單上直接說明原因。"""
+    monkeypatch.setattr("tablade.steps.base.MAX_DATA_VALUES", 5)
+    s = combined(data)
+    s.select_stage(1)
+    s.select(len(s.steps) - 1)
+    index = s.add_step("pivot", {"column": "金額"})
+    assert s.steps[index]["columns"] == []
+    errors = s.state()["steps"][index]["errors"]
+    columns = [e["error"] for e in errors if e["path"] == "columns"]
+    assert len(columns) == 1 and "超過 5 個；請先篩選，或換一欄" in columns[0]
+    # 換成值不多的欄：自動帶入，錯誤消失
+    params = {k: v for k, v in s.steps[index].items() if k not in ("id", "type")}
+    s.update_step(index, {**params, "on": "門市", "values": "金額"})
+    assert s.steps[index]["columns"] == ["北區門市", "中區門市", "南區門市"]
+    assert not [e for e in s.state()["steps"][index]["errors"] if e["path"] == "columns"]

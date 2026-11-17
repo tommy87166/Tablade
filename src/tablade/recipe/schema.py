@@ -149,9 +149,40 @@ def pydantic_issues(err: ValidationError) -> list[dict[str, Any]]:
                 continue
             path += f"[{part}]" if isinstance(part, int) else (f".{part}" if path else str(part))
             previous = part
-        message = e["msg"].removeprefix("Value error, ")
-        issues.append({"path": path or "(Recipe)", "error": message, "severity": "error"})
+        issues.append({"path": path or "(Recipe)", "error": _message(e), "severity": "error"})
     return issues
+
+
+_MESSAGES = {
+    "missing": "必填，請填寫",
+    "extra_forbidden": "不認得的欄位",
+    "string_type": "應該是文字",
+    "int_type": "應該是整數",
+    "bool_type": "應該是 true / false",
+    "list_type": "應該是清單",
+    "dict_type": "應該是物件",
+    "string_pattern_mismatch": "格式不符",
+}
+
+
+def _message(error: Any) -> str:
+    """pydantic 常見的錯誤換成中文（畫面上的步驟錯誤、開啟 Recipe 的問題清單）；其他的照原樣。"""
+    kind, ctx = error.get("type"), error.get("ctx") or {}
+    if kind in _MESSAGES:
+        return _MESSAGES[kind]
+    if kind == "string_too_short":
+        return "不能是空白" if ctx.get("min_length") == 1 else f"至少 {ctx.get('min_length')} 個字"
+    if kind == "string_too_long":
+        return f"最多 {ctx.get('max_length')} 個字"
+    if kind == "too_short":
+        return f"至少要有 {ctx.get('min_length')} 項"
+    if kind == "too_long":
+        return f"最多 {ctx.get('max_length')} 項"
+    if kind == "literal_error":
+        return f"不支援的值（可用：{ctx.get('expected')}）"
+    if kind == "greater_than_equal":
+        return f"不能小於 {ctx.get('ge')}"
+    return str(error["msg"]).removeprefix("Value error, ")
 
 
 def _union_tags() -> set[str]:

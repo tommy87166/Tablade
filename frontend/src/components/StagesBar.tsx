@@ -190,7 +190,7 @@ export function StagesBar({ state, busy, onSelect, onAdd, onRename, onMove, onDe
             <DialogTitle>{naming?.mode === 'rename' ? '階段改名' : '新增階段'}</DialogTitle>
             <DialogDescription>
               {naming?.mode === 'rename'
-                ? '引用這個階段的地方（讀取資料、合併查詢的右表）會一起改。'
+                ? '引用這個階段的地方（讀取資料、結合的另一張表）會一起改。'
                 : '階段名稱也是引用名稱：後面的階段用 @名稱 讀它的結果。'}
             </DialogDescription>
           </DialogHeader>

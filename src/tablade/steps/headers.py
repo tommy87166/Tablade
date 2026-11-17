@@ -1,4 +1,4 @@
-"""提升標題列。"""
+"""把第一列作為欄位標題。"""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ class PromoteHeaders(Step):
     type: Literal["promote_headers"] = "promote_headers"
     names: NewColumns = Field(title="欄名", description="建立步驟時從第一列讀出，之後固定")
 
-    label = "提升標題列"
+    label = "把第一列作為欄位標題"
     per_file = True
     category = "欄"
     effect = {"kind": "rename_data", "names": "$names"}

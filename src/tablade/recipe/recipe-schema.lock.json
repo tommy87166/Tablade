@@ -97,6 +97,90 @@
           ],
           "type": "object"
         },
+        "ConditionalCopy": {
+          "additionalProperties": false,
+          "properties": {
+            "column": {
+              "minLength": 1,
+              "type": "string",
+              "ui": "column"
+            },
+            "conditions": {
+              "items": {
+                "discriminator": {
+                  "mapping": {
+                    "contains": "#/$defs/TextCondition",
+                    "ends_with": "#/$defs/TextCondition",
+                    "equals": "#/$defs/TextCondition",
+                    "ge": "#/$defs/NumberCondition",
+                    "gt": "#/$defs/NumberCondition",
+                    "is_empty": "#/$defs/EmptyCondition",
+                    "is_not_empty": "#/$defs/EmptyCondition",
+                    "le": "#/$defs/NumberCondition",
+                    "lt": "#/$defs/NumberCondition",
+                    "not_contains": "#/$defs/TextCondition",
+                    "not_equals": "#/$defs/TextCondition",
+                    "not_regex": "#/$defs/RegexCondition",
+                    "num_equals": "#/$defs/NumberCondition",
+                    "regex": "#/$defs/RegexCondition",
+                    "starts_with": "#/$defs/TextCondition"
+                  },
+                  "propertyName": "op"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/TextCondition"
+                  },
+                  {
+                    "$ref": "#/$defs/RegexCondition"
+                  },
+                  {
+                    "$ref": "#/$defs/EmptyCondition"
+                  },
+                  {
+                    "$ref": "#/$defs/NumberCondition"
+                  }
+                ]
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "match": {
+              "default": "all",
+              "enum": [
+                "all",
+                "any"
+              ],
+              "type": "string"
+            },
+            "name": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": {
+              "const": "conditional_copy",
+              "default": "conditional_copy",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "conditions",
+            "column",
+            "name"
+          ],
+          "type": "object"
+        },
         "Dedupe": {
           "additionalProperties": false,
           "properties": {
@@ -448,7 +532,20 @@
                 "anti",
                 "semi"
               ],
-              "type": "string"
+              "type": "string",
+              "ui": "option_cards",
+              "ui_option_hints": {
+                "anti": "以這一張表為準，只留沒對到另一張表的列。",
+                "inner": "取交集，只留下兩張表都有的列，加入另一張表的欄。",
+                "left": "以這一張表為準，保留這一張表每一列，加入另一張表的欄。",
+                "semi": "以這一張表為準，只留有對到另一張表的列。"
+              },
+              "ui_option_icons": {
+                "anti": "venn_left_only",
+                "inner": "venn_inner",
+                "left": "venn_left",
+                "semi": "venn_inner_filter"
+              }
             },
             "id": {
               "maxLength": 64,
@@ -727,7 +824,8 @@
               },
               "minItems": 1,
               "type": "array",
-              "ui": "new_columns"
+              "ui": "data_values",
+              "ui_from": "on"
             },
             "enabled": {
               "default": true,
@@ -1377,6 +1475,7 @@
                 "discriminator": {
                   "mapping": {
                     "classify_rows": "#/$defs/ClassifyRows",
+                    "conditional_copy": "#/$defs/ConditionalCopy",
                     "dedupe": "#/$defs/Dedupe",
                     "extract_regex": "#/$defs/ExtractRegex",
                     "fill_down": "#/$defs/FillDown",
@@ -1436,6 +1535,9 @@
                   },
                   {
                     "$ref": "#/$defs/PromoteHeaders"
+                  },
+                  {
+                    "$ref": "#/$defs/ConditionalCopy"
                   },
                   {
                     "$ref": "#/$defs/FillDown"
@@ -1659,6 +1761,13 @@
           "names": "$column"
         },
         "schema_ref": "ClassifyRows"
+      },
+      "conditional_copy": {
+        "effect": {
+          "kind": "add",
+          "names": "$name"
+        },
+        "schema_ref": "ConditionalCopy"
       },
       "dedupe": {
         "effect": {

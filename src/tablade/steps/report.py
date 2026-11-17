@@ -1,7 +1,7 @@
-"""分段報表用的步驟：替列分類、用正規表示式擷取、依固定位置拆欄（DESIGN.md §7.1）。
+"""分段報表用的步驟：將列進行分類、用正規表示式擷取、依固定位置拆欄（DESIGN.md §7.1）。
 
 列印格式的報表把明細依門市之類的欄位分段，每段有段落標題、欄位標題、小計，跨頁還有頁首。
-典型的攤平流程：替列分類 → 從段落標題擷取值 → 向下填滿 → 篩選只留明細 → 依固定位置拆欄。
+典型的攤平流程：將列進行分類 → 從段落標題擷取值 → 向下填滿 → 篩選只留明細 → 依固定位置拆欄。
 全部用 Polars 原生運算（不呼叫 Python），可以串流處理大檔。
 """
 
@@ -32,7 +32,7 @@ from .registry import register
 MATCH_LABELS = {"all": "全部符合", "any": "任一符合"}
 
 
-# ── 替列分類 ───────────────────────────────────────────────────
+# ── 將列進行分類 ───────────────────────────────────────────────────
 
 
 class Rule(BaseModel):
@@ -51,7 +51,7 @@ class Rule(BaseModel):
 
 @register
 class ClassifyRows(Step):
-    """替列分類：依規則替每一列標上類別（例如段落標題、明細、小計），結果放在新的一欄。"""
+    """將列進行分類：依規則替每一列標上類別（例如段落標題、明細、小計），結果放在新的一欄。"""
 
     type: Literal["classify_rows"] = "classify_rows"
     column: NonEmpty = Field(default="類型", title="新欄位名稱")
@@ -60,7 +60,7 @@ class ClassifyRows(Step):
     )
     otherwise: str = Field(default="其他", title="都不符合時的類別", description="空白代表空值")
 
-    label = "替列分類"
+    label = "將列進行分類"
     category = "列"
     effect = {"kind": "add", "names": "$column"}
     ai_notes = (
@@ -112,7 +112,7 @@ class ClassifyRows(Step):
 
     def describe(self) -> str:
         labels = quote_list([r.label for r in self.rules])
-        return f"替列分類到「{self.column}」：{labels}，其他是「{self.otherwise or '空值'}」"
+        return f"將列分類到「{self.column}」：{labels}，其他是「{self.otherwise or '空值'}」"
 
 
 # ── 用正規表示式擷取 ───────────────────────────────────────────
@@ -239,7 +239,7 @@ def guess_starts(lines: list[str | None], blank_share: float = 0.98) -> list[int
 
 @register
 class SplitFixedWidth(Step):
-    """依固定位置拆欄：列印格式的報表用空白對齊欄位，依每一欄的開始位置拆開（中文字算兩格寬）。"""
+    """依固定位置拆欄：列印格式的報表用空白對齊欄位，依每一欄的開始位置拆開（中文字算 2 格寬）。"""
 
     type: Literal["split_fixed_width"] = "split_fixed_width"
     column: ColumnRef = Field(default="line", title="要拆的欄位")

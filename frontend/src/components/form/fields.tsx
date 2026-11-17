@@ -1,5 +1,5 @@
 /** 表單欄位元件：依 JSON Schema 的型別與 ui 提示挑選（DESIGN.md §16.5）。 */
-import { ArrowDown, ArrowUp, ArrowUpRight, Play, Plus, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ArrowUpRight, ChevronUp, Pencil, Play, Plus, RefreshCw, X } from 'lucide-react'
 import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -8,9 +8,10 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import type { Issue, JsonSchema } from '../../bridge'
+import { OptionIcon } from './OptionIcon'
 import { defaultFor, fieldKind, issuesAt, resolve, variants, type FieldKind } from '../../lib/schema'
 
-/** 前面的階段（合併查詢的右表選單、右表的欄位）。 */
+/** 前面的階段（結合的右表選單、右表的欄位）。 */
 export interface FormStage {
   index: number
   name: string
@@ -30,6 +31,8 @@ export interface FormContext {
   onGoStage?: (index: number) => void
   /** 「完整跑一次」：用全部資料跑到那個階段 */
   onFullRun?: (index: number) => void
+  /** 「重新從資料讀取」：這個參數的值從資料重新讀出（參數名稱） */
+  onRefresh?: (field: string) => void
 }
 
 export interface FieldProps {
@@ -135,6 +138,38 @@ function EnumSelect({ value, onChange, schema }: { value: unknown; onChange: (v:
   )
 }
 
+/** 選項卡片（例如結合的方式）：每個選項一張卡片，上面是小圖、標題、說明，兩欄排列。 */
+function OptionCards({ value, onChange, schema }: { value: unknown; onChange: (v: unknown) => void; schema: JsonSchema }) {
+  const current = asString(value)
+  const labels = schema.ui_labels ?? {}
+  const hints = schema.ui_option_hints ?? {}
+  const icons = schema.ui_option_icons ?? {}
+  return (
+    <div role="radiogroup" className="grid grid-cols-2 gap-2">
+      {(schema.enum ?? []).map((raw) => {
+        const option = String(raw)
+        const selected = option === current
+        return (
+          <button
+            key={option}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            onClick={() => onChange(option)}
+            className={`flex flex-col items-center gap-1 rounded-md border p-2 text-center ${
+              selected ? 'border-primary bg-primary/5 ring-1 ring-primary/40' : 'hover:bg-muted'
+            }`}
+          >
+            <OptionIcon name={icons[option]} />
+            <span className="text-sm font-medium">{labels[option] ?? option}</span>
+            {hints[option] ? <span className="self-stretch text-left text-xs text-muted-foreground">{hints[option]}</span> : null}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 function ColumnSelect({ value, onChange, columns }: { value: unknown; onChange: (v: unknown) => void; columns: string[] | null }) {
   const current = asString(value)
   if (!columns) return <Input value={current} placeholder="欄位名稱" onChange={(e) => onChange(e.target.value)} />
@@ -187,7 +222,7 @@ function rightStage(root: JsonSchema, context?: FormContext): FormStage | undefi
   return context.stages.find((s) => s.name === name)
 }
 
-/** 選前面的階段（合併查詢的右表）；下面可以「前往」那個階段，右表是樣本時可以「完整跑一次」。 */
+/** 選前面的階段（結合的右表）；下面可以「前往」那個階段，右表是樣本時可以「完整跑一次」。 */
 function StageSelect({ value, onChange, context }: { value: unknown; onChange: (v: unknown) => void; context?: FormContext }) {
   const current = asString(value)
   const stages = context?.stages ?? []
@@ -225,7 +260,51 @@ function StageSelect({ value, onChange, context }: { value: unknown; onChange: (
       ) : null}
       {picked?.sampled ? (
         <p className="text-xs text-amber-700 dark:text-amber-400">
-          右表是樣本：預覽時有些列可能對不到，匯出時會用完整的資料。按「完整跑一次」用全部資料算出右表。
+          另一張表是樣本：預覽時有些列可能對不到，匯出時會用完整的資料。按「完整跑一次」用全部資料算出另一張表。
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * 從資料讀出的值（例如樞紐要變成欄的值）：平常收起來只顯示一行，旁邊「重新從資料讀取」「修改」。
+ * 依據的欄（schema 的 ui_from）在表單上改了，Python 會自動重新讀。
+ */
+function DataValues({ name, value, onChange, schema, root, context }: FieldProps) {
+  const [editing, setEditing] = useState(false)
+  const items = asList(value)
+  const sourceField = resolve(schema, root).ui_from
+  const sourceProp = sourceField ? root.properties?.[sourceField] : undefined
+  const sourceTitle = sourceProp ? (resolve(sourceProp, root).title ?? sourceField) : ''
+  const column = sourceField ? asString(context?.params[sourceField]) : ''
+  return (
+    <div className="space-y-1.5 rounded-md border p-2">
+      {editing ? (
+        <TagsEditor value={items} onChange={onChange} placeholder="值" />
+      ) : (
+        <p className="text-sm break-all">
+          {items.length ? (
+            <>
+              <span className="text-muted-foreground tabular-nums">{items.length} 個：</span>
+              {items.join('、')}
+            </>
+          ) : (
+            <span className="text-muted-foreground">還沒有</span>
+          )}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Button variant="outline" size="xs" disabled={!column || !context?.onRefresh} onClick={() => context?.onRefresh?.(name)}>
+          <RefreshCw /> 重新從資料讀取
+        </Button>
+        <Button variant="ghost" size="xs" onClick={() => setEditing(!editing)}>
+          {editing ? <ChevronUp /> : <Pencil />} {editing ? '收起' : '修改'}
+        </Button>
+      </div>
+      {column ? (
+        <p className="text-xs text-muted-foreground">
+          從「{column}」{sourceTitle ? `（${sourceTitle}）` : ''}讀出；改了依據的欄會自動重新讀。
         </p>
       ) : null}
     </div>
@@ -406,7 +485,7 @@ function RenameMapEditor({ value, onChange, columns }: { value: unknown; onChang
   )
 }
 
-/** 物件的陣列（例如取代值的「找 → 換成」）：每一項一個框，依子 schema 畫欄位，可以新增、移除。 */
+/** 物件的陣列（例如取代文字的「找 → 換成」）：每一項一個框，依子 schema 畫欄位，可以新增、移除。 */
 function ObjectListEditor(props: FieldProps) {
   const { value, onChange, schema, root, path, issues } = props
   const itemSchema = resolve(resolve(schema, root).items ?? {}, root)
@@ -662,6 +741,10 @@ function control(kind: FieldKind, props: FieldProps) {
       return <StageSelect value={value} onChange={onChange} context={props.context} />
     case 'right_column':
       return <ColumnSelect value={value} onChange={onChange} columns={rightStage(props.root, props.context)?.columns ?? null} />
+    case 'data_values':
+      return <DataValues {...props} />
+    case 'option_cards':
+      return <OptionCards value={value} onChange={onChange} schema={schema} />
     case 'right_columns':
       return <ColumnChecklist value={value} onChange={onChange} columns={rightStage(props.root, props.context)?.columns ?? null} />
     case 'column_order':

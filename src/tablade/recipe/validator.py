@@ -97,7 +97,7 @@ def apply_effect(
 ) -> list[str] | None:
     """依欄位效果推算下一步的資料欄位；``None`` 表示目前不知道有哪些欄位。
 
-    ``stages`` 是前面每個階段輸出的資料欄位（合併查詢檢查右表的欄位用；不知道時不檢查）。
+    ``stages`` 是前面每個階段輸出的資料欄位（結合檢查右表的欄位用；不知道時不檢查）。
     """
     kind = effect["kind"]
     if kind == "keep":
@@ -216,14 +216,14 @@ def _group(columns: list[str] | None, effect: dict[str, Any]) -> list[str] | Non
 
 
 def _pivot(columns: list[str] | None, effect: dict[str, Any]) -> list[str] | None:
-    """樞紐：每一列依的欄，後面接要變成欄的值。"""
+    """樞紐：樞紐表格列依據欄位，後面接要變成欄的值。"""
     index = _unique(list(effect.get("index") or []))
     names = list(effect.get("names") or [])
     if not names:
         raise EffectError("要列出至少一個要變成欄的值")
-    for role, name in (("欄名", effect["on"]), ("值", effect["values"])):
+    for role, name in (("欄", effect["on"]), ("值", effect["values"])):
         if name in index:
-            raise EffectError(f"「{name}」已經是每一列依的欄，不能再當{role}的來源")
+            raise EffectError(f"「{name}」已經是樞紐表格列依據欄位，不能再當樞紐表格{role}依據欄位")
     _check_new_names(names, index)
     if columns is not None:
         _missing(columns, _unique(index + [effect["on"], effect["values"]]))
@@ -233,7 +233,7 @@ def _pivot(columns: list[str] | None, effect: dict[str, Any]) -> list[str] | Non
 def _join(
     columns: list[str] | None, effect: dict[str, Any], stages: dict[str, list[str] | None]
 ) -> list[str] | None:
-    """合併查詢：左連接、內連接時在後面接上從右表帶進來的欄；只留沒對到／有對到的欄位不變。"""
+    """結合：左連接、內連接時在後面接上從右表帶進來的欄；只留沒對到／有對到的欄位不變。"""
     pairs = [p for p in effect.get("on") or [] if isinstance(p, dict)]
     if not pairs:
         raise EffectError("要設定至少一組鍵")

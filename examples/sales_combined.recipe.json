@@ -1,7 +1,7 @@
 {
   "tablade_recipe": "1.0",
-  "name": "門市銷售合計（附加＋合併查詢）",
-  "description": "範例：文字匯出檔與 Excel 各自整理後接成一份（附加），再到品項對照表查出類別（合併查詢）。先執行 uv run python scripts/gen_fixtures.py examples/data 產生假資料",
+  "name": "門市銷售合計（附加＋結合）",
+  "description": "範例：文字匯出檔與 Excel 各自整理後接成一份（附加），再到品項對照表查出類別（結合）。先執行 uv run python scripts/gen_fixtures.py examples/data 產生假資料",
   "stages": [
     {
       "name": "品項對照",

@@ -59,9 +59,6 @@ const MAX_WIDTH = 360
 
 const cellText = (v: Cell) => (v === null ? 'null' : String(v))
 
-/** 可以當分組欄的型別（群組彙總、樞紐只能依文字或日期欄分組；全是空值的欄也算文字）。 */
-const KEY_DTYPES = new Set(['String', 'Date', 'Null'])
-
 function clampWidth(content: number): number {
   return Math.ceil(Math.min(Math.max(content + CELL_EXTRA, MIN_WIDTH), MAX_WIDTH))
 }
@@ -185,71 +182,9 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
         >
           <div className="px-2 py-1.5 text-right text-xs text-muted-foreground">行號</div>
           {visible.map(({ name }) => (
-            <ContextMenu key={name}>
-              <ContextMenuTrigger asChild>
-                <div className="truncate border-l px-2 py-1.5" title={`${name}（${dtypes.get(name) ?? ''}）`}>
-                  {name}
-                </div>
-              </ContextMenuTrigger>
-              <ContextMenuContent>
-                <ContextMenuLabel>欄位「{name}」</ContextMenuLabel>
-                <ContextMenuSeparator />
-                {name === 'line' ? (
-                  <>
-                    <ContextMenuItem onSelect={() => onAddStep({ type: 'split_delimited', context: { column: name } })}>
-                      依分隔符號拆成多欄
-                    </ContextMenuItem>
-                    <ContextMenuItem onSelect={() => onAddStep({ type: 'split_fixed_width', context: { column: name } })}>
-                      依固定位置拆欄
-                    </ContextMenuItem>
-                    <ContextMenuItem onSelect={() => onAddStep({ type: 'classify_rows', context: { column: name } })}>
-                      替列分類
-                    </ContextMenuItem>
-                  </>
-                ) : null}
-                <ContextMenuItem onSelect={() => onAddStep({ type: 'extract_regex', context: { column: name } })}>
-                  用正規表示式擷取
-                </ContextMenuItem>
-                <ContextMenuItem onSelect={() => onAddStep({ type: 'split_column', context: { column: name } })}>
-                  拆欄
-                </ContextMenuItem>
-                <ContextMenuItem onSelect={() => onAddStep({ type: 'fill_down', context: { column: name } })}>
-                  向下填滿
-                </ContextMenuItem>
-                <ContextMenuItem onSelect={() => onAddStep({ type: 'filter', context: { column: name } })}>
-                  篩選：不是空白
-                </ContextMenuItem>
-                <ContextMenuItem onSelect={() => onAddStep({ type: 'trim_clean', context: { column: name } })}>
-                  清理文字
-                </ContextMenuItem>
-                <ContextMenuItem onSelect={() => onAddStep({ type: 'replace_values', context: { column: name } })}>
-                  取代值
-                </ContextMenuItem>
-                <ContextMenuSeparator />
-                <ContextMenuItem onSelect={() => onAddStep({ type: 'parse_number', context: { column: name } })}>
-                  轉成數字
-                </ContextMenuItem>
-                <ContextMenuItem onSelect={() => onAddStep({ type: 'parse_date', context: { column: name } })}>
-                  轉成日期
-                </ContextMenuItem>
-                <ContextMenuSeparator />
-                {KEY_DTYPES.has(dtypes.get(name) ?? '') ? (
-                  <ContextMenuItem onSelect={() => onAddStep({ type: 'group_by', context: { column: name } })}>
-                    依這一欄群組彙總
-                  </ContextMenuItem>
-                ) : null}
-                <ContextMenuItem onSelect={() => onAddStep({ type: 'dedupe', context: { column: name } })}>
-                  移除重複（依這一欄）
-                </ContextMenuItem>
-                <ContextMenuSeparator />
-                <ContextMenuItem onSelect={() => onAddStep({ type: 'rename_columns', context: { column: name } })}>
-                  改欄名
-                </ContextMenuItem>
-                <ContextMenuItem onSelect={() => onAddStep({ type: 'remove_columns', context: { column: name } })}>
-                  刪除這一欄
-                </ContextMenuItem>
-              </ContextMenuContent>
-            </ContextMenu>
+            <div key={name} className="truncate border-l px-2 py-1.5" title={`${name}（${dtypes.get(name) ?? ''}）`}>
+              {name}
+            </div>
           ))}
         </div>
 

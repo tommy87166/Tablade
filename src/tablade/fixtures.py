@@ -389,7 +389,7 @@ CATEGORIES = {"A": "文具", "B": "生活用品", "C": "3C"}
 
 
 def item_table() -> list[dict[str, str]]:
-    """品項對照表：品號、類別、建議售價（合併查詢的右表）。"""
+    """品項對照表：品號、類別、建議售價（結合的右表）。"""
     return [
         {"品號": code, "類別": CATEGORIES[code[0]], "建議售價": str(price)}
         for code, _, price in ITEMS
