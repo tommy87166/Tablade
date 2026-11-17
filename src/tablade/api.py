@@ -79,6 +79,11 @@ class Api:
         """讀檔、轉碼、匯出的進度推給前端（pywebview 的 window.state；最多每 0.2 秒一次）。"""
         if self._window is None:
             return
+        if progress is not None and "stages" in progress:
+            # 每個階段的狀態（階段面板的轉圈／打勾、進度視窗）：另外送，不限頻率
+            with contextlib.suppress(Exception):
+                self._window.state.stages = progress["stages"]
+            return
         now = time.monotonic()
         stage = None if progress is None else f"{progress['stage']}:{progress['file']}"
         if progress is not None and stage == self._progress_stage and now - self._progress_at < 0.2:

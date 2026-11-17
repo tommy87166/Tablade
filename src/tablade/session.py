@@ -37,6 +37,7 @@ from .engine.run import (
     SAMPLE_THRESHOLD,
     RowWarning,
     RunError,
+    StageTracker,
     apply_step,
     execute,
     stage_frame,
@@ -800,9 +801,10 @@ class Session:
         return stage["input"].get("reader") != "stages"
 
     def load_data(self) -> None:
-        """「載入資料」：讀每個讀實際檔的階段的檔案清單（資料大時讀樣本）。
+        """「載入資料」：依序讀每個讀實際檔的階段的檔案清單（資料大時讀樣本），並算出每個階段的結果。
 
         目前的階段一定要有檔案；其他還沒加檔案的階段先跳過。清單上有找不到的檔就不讀。
+        每個階段的狀態（處理中、完成、失敗）透過 progress 回報（畫面上的階段進度）。
         """
         with self._lock:
             base = self._require_recipe()
@@ -821,31 +823,54 @@ class Session:
                 if missing:
                     where = f"（階段「{stage['name']}」）" if multi else ""
                     raise SessionError(f"找不到：{'、'.join(missing)}{where}（請先從檔案清單移除）")
-            for stage in todo:
-                name, source = stage["name"], stage["input"]
-                key = self._source_key(stage)
-                if name in self._sources and self._sources[name][0] == key:
-                    continue  # 已經載入、檔案沒變
-                self._sources.pop(name, None)
-                self._stale.discard(name)
-                try:
-                    parts, files = scan_parts(
-                        source["files"],
-                        source["reader"],
-                        source["encoding"],
-                        base,
-                        self.progress,
-                        source.get("sheet", ""),
-                    )
-                    if sum(f.rows for f in files) <= SAMPLE_THRESHOLD:
-                        frame = concat(parts).collect(engine="streaming")
-                    else:
-                        self._report("讀取預覽樣本")
-                        frame = sample(parts, files, source["reader"], SAMPLE_HEAD, SAMPLE_TAIL)
-                except (InputError, DecodeError, LookupError, pl.exceptions.PolarsError) as err:
-                    where = f"階段「{name}」：" if multi else ""
-                    raise SessionError(f"{where}{err}") from None
-                self._sources[name] = (key, frame, files)
+            tracker = StageTracker([st["name"] for st in self.stages], self.progress)
+            try:
+                for k, stage in enumerate(self.stages):
+                    tracker.start(k)
+                    if stage in todo:
+                        self._load_stage(stage, base, multi)
+                    self._finish_stage(k, tracker)
+            except BaseException:
+                tracker.fail()
+                raise
+
+    def _load_stage(self, stage: dict[str, Any], base: Path, multi: bool) -> None:
+        """讀一個階段的檔（已經載入、檔案沒變就沿用）。"""
+        name, source = stage["name"], stage["input"]
+        key = self._source_key(stage)
+        if name in self._sources and self._sources[name][0] == key:
+            return
+        self._sources.pop(name, None)
+        self._stale.discard(name)
+        try:
+            parts, files = scan_parts(
+                source["files"],
+                source["reader"],
+                source["encoding"],
+                base,
+                self.progress,
+                source.get("sheet", ""),
+            )
+            if sum(f.rows for f in files) <= SAMPLE_THRESHOLD:
+                frame = concat(parts).collect(engine="streaming")
+            else:
+                self._report("讀取預覽樣本")
+                frame = sample(parts, files, source["reader"], SAMPLE_HEAD, SAMPLE_TAIL)
+        except (InputError, DecodeError, LookupError, pl.exceptions.PolarsError) as err:
+            where = f"階段「{name}」：" if multi else ""
+            raise SessionError(f"{where}{err}") from None
+        self._sources[name] = (key, frame, files)
+
+    def _finish_stage(self, index: int, tracker: StageTracker) -> None:
+        """算出第 index 個階段的結果，回報完成（列數）、有錯或還不能算。"""
+        frame = self._stage_result(index)[0]
+        computed = self._computed.get(self.stages[index]["name"], [])
+        if any(c.errors or c.run_error for c in computed) or self._stage_input(index)[3]:
+            tracker.error(index)
+        elif frame is None:
+            tracker.skip(index)
+        else:
+            tracker.done(index, frame.height)
 
     def _load_source(self, stage: dict[str, Any]) -> tuple[pl.DataFrame | None, list[SourceFile]]:
         """這個階段已載入的資料；設定或檔案變了就放掉（要重新按「載入資料」），不會自動讀檔。"""

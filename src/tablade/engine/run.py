@@ -135,6 +135,59 @@ class RunError(RuntimeError):
         super().__init__(f"步驟 {step.id}（{step.type_name()}）失敗：{message}")
 
 
+class StageTracker:
+    """每個階段的狀態（等待中、處理中、完成、失敗），透過 progress 回報給畫面。
+
+    事件和一般進度同一個格式，另外多一個 ``stages``：``[{"name", "status", "rows"}]``；
+    api.py 把它送到畫面的階段進度（階段面板的轉圈／打勾、進度視窗），不顯示在進度列。
+    """
+
+    def __init__(self, names: list[str], progress: Progress) -> None:
+        self.items: list[dict[str, Any]] = [
+            {"name": n, "status": "waiting", "rows": None} for n in names
+        ]
+        self.progress = progress
+        self.current: int | None = None
+        self._emit()
+
+    def _emit(self) -> None:
+        if self.progress is not None:
+            stages = [dict(item) for item in self.items]
+            self.progress({"stage": "", "file": "", "done": 0, "total": 0, "stages": stages})
+
+    def reading(self, index: int) -> None:
+        """讀這個階段的檔（還沒開始處理）：失敗時算這個階段的。"""
+        self.current = index
+
+    def start(self, index: int) -> None:
+        self.current = index
+        self.items[index]["status"] = "running"
+        self._emit()
+
+    def done(self, index: int, rows: int | None) -> None:
+        self.items[index].update(status="done", rows=rows)
+        self.current = None
+        self._emit()
+
+    def error(self, index: int) -> None:
+        """這個階段算完了但有錯（例如某一步參數不合法）。"""
+        self.items[index]["status"] = "error"
+        self.current = None
+        self._emit()
+
+    def skip(self, index: int) -> None:
+        """這個階段還不能算（例如還沒加檔案）：回到等待中。"""
+        self.items[index]["status"] = "waiting"
+        self.current = None
+        self._emit()
+
+    def fail(self) -> None:
+        if self.current is not None:
+            self.items[self.current]["status"] = "error"
+            self.current = None
+            self._emit()
+
+
 def _data_columns(names: list[str]) -> list[str]:
     return [c for c in names if not c.startswith(SYSTEM_PREFIX)]
 
@@ -292,14 +345,19 @@ def stage_frame(names: list[str], frames: dict[str, pl.DataFrame]) -> pl.DataFra
 
 
 def scan_stages(
-    recipe: Recipe, base_dir: Path, progress: Progress = None
+    recipe: Recipe,
+    base_dir: Path,
+    progress: Progress = None,
+    tracker: StageTracker | None = None,
 ) -> dict[str, tuple[list[Part], list[SourceFile]]]:
     """掃描每個讀實際檔的階段（還不讀資料內容）。"""
     out = {}
-    for stage in recipe.stages:
+    for k, stage in enumerate(recipe.stages):
         source = stage.input
         if source.reader == "stages":
             continue
+        if tracker is not None:
+            tracker.reading(k)
         parts, files = scan_parts(
             source.files, source.reader, source.encoding, base_dir, progress, source.sheet
         )
@@ -328,19 +386,40 @@ def execute(
     """依序執行每個階段。``stream`` 模式不回傳 DataFrame（結果直接寫到檔案）。"""
     if write_output and output is None:
         raise ValueError("寫出檔案時要指定 output（recipe 不記輸出位置）")
-    scanned = scan_stages(recipe, base_dir, progress)
+    tracker = StageTracker([s.name for s in recipe.stages], progress)
+    try:
+        return _execute(recipe, base_dir, write_output, output, mode, limit, progress, tracker)
+    except BaseException:
+        tracker.fail()
+        raise
+
+
+def _execute(
+    recipe: Recipe,
+    base_dir: Path,
+    write_output: bool,
+    output: Path | None,
+    mode: Mode,
+    limit: int,
+    progress: Progress,
+    tracker: StageTracker,
+) -> tuple[pl.DataFrame | None, RunReport]:
+    scanned = scan_stages(recipe, base_dir, progress, tracker)
     files = [f for _, found in scanned.values() for f in found]
     input_rows = sum(f.rows for f in files)
     mode = choose_mode(files, write_output, mode)
     if mode == "stream":
         if output is None:
             raise ValueError("stream 模式一定會寫出檔案")
-        report = _execute_stream(recipe, scanned, files, input_rows, output, limit, progress)
+        report = _execute_stream(
+            recipe, scanned, files, input_rows, output, limit, progress, tracker
+        )
         return None, _with_manifest(recipe, report, output)
 
     results: dict[str, pl.DataFrame] = {}
     reports, stages, sample_rows = [], [], 0
-    for stage in recipe.stages:
+    for k, stage in enumerate(recipe.stages):
+        tracker.start(k)
         if stage.name in scanned:
             parts, found = scanned[stage.name]
             frame = (
@@ -381,6 +460,7 @@ def execute(
             )
         results[stage.name] = frame
         stages.append(StageReport(stage.name, frame.height, _data_columns(frame.columns)))
+        tracker.done(k, frame.height)
     frame = results[recipe.stages[-1].name]
     if not recipe.output.keep_system_columns:
         frame = frame.select(_data_columns(frame.columns))
@@ -465,6 +545,7 @@ def _execute_stream(
     target: Path,
     limit: int,
     progress: Progress,
+    tracker: StageTracker,
 ) -> RunReport:
     def report(stage: str) -> None:
         if progress is not None:
@@ -479,6 +560,7 @@ def _execute_stream(
     try:
         for k, stage in enumerate(recipe.stages):
             final = k == len(recipe.stages) - 1
+            tracker.start(k)
             label = f"階段「{stage.name}」：執行（串流）" if multi else "執行（串流）"
             if stage.name in scanned:
                 parts, sources = scanned[stage.name]
@@ -535,6 +617,8 @@ def _execute_stream(
             if final:
                 break
             kept = result.select(clean)
+            kept_rows = kept.select(pl.len()).collect(engine="streaming").item()
+            tracker.done(k, kept_rows)
             results[stage.name] = [
                 (
                     _strip_stage(n, stage.input.stages),
@@ -543,13 +627,7 @@ def _execute_stream(
                 for i, (n, _) in enumerate(parts)
             ]
             tables[stage.name] = kept
-            stage_reports.append(
-                StageReport(
-                    stage.name,
-                    kept.select(pl.len()).collect(engine="streaming").item(),
-                    _data_columns(clean),
-                )
-            )
+            stage_reports.append(StageReport(stage.name, kept_rows, _data_columns(clean)))
 
         reports = []
         for stage in recipe.stages:
@@ -581,6 +659,7 @@ def _execute_stream(
         finally:
             tmp.unlink(missing_ok=True)
         rows = pl.scan_parquet(target).select(pl.len()).collect().item()
+        tracker.done(len(recipe.stages) - 1, rows)
     finally:
         shutil.rmtree(staged, ignore_errors=True)
     columns = _data_columns(keep)

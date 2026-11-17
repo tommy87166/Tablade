@@ -6,7 +6,7 @@
  * 用假資料跑過範例 recipe 的真實畫面狀態，鍵是「階段:步驟」。切換階段、選取步驟會切換畫面；其他修改只回傳目前的狀態。
  * 看多個階段：`uv run python scripts/gen_frontend_dev_data.py --recipe sales_combined`。
  */
-import type { Cell, ColumnsInfo, Progress, ReadyInfo, RowsPage, TabladeApi, ViewState } from './bridge'
+import type { Cell, ColumnsInfo, Progress, ReadyInfo, RowsPage, StageRun, TabladeApi, ViewState } from './bridge'
 
 interface Sample {
   ready: { ok: true } & ReadyInfo
@@ -50,14 +50,32 @@ const fail = () => delay({ ok: false as const, error: missing })
 const progressState = new EventTarget()
 const pushProgress = (value: Progress | null) =>
   progressState.dispatchEvent(new CustomEvent('change', { detail: { key: 'progress', value } }))
+const pushStages = (value: StageRun[] | null) =>
+  progressState.dispatchEvent(new CustomEvent('change', { detail: { key: 'stages', value } }))
+
+/** 假的階段進度：每個階段依序轉圈、打勾（列數用預覽的列數）。 */
+async function fakeStages(perStage: (index: number) => Promise<void>) {
+  const stages = current().stages
+  const runs: StageRun[] = stages.map((s) => ({ name: s.name, status: 'waiting', rows: null }))
+  pushStages(runs.map((r) => ({ ...r })))
+  for (let i = 0; i < runs.length; i++) {
+    runs[i].status = 'running'
+    pushStages(runs.map((r) => ({ ...r })))
+    await perStage(i)
+    runs[i] = { ...runs[i], status: 'done', rows: stages[i].rows }
+    pushStages(runs.map((r) => ({ ...r })))
+  }
+}
 
 /** 假的匯出：看得到「執行（串流）」的行數與百分比，再來是沒有百分比的「寫出 Parquet」。 */
 async function fakeExport() {
-  const total = 40_743_027
-  for (let i = 0; i <= 30; i++) {
-    pushProgress({ stage: '執行（串流）', file: '', done: Math.round((total * i) / 30), total, unit: 'rows' })
-    await delay(null, 200)
-  }
+  const total = 4_074_302
+  await fakeStages(async (stage) => {
+    for (let i = 0; i <= 10; i++) {
+      pushProgress({ stage: `階段 ${stage + 1}：執行（串流）`, file: '', done: Math.round((total * i) / 10), total, unit: 'rows' })
+      await delay(null, 150)
+    }
+  })
   pushProgress({ stage: '寫出 Parquet', file: '', done: 0, total: 0 })
   await delay(null, 1500)
   pushProgress(null)
@@ -133,8 +151,9 @@ export const mockApi: TabladeApi = sample
       add_files: () => withState({ cancelled: true }),
       add_file_entry: () => withState(),
       remove_file: () => withState(),
-      load_data: () => {
+      load_data: async () => {
         loaded = true
+        await fakeStages(() => delay(undefined, 300))
         return withState()
       },
       set_input: () => withState(),

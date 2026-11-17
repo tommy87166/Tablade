@@ -627,3 +627,52 @@ def test_stream_matches_eager_with_join_before_merge(workdir):
     assert text_rows["建議售價"].drop_nulls().len() > 0
     tj = next(s for s in streamed.steps if s.id == "tj")
     assert tj.warning_count > 0 and tj.stage == "文字明細"
+
+
+def stage_events(seen: list[dict]) -> list[list[tuple]]:
+    return [
+        [(s["name"], s["status"], s["rows"]) for s in p["stages"]] for p in seen if "stages" in p
+    ]
+
+
+@pytest.mark.parametrize("mode", ["eager", "stream"])
+def test_stage_progress_is_reported_in_order(workdir, mode):
+    """每個階段依序回報：處理中 → 完成（列數），回報的事件和一般進度同一個格式。"""
+    seen: list[dict] = []
+    r = parse_recipe(load_json(COMBINED))
+    execute(r, workdir, output=workdir / "s.parquet", mode=mode, progress=seen.append)
+    events = stage_events(seen)
+    names = ["品項對照", "文字明細", "Excel明細", "預設階段"]
+    assert events[0] == [(n, "waiting", None) for n in names]
+    assert events[-1] == [
+        ("品項對照", "done", 6),
+        ("文字明細", "done", 70),
+        ("Excel明細", "done", 20),
+        ("預設階段", "done", 90),
+    ]
+    running = [
+        next(n for n, status, _ in e if status == "running")
+        for e in events
+        if any(s == "running" for _, s, _ in e)
+    ]
+    assert running == names  # 一次只有一個階段在處理，依序
+    assert all({"stage", "file", "done", "total"} <= p.keys() for p in seen)
+
+
+def test_failed_stage_is_marked(workdir):
+    data = json.loads(COMBINED.read_text(encoding="utf-8"))
+    data["stages"][1]["steps"].append(
+        {"id": "bad", "type": "trim_clean", "columns": ["金額"]}
+    )  # 金額已經是數字
+    path = workdir / "bad.recipe.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+    seen: list[dict] = []
+    with pytest.raises(engine_run.RunError):
+        execute(
+            parse_recipe(load_json(path)),
+            workdir,
+            output=workdir / "s.parquet",
+            progress=seen.append,
+        )
+    last = stage_events(seen)[-1]
+    assert [s for _, s, _ in last] == ["done", "error", "waiting", "waiting"]

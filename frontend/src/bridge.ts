@@ -254,6 +254,14 @@ export interface Progress {
   unit?: 'bytes' | 'rows' | 'files'
 }
 
+/** 處理中每個階段的狀態（Python 推送到 window.state.stages；engine/run.py 的 StageTracker） */
+export interface StageRun {
+  name: string
+  status: 'waiting' | 'running' | 'done' | 'error'
+  /** 完成時結果有幾列 */
+  rows: number | null
+}
+
 /** 型別分頁的一欄（session.py 的 column_summary） */
 export interface ColumnInfo {
   /** 第幾個資料欄（和刪除欄的位置相同）；系統欄位是 null */
@@ -348,8 +356,20 @@ export interface TabladeApi {
 
 declare global {
   interface Window {
-    pywebview?: { api: TabladeApi; state?: EventTarget & { progress?: Progress | null } }
+    pywebview?: { api: TabladeApi; state?: EventTarget & { progress?: Progress | null; stages?: StageRun[] | null } }
   }
+}
+
+/** 訂閱 Python 推送的階段狀態（處理並匯出、載入資料、完整跑一次）；回傳取消訂閱的函式。 */
+export function onStages(listener: (stages: StageRun[] | null) => void): () => void {
+  const state = window.pywebview?.state
+  if (!state) return () => {}
+  const handler = (event: Event) => {
+    const detail = (event as CustomEvent<{ key: string; value: unknown }>).detail
+    if (detail?.key === 'stages') listener((detail.value as StageRun[] | null) ?? null)
+  }
+  state.addEventListener('change', handler)
+  return () => state.removeEventListener('change', handler)
 }
 
 /** 訂閱 Python 推送的進度；回傳取消訂閱的函式。 */

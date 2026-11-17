@@ -643,3 +643,38 @@ def test_too_many_pivot_values_are_not_cut_silently(data, monkeypatch):
     s.update_step(index, {**params, "on": "門市", "values": "金額"})
     assert s.steps[index]["columns"] == ["北區門市", "中區門市", "南區門市"]
     assert not [e for e in s.state()["steps"][index]["errors"] if e["path"] == "columns"]
+
+
+def test_load_data_reports_each_stage(data):
+    target = data.parent / "combined.recipe.json"
+    target.write_text(
+        (ROOT / "examples" / "sales_combined.recipe.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    s = Session()
+    s.load_recipe(target)
+    seen: list[dict] = []
+    s.progress = seen.append
+    s.load_data()
+    last = [p["stages"] for p in seen if "stages" in p][-1]
+    assert [(x["name"], x["status"], x["rows"]) for x in last] == [
+        ("品項對照", "done", 6),
+        ("文字明細", "done", 70),
+        ("Excel明細", "done", 20),
+        ("預設階段", "done", 90),
+    ]
+    # 有錯的階段標成失敗，還不能算的回到等待中
+    s.select_stage(1)
+    s.add_step("trim_clean", {"column": "金額"})
+    s.add_stage("新的")  # 插在文字明細前面，還沒有檔案
+    s.select_stage(0)
+    seen.clear()
+    s.load_data()
+    last = [p["stages"] for p in seen if "stages" in p][-1]
+    assert [(x["name"], x["status"]) for x in last] == [
+        ("品項對照", "done"),
+        ("新的", "waiting"),
+        ("文字明細", "error"),
+        ("Excel明細", "done"),
+        ("預設階段", "waiting"),  # 讀的文字明細有錯，算不出來
+    ]

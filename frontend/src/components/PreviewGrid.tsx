@@ -59,6 +59,43 @@ const MAX_WIDTH = 360
 
 const cellText = (v: Cell) => (v === null ? 'null' : String(v))
 
+/** 使用者拖曳調過的欄寬（依欄名）：切換步驟、階段時同名欄維持；只記在這次開著的期間。 */
+const manualWidths = new Map<string, number>()
+const RESIZE_MIN = 40
+const RESIZE_MAX = 1200
+
+/** 欄標題右邊界的拖曳把手：拖曳調整欄寬，雙擊回到自動寬度。 */
+function ResizeHandle({ name, width, onResize }: { name: string; width: number; onResize: () => void }) {
+  const drag = useRef<{ x: number; width: number } | null>(null)
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={`調整「${name}」的欄寬`}
+      title="拖曳調整欄寬，雙擊回到自動寬度"
+      className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-primary/40"
+      onPointerDown={(e) => {
+        e.preventDefault()
+        e.currentTarget.setPointerCapture(e.pointerId)
+        drag.current = { x: e.clientX, width }
+      }}
+      onPointerMove={(e) => {
+        if (!drag.current) return
+        const next = Math.round(drag.current.width + e.clientX - drag.current.x)
+        manualWidths.set(name, Math.min(RESIZE_MAX, Math.max(RESIZE_MIN, next)))
+        onResize()
+      }}
+      onPointerUp={() => {
+        drag.current = null
+      }}
+      onDoubleClick={() => {
+        manualWidths.delete(name)
+        onResize()
+      }}
+    />
+  )
+}
+
 function clampWidth(content: number): number {
   return Math.ceil(Math.min(Math.max(content + CELL_EXTRA, MIN_WIDTH), MAX_WIDTH))
 }
@@ -164,7 +201,10 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
     span.textContent = ''
     setMeasured({ widths, line })
   }, [visible, firstPage, maxLineText])
-  const widths = measured && measured.widths.length === visible.length ? measured.widths : estimated
+  const [, setResized] = useState(0)
+  const resized = useCallback(() => setResized((n) => n + 1), [])
+  const auto = measured && measured.widths.length === visible.length ? measured.widths : estimated
+  const widths = visible.map(({ name }, k) => manualWidths.get(name) ?? auto[k])
   const lineWidth = measured?.line ?? Math.max(56, maxLineText.length * 7.5 + 22)
   const template = `${lineWidth}px ${widths.map((w) => `${w}px`).join(' ')}`
 
@@ -181,9 +221,10 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
           style={{ gridTemplateColumns: template, height: ROW_HEIGHT + 8 }}
         >
           <div className="px-2 py-1.5 text-right text-xs text-muted-foreground">行號</div>
-          {visible.map(({ name }) => (
-            <div key={name} className="truncate border-l px-2 py-1.5" title={`${name}（${dtypes.get(name) ?? ''}）`}>
+          {visible.map(({ name }, k) => (
+            <div key={name} className="relative truncate border-l px-2 py-1.5" title={`${name}（${dtypes.get(name) ?? ''}）`}>
               {name}
+              <ResizeHandle name={name} width={widths[k]} onResize={resized} />
             </div>
           ))}
         </div>

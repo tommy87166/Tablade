@@ -34,6 +34,8 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/componen
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import {
   onProgress,
+  onStages,
+  type StageRun,
   waitForApi,
   type Issue,
   type Progress,
@@ -50,6 +52,7 @@ import { CollapseButton, CollapsiblePane, HEADER_HEIGHT, PaneHeader, PaneMeta, P
 import { RecipeTitle } from './components/RecipeTitle'
 import { SelftestDialog } from './components/SelftestDialog'
 import { ReportDialog } from './components/ReportDialog'
+import { RunDialog } from './components/RunDialog'
 import { InputPanel, OutputPanel } from './components/SourcePanel'
 import { StagesBar } from './components/StagesBar'
 import { StepsPanel } from './components/StepsPanel'
@@ -162,6 +165,11 @@ export default function App() {
   const [report, setReport] = useState<{ open: boolean; issues: Issue[]; text: string }>({ open: false, issues: [], text: '' })
   const [selftest, setSelftest] = useState<SelftestResult | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
+  /** 處理中每個階段的狀態（Python 推送） */
+  const [stageRuns, setStageRuns] = useState<StageRun[] | null>(null)
+  const stageRunsRef = useRef<StageRun[] | null>(null)
+  /** 階段進度視窗：處理並匯出、載入資料、完整跑一次；autoClose 是成功時自動關掉 */
+  const [run, setRun] = useState<{ title: string; autoClose: boolean; finished: boolean; failed: boolean; result?: string } | null>(null)
   const [update, setUpdate] = useState<UpdateInfo | null | undefined>(undefined)
   const grid = useRef<GridHandle>(null)
   const stagesPanel = usePanelRef()
@@ -226,6 +234,10 @@ export default function App() {
       setApi(target)
       setInfo(ready)
       onProgress(setProgress)
+      onStages((stages) => {
+        stageRunsRef.current = stages
+        setStageRuns(stages)
+      })
       const first = await target.state()
       if (first.ok) setState(first.state)
       setStatus({ text: '就緒。先新增或開啟 Recipe。' })
@@ -270,7 +282,7 @@ export default function App() {
     },
     loadData: async () => {
       if (!api) return
-      const res = await call('載入資料', () => api.load_data())
+      const res = await runStages('載入資料', true, () => call('載入資料', () => api.load_data()))
       if (res) {
         const input = res.state.input
         setStatus({
@@ -280,12 +292,14 @@ export default function App() {
     },
     exportParquet: async () => {
       if (!api) return
-      const res = await call('處理並匯出資料', () => api.export_parquet())
+      const res = await runStages('處理並匯出資料', false, () => call('處理並匯出資料', () => api.export_parquet()))
       if (res && !res.cancelled) {
         const warn = res.warnings ? `，警告 ${res.warnings.toLocaleString()} 則` : ''
         const how = res.mode === 'stream' ? '（串流處理全部資料）' : ''
         const record = res.manifest ? `；另寫出處理紀錄 ${res.manifest.split('/').pop()}` : ''
-        setStatus({ text: `已匯出 ${res.path}：${res.rows?.toLocaleString()} 列 × ${res.columns} 欄${warn}${how}${record}` })
+        const text = `已匯出 ${res.path}：${res.rows?.toLocaleString()} 列 × ${res.columns} 欄${warn}${how}${record}`
+        setStatus({ text })
+        setRun((r) => r && { ...r, result: text })
       }
     },
     downloadSkill: async () => {
@@ -300,6 +314,25 @@ export default function App() {
     },
     undo: () => api && call('復原', () => api.undo()),
     redo: () => api && call('重做', () => api.redo()),
+  }
+
+  /** 會依序跑好幾個階段的動作：開階段進度視窗（收到第一個階段狀態才顯示；取消存檔對話框就不顯示）。 */
+  async function runStages<T>(title: string, autoClose: boolean, fn: () => Promise<T | null>): Promise<T | null> {
+    stageRunsRef.current = null
+    setStageRuns(null)
+    setRun({ title, autoClose, finished: false, failed: false })
+    const res = await fn()
+    // 執行期間 Python 推送的階段狀態（ref 在 await 之後才會有值）
+    const runs = stageRunsRef.current as StageRun[] | null
+    const failed = res === null || (runs ?? []).some((s) => s.status === 'error')
+    const cancelled = res !== null && typeof res === 'object' && 'cancelled' in res && res.cancelled === true
+    if (cancelled || runs === null || (autoClose && !failed)) {
+      setRun(null)
+      setStageRuns(null)
+    } else {
+      setRun((r) => r && { ...r, finished: true, failed })
+    }
+    return res
   }
 
   const showReport = async (issues?: Issue[]) => {
@@ -390,6 +423,24 @@ export default function App() {
         report={report.text}
       />
       <SelftestDialog result={info.smoke ? null : selftest} onClose={() => setSelftest(null)} />
+      {run && stageRuns ? (
+        <RunDialog
+          title={run.title}
+          stages={stageRuns}
+          detail={
+            progress && progress.total > 0
+              ? `${formatAmount(progress)}（${Math.round(Math.min(progress.done / progress.total, 1) * 100)}%）`
+              : (progress?.stage ?? '')
+          }
+          busy={busy}
+          result={run.result}
+          failed={run.failed}
+          onClose={() => {
+            setRun(null)
+            setStageRuns(null)
+          }}
+        />
+      ) : null}
     </>
   )
 
@@ -563,6 +614,7 @@ export default function App() {
                 state={state}
                 busy={busy}
                 onCollapse={() => stagesPanel.current?.collapse()}
+                runs={run ? stageRuns : null}
                 onSelect={(i) => void call('切換階段', () => api.select_stage(i))}
                 onAdd={async (name, before) => {
                   const res = await call('新增階段', () => api.add_stage(name, before))
@@ -739,7 +791,7 @@ export default function App() {
                       context={{
                         stages: earlierStages,
                         onGoStage: (i) => void goStage(i),
-                        onFullRun: (i) => void call('完整跑一次', () => api.full_run(i)),
+                        onFullRun: (i) => void runStages('完整跑一次', true, () => call('完整跑一次', () => api.full_run(i))),
                       }}
                     />
                   ) : outputSelected ? (

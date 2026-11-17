@@ -27,7 +27,8 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { CollapseButton, PaneHeader, PaneTitle } from './Pane'
-import type { StageState, ViewState } from '../bridge'
+import type { StageRun, StageState, ViewState } from '../bridge'
+import { StageRunIcon } from './RunDialog'
 
 const MAX_NAME = 40
 
@@ -41,6 +42,8 @@ interface Props {
   onMove: (index: number, to: number) => void
   onDelete: (index: number) => void
   onCollapse: () => void
+  /** 處理中每個階段的狀態：名稱前面的圓點換成轉圈、打勾、紅叉 */
+  runs?: StageRun[] | null
 }
 
 type Naming = { mode: 'add' } | { mode: 'rename'; stage: StageState } | null
@@ -88,7 +91,8 @@ function StageMenuItems({ parts, stage, total, onRename, onMove, onDelete }: Men
   )
 }
 
-export function StagesBar({ state, busy, onSelect, onAdd, onRename, onMove, onDelete, onCollapse }: Props) {
+export function StagesBar({ state, busy, onSelect, onAdd, onRename, onMove, onDelete, onCollapse, runs }: Props) {
+  const runOf = new Map((runs ?? []).map((r) => [r.name, r]))
   const [naming, setNaming] = useState<Naming>(null)
   const [name, setName] = useState('')
   const [before, setBefore] = useState(true)
@@ -148,7 +152,11 @@ export function StagesBar({ state, busy, onSelect, onAdd, onRename, onMove, onDe
                       className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pl-2 text-left text-sm"
                       onClick={() => !selected && onSelect(stage.index)}
                     >
-                      <span className={`size-1.5 shrink-0 rounded-full ${DOT[stage.status]}`} />
+                      {runOf.has(stage.name) ? (
+                        <StageRunIcon status={runOf.get(stage.name)!.status} className="size-3" />
+                      ) : (
+                        <span className={`size-1.5 shrink-0 rounded-full ${DOT[stage.status]}`} />
+                      )}
                       <span className="min-w-0 flex-1 truncate">{stage.name}</span>
                       {stage.last ? <FileOutput className="size-3.5 shrink-0 text-muted-foreground" aria-label="輸出" /> : null}
                     </button>
