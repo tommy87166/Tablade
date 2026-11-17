@@ -3,7 +3,8 @@
 
     uv run python scripts/gen_frontend_dev_data.py
 
-用假資料跑一次範例 recipe（最後再加上轉型別、刪除欄、清理文字、取代值、改欄名、保留和排序欄位，看得到這些步驟的表單），
+用假資料跑一次範例 recipe（最後再加上轉型別、刪除欄、清理文字、取代值、改欄名、保留和排序欄位、
+移除重複、群組彙總、樞紐、取消樞紐，看得到這些步驟的表單），
 把每一步（含讀取資料、輸出資料）的畫面狀態、前 200 列與型別分頁的內容存起來。之後用一般瀏覽器跑
 ``npm --prefix frontend run dev`` 時，``src/mock.ts`` 會用這份資料，畫面和真的一樣。
 """
@@ -50,6 +51,30 @@ def add_demo_steps(session) -> None:
     session.add_step("select_columns", {}, index=len(session.steps))
     session.update_step(
         len(session.steps) - 1, {"columns": ["日期", "門市", "商品", "付款方式", "金額"]}
+    )
+    # 移除重複、群組彙總、樞紐、取消樞紐（最後的結果是每個門市、每種付款方式的金額合計）
+    session.add_step("dedupe", {}, index=len(session.steps))
+    session.add_step("group_by", {"column": "門市"}, index=len(session.steps))
+    session.update_step(
+        len(session.steps) - 1,
+        {
+            "by": ["門市", "付款方式"],
+            "aggregations": [
+                {"column": "金額", "op": "sum", "name": "金額合計"},
+                {"column": "日期", "op": "max", "name": "最後日期"},
+            ],
+        },
+    )
+    session.add_step("pivot", {"column": "付款方式"}, index=len(session.steps))
+    names = session.steps[-1]["columns"]  # 建立步驟時從資料讀出的付款方式
+    session.update_step(
+        len(session.steps) - 1,
+        {"index": ["門市"], "on": "付款方式", "values": "金額合計", "columns": names},
+    )
+    session.add_step("unpivot", {}, index=len(session.steps))
+    session.update_step(
+        len(session.steps) - 1,
+        {"columns": names, "name_column": "付款方式", "value_column": "金額"},
     )
 
 

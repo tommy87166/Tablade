@@ -154,6 +154,42 @@ def test_new_column_steps_are_checked_by_the_validator():
     assert check(with_step({"type": "rename_columns", "names": {"品名": "商品"}})) == []
 
 
+def test_aggregate_steps_are_checked_by_the_validator():
+    """群組彙總：彙總清單裡的欄名也會檢查；分組之後只剩分組欄與彙總欄。"""
+
+    def with_steps(*steps: dict) -> dict:
+        return mutate(
+            lambda d: d["steps"].extend({"id": f"z{i}", **s} for i, s in enumerate(steps))
+        )
+
+    group = {
+        "type": "group_by",
+        "by": ["門市"],
+        "aggregations": [{"column": "金頟", "op": "max", "name": "最大"}],
+    }
+    issues = check(with_steps(group))
+    assert paths(issues) == ["steps[8].aggregations[0].column"]
+    assert "是不是「金額」？" in issues[0]["hint"]
+    ok = {**group, "aggregations": [{"column": "金額", "op": "max", "name": "最大"}]}
+    assert check(with_steps(ok)) == []
+    later = {"type": "fill_down", "columns": ["品名"]}
+    issues = check(with_steps(ok, later))
+    assert paths(issues) == ["steps[9].columns[0]"]
+    assert "目前的欄位：門市、最大、筆數" in issues[0]["hint"]
+    empty = {"type": "group_by", "by": ["門市"], "count_as": ""}
+    assert "要有至少一項彙總" in check(with_steps(empty))[0]["error"]
+    pivot = {
+        "type": "pivot",
+        "index": ["門市"],
+        "on": "通路",
+        "values": "金額",
+        "columns": ["門市"],
+    }
+    assert "新欄名「門市」和現有欄位重複" in check(with_steps(pivot))[0]["error"]
+    unpivot = {"type": "unpivot", "columns": ["品號", "品名"], "value_column": "金額"}
+    assert "新欄名「金額」和現有欄位重複" in check(with_steps(unpivot))[0]["error"]
+
+
 def test_column_refs_inside_filter_conditions():
     data = mutate(lambda d: d["steps"][7]["conditions"][0].update(column="價格"))
     assert paths(check(data)) == ["steps[7].conditions[0].column"]

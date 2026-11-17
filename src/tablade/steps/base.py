@@ -14,11 +14,12 @@
   直接把整個 lf 當成一個檔處理；需要整檔資訊（例如列數、第一列）時用 ``collect_small()``。
 - ``per_file = False`` 的步驟一列一列處理，可能收到任意切法的資料（預覽時是整張表）。
 - ``combines = True`` 的步驟（合併來源檔）由引擎呼叫 ``combine(parts)``，不呼叫 ``apply()``；
-  以後要看整份資料的步驟（group_by、去重、排序、join）也要做成這種。
+  以後要接多個輸入的步驟（join、附加查詢）也要做成這種。要看整個來源檔的步驟（群組彙總、
+  移除重複、樞紐）是 ``per_file = True``：合併來源檔之前每個檔各自處理，合併之後就是整份。
 
 **串流規則**（幾 GB 的檔案也要在固定記憶體內跑完）：
 - 每個 part 已經依 ``__line_no`` 排好，filter / with_columns 都會保持順序，
-  所以步驟**不要再 sort**（排序會把整份資料放進記憶體）。
+  所以步驟**不要再 sort**（排序會把整份資料放進記憶體）；只有彙總後的少量結果可以排序。
 - 不要用 window 函式（``.over()``）、``replace_strict``、呼叫 Python 的 ``map_batches``：
   串流引擎不支援，會退回整份放進記憶體。
 """
@@ -43,6 +44,8 @@ ORDER = (SOURCE_FILE, LINE_NO)
 SYSTEM_PREFIX = "__"
 TEMP_PREFIX = "__w_"
 ROW_INDEX = "__g"
+POSITION = f"{TEMP_PREFIX}position"
+"""串流執行時每一列在所有輸入裡的位置（回報進度用，engine/progress.py）；彙總類的步驟要保留它。"""
 
 NonEmpty = Annotated[str, StringConstraints(min_length=1)]
 ColumnRef = Annotated[str, Field(min_length=1, json_schema_extra={"ui": "column"})]
@@ -90,6 +93,13 @@ class Step(BaseModel):
     """不是單純「分別處理／無關」時，畫面上改顯示這句（例如合併來源檔）。"""
     combines: ClassVar[bool] = False
     """True：把所有 part 接成新的 part（引擎呼叫 ``combine()``，不呼叫 ``apply()``）。"""
+    reshapes: ClassVar[bool] = False
+    """True：輸出的列不再一對一對應輸入的列（群組彙總、樞紐、取消樞紐）。
+
+    之前步驟的暫存欄位（警告）不會帶過去；串流執行時引擎會在這一步之前先算好之前步驟的警告
+    （合併來源檔也是：合併之後來源檔與行號都變了）。
+    這種步驟用 ``reshape_order()`` 排輸出欄位：系統欄位、資料欄、位置欄（回報進度用）、自己的暫存欄。
+    """
 
     @classmethod
     def type_name(cls) -> str:
@@ -140,6 +150,14 @@ class Step(BaseModel):
         effect = resolve_effect(self.effect, self.model_dump(mode="json"))
         temps = [c for c in names if c.startswith(TEMP_PREFIX)]
         return system_columns(names) + apply_effect(data, effect) + temps
+
+    def reshape_order(self, lf: pl.LazyFrame, own_temps: list[str] | None = None) -> list[str]:
+        """彙總類步驟的輸出欄位：不保留之前步驟的暫存欄位，只留位置欄與這一步自己的暫存欄。"""
+        names = lf.collect_schema().names()
+        data = [c for c in names if not c.startswith(SYSTEM_PREFIX)]
+        effect = resolve_effect(self.effect, self.model_dump(mode="json"))
+        position = [POSITION] if POSITION in names else []
+        return system_columns(names) + apply_effect(data, effect) + position + (own_temps or [])
 
 
 def system_columns(names: list[str]) -> list[str]:

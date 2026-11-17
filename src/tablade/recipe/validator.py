@@ -31,7 +31,19 @@ EMBEDDED_SPEC: dict[str, Any] | None = None
 
 SYSTEM_COLUMNS = ("__source_file", "__line_no", "__sheet", "__row_type")
 VERSION_RE = re.compile(r"^(\d+)\.(\d+)$")
-EFFECT_KINDS = ("keep", "add", "split", "replace_data", "rename_data", "drop", "select", "rename")
+EFFECT_KINDS = (
+    "keep",
+    "add",
+    "split",
+    "replace_data",
+    "rename_data",
+    "drop",
+    "select",
+    "rename",
+    "unpivot",
+    "group",
+    "pivot",
+)
 
 Issue = dict[str, Any]
 
@@ -107,6 +119,12 @@ def apply_effect(columns: list[str] | None, effect: dict[str, Any]) -> list[str]
         return _select(columns, list(effect.get("names") or []))
     if kind == "rename":
         return _rename(columns, dict(effect.get("names") or {}))
+    if kind == "unpivot":
+        return _unpivot(columns, effect)
+    if kind == "group":
+        return _group(columns, effect)
+    if kind == "pivot":
+        return _pivot(columns, effect)
     raise EffectError(f"未知的欄位效果：{kind}")
 
 
@@ -144,6 +162,51 @@ def _rename(columns: list[str] | None, names: dict[str, str]) -> list[str] | Non
     if repeated:
         raise EffectError(f"改完後欄名重複：{'、'.join(repeated)}")
     return result
+
+
+def _unique(names: list[str]) -> list[str]:
+    return list(dict.fromkeys(names))
+
+
+def _unpivot(columns: list[str] | None, effect: dict[str, Any]) -> list[str] | None:
+    """取消樞紐：沒攤開的欄保留，後面接「名稱欄、值欄」。"""
+    picked = _unique(list(effect.get("columns") or []))
+    if not picked:
+        raise EffectError("要選至少一個要攤開的欄位")
+    if columns is None:
+        return None
+    _missing(columns, picked)
+    kept = [c for c in columns if c not in picked]
+    _check_new_names([effect["name"], effect["value"]], kept)
+    return kept + [effect["name"], effect["value"]]
+
+
+def _group(columns: list[str] | None, effect: dict[str, Any]) -> list[str] | None:
+    """群組彙總：分組欄，後面接每個彙總的新欄名與筆數欄。分組後的欄位不看之前有哪些欄。"""
+    by = _unique(list(effect.get("by") or []))
+    aggregations = list(effect.get("aggregations") or [])
+    names = [a["name"] for a in aggregations] + ([effect["count"]] if effect.get("count") else [])
+    if not names:
+        raise EffectError("要有至少一項彙總，或另外加一欄筆數")
+    _check_new_names(names, by)
+    if columns is not None:
+        _missing(columns, _unique(by + [a["column"] for a in aggregations]))
+    return by + names
+
+
+def _pivot(columns: list[str] | None, effect: dict[str, Any]) -> list[str] | None:
+    """樞紐：每一列依的欄，後面接要變成欄的值。"""
+    index = _unique(list(effect.get("index") or []))
+    names = list(effect.get("names") or [])
+    if not names:
+        raise EffectError("要列出至少一個要變成欄的值")
+    for role, name in (("欄名", effect["on"]), ("值", effect["values"])):
+        if name in index:
+            raise EffectError(f"「{name}」已經是每一列依的欄，不能再當{role}的來源")
+    _check_new_names(names, index)
+    if columns is not None:
+        _missing(columns, _unique(index + [effect["on"], effect["values"]]))
+    return index + names
 
 
 def _drop(columns: list[str] | None, effect: dict[str, Any]) -> list[str] | None:

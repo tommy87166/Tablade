@@ -59,6 +59,9 @@ const MAX_WIDTH = 360
 
 const cellText = (v: Cell) => (v === null ? 'null' : String(v))
 
+/** 可以當分組欄的型別（群組彙總、樞紐只能依文字或日期欄分組；全是空值的欄也算文字）。 */
+const KEY_DTYPES = new Set(['String', 'Date', 'Null'])
+
 function clampWidth(content: number): number {
   return Math.ceil(Math.min(Math.max(content + CELL_EXTRA, MIN_WIDTH), MAX_WIDTH))
 }
@@ -228,6 +231,15 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
                 </ContextMenuItem>
                 <ContextMenuItem onSelect={() => onAddStep({ type: 'parse_date', context: { column: name } })}>
                   轉成日期
+                </ContextMenuItem>
+                <ContextMenuSeparator />
+                {KEY_DTYPES.has(dtypes.get(name) ?? '') ? (
+                  <ContextMenuItem onSelect={() => onAddStep({ type: 'group_by', context: { column: name } })}>
+                    依這一欄群組彙總
+                  </ContextMenuItem>
+                ) : null}
+                <ContextMenuItem onSelect={() => onAddStep({ type: 'dedupe', context: { column: name } })}>
+                  移除重複（依這一欄）
                 </ContextMenuItem>
                 <ContextMenuSeparator />
                 <ContextMenuItem onSelect={() => onAddStep({ type: 'rename_columns', context: { column: name } })}>

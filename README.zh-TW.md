@@ -41,10 +41,10 @@
 > 測試資料一律由 `scripts/gen_fixtures.py` 產生；pre-commit hook 會擋下資料檔與疑似個資。
 > 詳見 [不讓真實資料進入 repo](#️-不讓真實資料進入-repo)。
 
-> **目前進度：M4 多檔、Excel 與分段報表完成。** 可以在視窗裡一步一步建立 recipe（套用的步驟、即時預覽、依步驟 schema 自動產生的表單），
-> 也可以用產生的 skill 讓 Microsoft 365 Copilot 撰寫，或從命令列執行。共 19 種步驟：除了移除雜訊列、拆欄（分隔符號或固定位置）、
+> **目前進度：M5 進行中，移除重複、取消樞紐、群組彙總、樞紐完成。** 可以在視窗裡一步一步建立 recipe（套用的步驟、即時預覽、依步驟 schema 自動產生的表單），
+> 也可以用產生的 skill 讓 Microsoft 365 Copilot 撰寫，或從命令列執行。共 23 種步驟：除了移除雜訊列、拆欄（分隔符號或固定位置）、
 > 向下填滿、篩選、合併來源檔，還有替列分類與正規表示式擷取（攤平分段的列印格式報表）、讀 Excel 工作表，以及清理文字（全形轉半形、看不見的字元）、取代值、文字轉數字與日期（轉不了的列附行號警告）、
-> 刪除、保留和排序、改欄名；下方面板的「型別」分頁看得到每一欄的型別，匯出時附上處理紀錄（manifest）。見 [路線圖](#️-路線圖)。
+> 刪除、保留和排序、改欄名，移除重複、取消樞紐、群組彙總、樞紐（合併來源檔之前每個來源檔各自處理）；下方面板的「型別」分頁看得到每一欄的型別，匯出時附上處理紀錄（manifest）。見 [路線圖](#️-路線圖)。
 
 ---
 
@@ -294,16 +294,16 @@ tablade.spec          PyInstaller 設定（以 TABLADE_BUILD 切換 onefile / on
 | M2 UI | 步驟清單（新增、排序、停用、刪除）、預覽表格、參數表單、匯入 recipe 與錯誤報告、下載 skill | 不寫 JSON 也能完成範例清洗流程 ✅ |
 | M3 在地格式與追溯 | `parse_number`、`parse_date`（民國）、`trim_clean`、`replace_values`、`remove_columns`、`select_columns`、`rename_columns`、型別分頁、manifest | 輸出附 manifest，警告附行號 ✅ |
 | M4 多檔與 Excel | glob、diagonal concat、Excel 讀取、`classify_rows`、`extract_regex`、`split_fixed_width` | 分段報表的範例可以完整攤平 ✅ |
-| M5 進階步驟 | join、group_by、unpivot、pivot、dedupe、匯出成 Python 腳本 | — |
+| M5 進階步驟 | `dedupe`、`unpivot`、`group_by`、`pivot` ✅；join、附加查詢（要等多個 input） | — |
 
 ---
 
 ## ⚠️ 已知限制
 
 - **Copilot skill 還沒在 Agent Builder 實測**：skill 的 script 能不能讀到對話中上傳的檔案、沙箱的 Python 版本，要用 probe 確認。
-- **一個 recipe 只能有一個 input**；合併或附加多個 input 在 M5 加入。
+- **一個 recipe 只能有一個 input**；合併或附加多個 input 在 M5 之後的批次加入。
 - **大檔的預覽是樣本。** 超過 20 萬行時，預覽只用每個檔案的前 10 萬行與最後 1,000 行，UI 上每一步的列數是樣本的；
-  匯出時會串流處理全部資料，進度列顯示處理到第幾行與百分比。串流匯出只回報最後的列數，警告也只算最後還留著的列。
+  匯出時會串流處理全部資料，進度列顯示處理到第幾行與百分比。串流匯出只回報最後的列數，警告也只算最後還留著的列。群組彙總、樞紐的預覽也是用樣本算的（樞紐要變成欄的值從預覽的資料讀出，匯出時資料裡多出來的值會產生警告）。
 - **非 UTF-8 的檔案會先轉成 UTF-8 暫存檔**（cp950 單核心約每秒 230 MB；64 MB 以上的檔用多個程序同時轉，最多 8 個，結果和單核心相同；需要約原檔 1.5 倍的暫存空間），關閉視窗時刪除；當掉或被強制結束時留下的副本，下次啟動 Tablade 時清掉。
 - **`csv` 模式的行號假設沒有跨行欄位**；有跨行欄位的檔案請用 `text_lines`。
 - **onefile 啟動較慢**：每次啟動都要先解壓縮；部分防毒軟體或 AppLocker 會擋暫存資料夾裡的程式。Windows 只發布 onefile，遇到這種情況請用 `uv run python scripts/build.py onedir` 另外打包 onedir 版。

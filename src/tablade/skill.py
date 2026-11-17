@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 import zipfile
+from collections import defaultdict
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -42,6 +43,18 @@ _EFFECT_TEXT = {
     "drop": (
         "刪除欄位：by 是 name 時刪除{names}列出的欄位，by 是 position 時刪除{positions}"
         "列出的第幾個資料欄（從 1 起，不算系統欄位）；至少要留下一個資料欄"
+    ),
+    "unpivot": (
+        "沒列在{columns}的資料欄保留不動，後面接{name}與{value}指定的兩個新欄"
+        "（新欄名不能和保留的欄重複）"
+    ),
+    "group": (
+        "資料欄變成{by}列出的分組欄，後面接{aggregations}每一項的 name，最後是{count}指定的筆數欄"
+        "（空字串代表不加）；其他欄都不保留。新欄名不能重複"
+    ),
+    "pivot": (
+        "資料欄變成{index}列出的欄，後面接{names}列出的欄（{on}的值變成欄名）；其他欄都不保留。"
+        "新欄名不能重複，也不能和{index}列出的欄重複"
     ),
 }
 
@@ -137,7 +150,7 @@ def _effect_text(cls: type[Step]) -> str:
         k: (f" `{v[1:]}` 參數" if isinstance(v, str) and v.startswith("$") else v)
         for k, v in effect.items()
     }
-    return template.format(**{k: values.get(k, "") for k in ("names", "source", "positions")})
+    return template.format_map(defaultdict(str, values))
 
 
 def steps_markdown(spec: dict[str, Any] | None = None) -> str:

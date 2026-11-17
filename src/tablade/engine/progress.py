@@ -22,10 +22,8 @@ from pathlib import Path
 import polars as pl
 
 from tablade.ingest.sources import Part, Progress, SourceFile
-from tablade.steps.base import LINE_NO, TEMP_PREFIX
+from tablade.steps.base import LINE_NO, POSITION
 
-POSITION = f"{TEMP_PREFIX}position"
-"""每一列在所有輸入裡的位置。步驟的暫存欄位一定是 ``__w_<步驟 id>_<名稱>``，不會和它撞名。"""
 FILES = 100
 MIN_ROWS_PER_FILE = 50_000
 POLL_SECONDS = 0.2

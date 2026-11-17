@@ -224,6 +224,125 @@ def test_stream_matches_eager_with_text_and_column_steps(workdir):
     assert b["編號"].str.contains(r"^\d+$").all()
 
 
+def run_both(workdir: Path, steps: list[dict], name: str, same_warnings: bool = True):
+    """範例 recipe 後面接上 steps，整份讀進記憶體與串流各跑一次。
+
+    串流執行的警告取自最後的結果（或下一個彙總、合併來源檔之前）：之後被移除的列不算，
+    所以後面有篩選、移除重複時只會是整份讀進記憶體的一部分（``same_warnings=False``）。
+    """
+    data = json.loads(EXAMPLE.read_text(encoding="utf-8"))
+    data["steps"] += steps
+    path = workdir / f"{name}.recipe.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+    r = parse_recipe(load_json(path))
+    _, eager = execute(r, workdir, output=workdir / "e.parquet", mode="eager")
+    _, streamed = execute(r, workdir, output=workdir / "s.parquet", mode="stream")
+    a = pl.read_parquet(workdir / "e.parquet")
+    b = pl.read_parquet(workdir / "s.parquet")
+    assert a.equals(b)
+    assert not [c for c in b.columns if c.startswith("__w_")]
+    if same_warnings:
+        assert warnings_of(streamed) == warnings_of(eager)
+    return b, eager, streamed
+
+
+def warnings_of(report) -> list[tuple]:
+    return sorted(
+        (s.id, s.warning_count, w.source_file, w.line_no, w.message)
+        for s in report.steps
+        for w in s.warnings
+    )
+
+
+AMOUNT = {"id": "n", "type": "parse_number", "columns": ["金額"]}
+BAD_NUMBER = {"id": "bad", "type": "parse_number", "columns": ["品號"]}  # 轉不了：每列都警告
+
+
+def test_stream_warnings_before_merge_point_to_the_original_lines(workdir):
+    """合併來源檔之前的警告：串流時在合併之前就算好，指到原本的來源檔與行號（和整份讀進記憶體一樣）。"""
+    _, _, streamed = run_both(workdir, [BAD_NUMBER, {"id": "m", "type": "merge_files"}], "mw")
+    bad = streamed.steps[-2]
+    assert bad.warning_count == 70
+    assert {w.source_file for w in bad.warnings} == {"data/明細_01.csv", "data/明細_02.csv"}
+
+
+def test_stream_matches_eager_with_group_by_per_file(workdir):
+    """群組彙總在合併來源檔之前：每個來源檔各自分組；之前步驟的警告也一致。"""
+    steps = [
+        AMOUNT,
+        BAD_NUMBER,
+        {
+            "id": "g",
+            "type": "group_by",
+            "by": ["門市", "通路"],
+            "aggregations": [
+                {"column": "金額", "op": "sum", "name": "合計"},
+                {"column": "品名", "op": "n_unique", "name": "品項"},
+            ],
+        },
+    ]
+    b, eager, streamed = run_both(workdir, steps, "group")
+    assert set(b["__source_file"]) == {"data/明細_01.csv", "data/明細_02.csv"}
+    for name, (_, rows) in (
+        ("data/明細_01.csv", messy_export(50, 0)),
+        ("data/明細_02.csv", messy_export(30, 1)),
+    ):
+        part = b.filter(pl.col("__source_file") == name)
+        keys = list(dict.fromkeys((r["門市"], r["通路"]) for r in rows))  # 第一次出現的順序
+        assert list(zip(part["門市"], part["通路"], strict=True)) == keys
+        assert part["筆數"].sum() == len(rows)
+        assert part["__line_no"].is_sorted()
+    assert b.columns == ["__source_file", "__line_no", "門市", "通路", "合計", "品項", "筆數"]
+    assert eager.steps[-2].warning_count == streamed.steps[-2].warning_count == 70
+
+
+def test_stream_matches_eager_with_pivot_and_unpivot_after_merge(workdir):
+    """合併來源檔之後樞紐再取消樞紐：整份一起處理；樞紐的警告在取消樞紐之前就算好。"""
+    steps = [
+        {"id": "m", "type": "merge_files"},
+        AMOUNT,
+        {
+            "id": "p",
+            "type": "pivot",
+            "index": ["付款方式"],
+            "on": "通路",
+            "values": "金額",
+            "columns": ["門市", "網路"],  # 沒列「電話」：每一組都有警告
+        },
+        {"id": "u", "type": "unpivot", "columns": ["門市", "網路"], "name_column": "通路"},
+    ]
+    b, _, streamed = run_both(workdir, steps, "pivot")
+    assert set(b["__source_file"]) == {"合併"} and b.height == 6
+    assert b.columns == ["__source_file", "__line_no", "付款方式", "通路", "值"]
+    assert b["通路"].to_list() == ["門市", "網路"] * 3
+    pivot = next(s for s in streamed.steps if s.id == "p")
+    assert pivot.warning_count == 3
+    assert {w.message for w in pivot.warnings} == {"這一組有沒轉成欄的「通路」：電話"}
+
+
+def test_stream_matches_eager_with_dedupe_then_whole_file_summary(workdir):
+    """移除重複每個來源檔各自找；合併之後不指定分組欄就是整份彙總成一列。"""
+    steps = [
+        BAD_NUMBER,
+        {"id": "d", "type": "dedupe", "columns": ["門市"]},
+        {"id": "m", "type": "merge_files"},
+        {
+            "id": "g",
+            "type": "group_by",
+            "aggregations": [{"column": "門市", "op": "n_unique", "name": "門市數"}],
+        },
+    ]
+    b, eager, streamed = run_both(workdir, steps, "dedupe", same_warnings=False)
+    assert b.drop("__source_file", "__line_no").to_dicts() == [{"門市數": 3, "筆數": 6}]
+    assert b["__line_no"].to_list() == [1]
+    # 移除重複之前的警告：串流時只算移除重複之後還在的列（每個檔 3 列，和篩選一樣），
+    # 而且在合併來源檔之前就算好，指到原本的來源檔與行號
+    pick = lambda rep: {(w.source_file, w.line_no, w.message) for w in rep.steps[-4].warnings}  # noqa: E731
+    assert streamed.steps[-4].warning_count == 6 and eager.steps[-4].warning_count == 70
+    assert pick(streamed) <= pick(eager)
+    assert {f for f, _, _ in pick(streamed)} == {"data/明細_01.csv", "data/明細_02.csv"}
+
+
 def test_auto_mode_samples_dry_runs_and_streams_exports(workdir, monkeypatch):
     monkeypatch.setattr(engine_run, "SAMPLE_THRESHOLD", 10)
     monkeypatch.setattr(engine_run, "SAMPLE_HEAD", 20)

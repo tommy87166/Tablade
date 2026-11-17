@@ -17,6 +17,39 @@
     "recipe_version": "1.0",
     "schema": {
       "$defs": {
+        "Aggregation": {
+          "additionalProperties": false,
+          "properties": {
+            "column": {
+              "minLength": 1,
+              "type": "string",
+              "ui": "column"
+            },
+            "name": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "op": {
+              "default": "sum",
+              "enum": [
+                "sum",
+                "mean",
+                "max",
+                "min",
+                "count",
+                "n_unique",
+                "first",
+                "last"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "column",
+            "name"
+          ],
+          "type": "object"
+        },
         "ClassifyRows": {
           "additionalProperties": false,
           "properties": {
@@ -55,6 +88,46 @@
           "required": [
             "id",
             "rules"
+          ],
+          "type": "object"
+        },
+        "Dedupe": {
+          "additionalProperties": false,
+          "properties": {
+            "columns": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": "array",
+              "ui": "columns"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "keep": {
+              "default": "first",
+              "enum": [
+                "first",
+                "last"
+              ],
+              "type": "string"
+            },
+            "type": {
+              "const": "dedupe",
+              "default": "dedupe",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
           ],
           "type": "object"
         },
@@ -246,6 +319,48 @@
           "required": [
             "id",
             "conditions"
+          ],
+          "type": "object"
+        },
+        "GroupBy": {
+          "additionalProperties": false,
+          "properties": {
+            "aggregations": {
+              "items": {
+                "$ref": "#/$defs/Aggregation"
+              },
+              "type": "array"
+            },
+            "by": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": "array",
+              "ui": "columns"
+            },
+            "count_as": {
+              "default": "筆數",
+              "type": "string"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "type": {
+              "const": "group_by",
+              "default": "group_by",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
           ],
           "type": "object"
         },
@@ -494,6 +609,73 @@
           },
           "required": [
             "id",
+            "columns"
+          ],
+          "type": "object"
+        },
+        "Pivot": {
+          "additionalProperties": false,
+          "properties": {
+            "columns": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "ui": "new_columns"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "index": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": "array",
+              "ui": "columns"
+            },
+            "on": {
+              "minLength": 1,
+              "type": "string",
+              "ui": "column"
+            },
+            "op": {
+              "default": "sum",
+              "enum": [
+                "sum",
+                "mean",
+                "max",
+                "min",
+                "count",
+                "first",
+                "last"
+              ],
+              "type": "string"
+            },
+            "type": {
+              "const": "pivot",
+              "default": "pivot",
+              "type": "string"
+            },
+            "values": {
+              "minLength": 1,
+              "type": "string",
+              "ui": "column"
+            }
+          },
+          "required": [
+            "id",
+            "on",
+            "values",
             "columns"
           ],
           "type": "object"
@@ -1162,6 +1344,54 @@
             "columns"
           ],
           "type": "object"
+        },
+        "Unpivot": {
+          "additionalProperties": false,
+          "properties": {
+            "columns": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "ui": "columns"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "name_column": {
+              "default": "名稱",
+              "minLength": 1,
+              "type": "string"
+            },
+            "skip_empty": {
+              "default": false,
+              "type": "boolean"
+            },
+            "type": {
+              "const": "unpivot",
+              "default": "unpivot",
+              "type": "string"
+            },
+            "value_column": {
+              "default": "值",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "columns"
+          ],
+          "type": "object"
         }
       },
       "additionalProperties": false,
@@ -1186,12 +1416,15 @@
             "discriminator": {
               "mapping": {
                 "classify_rows": "#/$defs/ClassifyRows",
+                "dedupe": "#/$defs/Dedupe",
                 "extract_regex": "#/$defs/ExtractRegex",
                 "fill_down": "#/$defs/FillDown",
                 "filter": "#/$defs/Filter",
+                "group_by": "#/$defs/GroupBy",
                 "merge_files": "#/$defs/MergeFiles",
                 "parse_date": "#/$defs/ParseDate",
                 "parse_number": "#/$defs/ParseNumber",
+                "pivot": "#/$defs/Pivot",
                 "promote_headers": "#/$defs/PromoteHeaders",
                 "remove_blank_rows": "#/$defs/RemoveBlankRows",
                 "remove_bottom_rows": "#/$defs/RemoveBottomRows",
@@ -1203,7 +1436,8 @@
                 "split_column": "#/$defs/SplitColumn",
                 "split_delimited": "#/$defs/SplitDelimited",
                 "split_fixed_width": "#/$defs/SplitFixedWidth",
-                "trim_clean": "#/$defs/TrimClean"
+                "trim_clean": "#/$defs/TrimClean",
+                "unpivot": "#/$defs/Unpivot"
               },
               "propertyName": "type"
             },
@@ -1216,6 +1450,9 @@
               },
               {
                 "$ref": "#/$defs/RemoveBlankRows"
+              },
+              {
+                "$ref": "#/$defs/Dedupe"
               },
               {
                 "$ref": "#/$defs/Filter"
@@ -1263,6 +1500,15 @@
                 "$ref": "#/$defs/ParseDate"
               },
               {
+                "$ref": "#/$defs/Unpivot"
+              },
+              {
+                "$ref": "#/$defs/GroupBy"
+              },
+              {
+                "$ref": "#/$defs/Pivot"
+              },
+              {
                 "$ref": "#/$defs/MergeFiles"
               }
             ]
@@ -1289,6 +1535,12 @@
         },
         "schema_ref": "ClassifyRows"
       },
+      "dedupe": {
+        "effect": {
+          "kind": "keep"
+        },
+        "schema_ref": "Dedupe"
+      },
       "extract_regex": {
         "effect": {
           "keep_source": "$keep_source",
@@ -1310,6 +1562,15 @@
         },
         "schema_ref": "Filter"
       },
+      "group_by": {
+        "effect": {
+          "aggregations": "$aggregations",
+          "by": "$by",
+          "count": "$count_as",
+          "kind": "group"
+        },
+        "schema_ref": "GroupBy"
+      },
       "merge_files": {
         "effect": {
           "kind": "keep"
@@ -1327,6 +1588,16 @@
           "kind": "keep"
         },
         "schema_ref": "ParseNumber"
+      },
+      "pivot": {
+        "effect": {
+          "index": "$index",
+          "kind": "pivot",
+          "names": "$columns",
+          "on": "$on",
+          "values": "$values"
+        },
+        "schema_ref": "Pivot"
       },
       "promote_headers": {
         "effect": {
@@ -1414,6 +1685,15 @@
           "kind": "keep"
         },
         "schema_ref": "TrimClean"
+      },
+      "unpivot": {
+        "effect": {
+          "columns": "$columns",
+          "kind": "unpivot",
+          "name": "$name_column",
+          "value": "$value_column"
+        },
+        "schema_ref": "Unpivot"
       }
     },
     "system_columns": [

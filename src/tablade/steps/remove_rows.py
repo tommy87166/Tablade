@@ -1,4 +1,4 @@
-"""移除列：前 N 列、後 N 列、空白列。"""
+"""移除列：前 N 列、後 N 列、空白列、重複的列。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,16 @@ from typing import Literal
 import polars as pl
 from pydantic import Field
 
-from .base import Example, Step, collect_small, data_columns, is_blank
+from .base import (
+    Example,
+    NonEmpty,
+    Step,
+    StepError,
+    collect_small,
+    data_columns,
+    is_blank,
+    quote_list,
+)
 from .registry import register
 
 
@@ -107,3 +116,58 @@ class RemoveBlankRows(Step):
 
     def describe(self) -> str:
         return "移除空白列"
+
+
+@register
+class Dedupe(Step):
+    """移除重複：依指定的欄判斷重複的列，只留第一筆（或最後一筆）。每個來源檔各自找重複。"""
+
+    type: Literal["dedupe"] = "dedupe"
+    columns: list[NonEmpty] = Field(
+        default_factory=list,
+        title="依哪些欄判斷重複",
+        description="不選代表整列（所有資料欄）都一樣才算重複",
+        json_schema_extra={"ui": "columns"},
+    )
+    keep: Literal["first", "last"] = Field(
+        default="first",
+        title="保留",
+        json_schema_extra={"ui_labels": {"first": "第一筆", "last": "最後一筆"}},
+    )
+
+    label = "移除重複"
+    per_file = True
+    category = "列"
+    ai_notes = (
+        "合併來源檔之前，每個來源檔各自找重複（同樣的值出現在不同檔時都會留著）；"
+        "要跨檔找重複，先用 merge_files。columns 空清單代表所有資料欄都一樣才算重複。"
+        "空字串和 null 是不同的值。留下來的列保留原本的行號與順序。"
+    )
+    examples = (
+        Example(
+            title="同一張單號只留第一筆",
+            params={"columns": ["單號"]},
+            input={"單號": ["0001", "0002", "0001", "0003"], "金額": ["100", "250", "100", "80"]},
+            output={"單號": ["0001", "0002", "0003"], "金額": ["100", "250", "80"]},
+        ),
+    )
+
+    @classmethod
+    def suggest(cls, frame, context):
+        column = context.get("column")
+        return {"columns": [column]} if column in frame.columns else {}
+
+    def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
+        available = data_columns(lf)
+        missing = [c for c in self.columns if c not in available]
+        if missing:
+            raise StepError(f"欄位不存在：{'、'.join(missing)}")
+        subset = list(dict.fromkeys(self.columns)) or available
+        if not subset:
+            return lf
+        return lf.unique(subset, keep=self.keep, maintain_order=True)
+
+    def describe(self) -> str:
+        which = "第一筆" if self.keep == "first" else "最後一筆"
+        by = f"依 {quote_list(self.columns)}" if self.columns else "整列相同"
+        return f"移除重複（{by}，保留{which}）"

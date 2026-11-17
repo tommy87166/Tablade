@@ -13,6 +13,7 @@ from . import fill_down  # noqa: F401  向下填滿
 from . import columns  # noqa: F401  刪除欄、保留和排序欄位、改欄名
 from . import text  # noqa: F401  清理文字、取代值
 from . import convert  # noqa: F401  文字轉數字、文字轉日期
+from . import aggregate  # noqa: F401  取消樞紐、群組彙總、樞紐
 from . import files  # noqa: F401  合併來源檔
 from .registry import all_steps, get
 

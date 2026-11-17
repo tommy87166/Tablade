@@ -63,6 +63,9 @@ def test_per_file_steps():
         "remove_bottom_rows",
         "promote_headers",
         "fill_down",
+        "dedupe",
+        "group_by",
+        "pivot",
         "merge_files",
     }
     assert get("fill_down").summary().endswith("[每個來源檔分別處理]")
@@ -96,6 +99,7 @@ def test_registry_metadata_is_complete():
         "remove_top_rows",
         "remove_bottom_rows",
         "remove_blank_rows",
+        "dedupe",
         "filter",
         "split_delimited",
         "split_column",
@@ -111,6 +115,9 @@ def test_registry_metadata_is_complete():
         "replace_values",
         "parse_number",
         "parse_date",
+        "unpivot",
+        "group_by",
+        "pivot",
         "merge_files",
     ]
     for cls in all_steps():
@@ -788,3 +795,195 @@ def test_split_delimited_matches_python_csv_on_well_formed_lines(delimiter):
         for row in out.select([f"c{i}" for i in range(width)]).iter_rows()
     ]
     assert got == [[f for f in e] for e in expected]
+
+
+# ── 移除重複、彙總 ───────────────────────────────────────────────
+
+
+def lines(df: pl.DataFrame) -> list[tuple[str, int]]:
+    return list(zip(df[SOURCE_FILE].to_list(), df[LINE_NO].to_list(), strict=True))
+
+
+def test_dedupe_by_columns_or_whole_row_per_file():
+    df = frame(
+        {"單號": ["1", "2", "1", "1", "3"], "金額": ["10", "20", "99", "10", "30"]},
+        files=["a", "a", "a", "b", "b"],
+    )
+    first, _, _ = run(make("dedupe", columns=["單號"]), df)
+    assert lines(first) == [("a", 1), ("a", 2), ("b", 1), ("b", 2)]  # 同樣的值在不同檔都留著
+    last, _, _ = run(make("dedupe", columns=["單號"], keep="last"), df)
+    assert lines(last) == [("a", 2), ("a", 3), ("b", 1), ("b", 2)]  # 留下的列照原本的順序
+    whole, _, _ = run(make("dedupe"), df)
+    assert whole.height == 5  # 整列相同才算：「1, 99」和「1, 10」不一樣
+    same = frame({"x": ["a", "a", "", None, "", None]})
+    assert run(make("dedupe"), same)[0]["x"].to_list() == ["a", "", None]  # 空字串和空值不一樣
+    with pytest.raises(RunError, match="欄位不存在：單"):
+        run(make("dedupe", columns=["單"]), df)
+
+
+def test_unpivot_keeps_row_order_line_numbers_and_types():
+    df = frame({"門市": ["北", "中"], "1月": [1, 2], "2月": [3, None]}, files=["a", "b"])
+    out, _, _ = run(make("unpivot", columns=["1月", "2月"]), df)
+    assert lines(out) == [("a", 1), ("a", 1), ("b", 1), ("b", 1)]
+    assert data_of(out) == {
+        "門市": ["北", "北", "中", "中"],
+        "名稱": ["1月", "2月", "1月", "2月"],
+        "值": [1, 3, 2, None],
+    }
+    assert out.schema["值"] == pl.Int64  # 型別一樣：保留
+    skip, _, _ = run(make("unpivot", columns=["1月", "2月"], skip_empty=True), df)
+    assert skip["值"].to_list() == [1, 3, 2]
+    mixed = frame({"a": ["x", " "], "b": [1, 2]})
+    out, _, _ = run(make("unpivot", columns=["a", "b"], skip_empty=True), mixed)
+    assert out.schema["值"] == pl.String and out["值"].to_list() == ["x", "1", "2"]
+    with pytest.raises(RunError, match="新欄名「門市」和現有欄位重複"):
+        run(make("unpivot", columns=["1月"], name_column="門市"), df)
+
+
+def test_group_by_types_and_first_occurrence_order():
+    df = frame(
+        {
+            "門市": ["北", "中", "北", "中"],
+            "日期": ["2026-01-02", "2026-01-05", "2026-01-01", None],
+            "整數": [1, 2, 3, 4],
+            "小數": ["1.50", "2.25", "3.00", "0.10"],
+            "名稱": ["甲", None, "乙", "甲"],
+        }
+    ).with_columns(
+        pl.col("日期").str.to_date(),
+        pl.col("小數").str.to_decimal(scale=2),
+        __line_no=pl.Series([3, 5, 7, 9]),
+    )
+    aggs = [
+        {"column": "整數", "op": "sum", "name": "整數合計"},
+        {"column": "小數", "op": "sum", "name": "小數合計"},
+        {"column": "整數", "op": "mean", "name": "平均"},
+        {"column": "名稱", "op": "count", "name": "有名稱"},
+        {"column": "名稱", "op": "n_unique", "name": "幾種"},
+        {"column": "日期", "op": "max", "name": "最後日期"},
+        {"column": "名稱", "op": "first", "name": "第一個"},
+        {"column": "名稱", "op": "last", "name": "最後一個"},
+    ]
+    out, _, _ = run(make("group_by", by=["門市"], aggregations=aggs), df)
+    assert out[LINE_NO].to_list() == [3, 5]  # 每組第一筆的行號，照第一次出現的順序
+    assert out["門市"].to_list() == ["北", "中"]
+    assert out["整數合計"].to_list() == [4, 6] and out.schema["整數合計"] == pl.Int64
+    assert out.schema["小數合計"] == pl.Decimal(38, 2)
+    assert [str(v) for v in out["小數合計"]] == ["4.50", "2.35"]
+    assert out.schema["平均"] == pl.Float64 and out["平均"].to_list() == [2.0, 3.0]
+    assert out["有名稱"].to_list() == [2, 1] and out.schema["有名稱"] == pl.Int64
+    assert out["幾種"].to_list() == [2, 2]  # 空值也算一種
+    assert out.schema["最後日期"] == pl.Date
+    assert out["第一個"].to_list() == ["甲", None] and out["最後一個"].to_list() == ["乙", "甲"]
+    assert out["筆數"].to_list() == [2, 2] and out.schema["筆數"] == pl.Int64
+
+
+def test_group_by_each_file_and_whole_file():
+    df = frame({"門市": ["北", "中", "北"], "金額": [1, 2, 3]}, files=["a", "a", "b"])
+    out, _, _ = run(make("group_by", by=["門市"]), df)
+    assert lines(out) == [("a", 1), ("a", 2), ("b", 1)]
+    assert data_of(out) == {"門市": ["北", "中", "北"], "筆數": [1, 1, 1]}
+    no_count = [{"column": "金額", "op": "max", "name": "最大"}]
+    out, _, _ = run(make("group_by", by=["門市"], aggregations=no_count, count_as=""), df)
+    assert data_of(out) == {"門市": ["北", "中", "北"], "最大": [1, 2, 3]}
+    whole = make("group_by", aggregations=[{"column": "金額", "op": "sum", "name": "合計"}])
+    out, _, _ = run(whole, df)
+    assert lines(out) == [("a", 1), ("b", 1)] and data_of(out) == {"合計": [3, 3], "筆數": [2, 1]}
+    assert run(whole, df.clear())[0].height == 0  # 沒有資料：不產生彙總列
+
+
+def test_group_by_type_errors():
+    df = frame({"門市": ["北"], "金額": ["100"], "數量": [1]})
+    with pytest.raises(RunError, match="「金額」是文字，合計要先用「文字轉數字」"):
+        run(make("group_by", aggregations=[{"column": "金額", "op": "sum", "name": "合計"}]), df)
+    with pytest.raises(RunError, match="分組欄只能是文字或日期欄：數量（數字）"):
+        run(make("group_by", by=["數量"]), df)
+    with pytest.raises(RunError, match="欄位不存在：店"):
+        run(make("group_by", by=["店"]), df)
+    # 最大、最小、筆數可以用在文字欄
+    ok = make("group_by", aggregations=[{"column": "金額", "op": "max", "name": "最大"}])
+    assert run(ok, df)[0]["最大"].to_list() == ["100"]
+
+
+def test_pivot_empty_cells_ops_and_new_values():
+    df = frame(
+        {
+            "門市": ["北", "北", "中", "北", "中", "南"],
+            "月份": ["1月", "2月", "1月", "1月", "3月", None],
+            "金額": [10, 20, 5, 30, 7, 9],
+        },
+        files=["a", "a", "a", "a", "a", "b"],
+    )
+    pivot = make("pivot", index=["門市"], on="月份", values="金額", columns=["1月", "2月"])
+    out, total, warnings = run(pivot, df)
+    assert lines(out) == [("a", 1), ("a", 3), ("b", 1)]
+    assert data_of(out) == {
+        "門市": ["北", "中", "南"],
+        "1月": [40, 5, None],
+        "2月": [20, None, None],
+    }
+    # 「3月」不在清單裡：警告指到這一組第一筆的行號；月份是空的不算新值
+    assert total == 1
+    assert (warnings[0].source_file, warnings[0].line_no) == ("a", 3)
+    assert warnings[0].message == "這一組有沒轉成欄的「月份」：3月"
+    assert not [c for c in out.columns if c.startswith(TEMP_PREFIX)]
+    last = pivot.model_copy(update={"op": "last"})
+    assert run(last, df)[0]["1月"].to_list() == [30, 5, None]
+    count = pivot.model_copy(update={"op": "count"})
+    assert run(count, df)[0]["1月"].to_list() == [2, 1, None]
+    whole = make("pivot", on="月份", values="金額", columns=["1月", "2月", "3月"])
+    out, total, _ = run(whole, df)
+    assert lines(out) == [("a", 1), ("b", 1)] and total == 0
+    assert data_of(out) == {"1月": [45, None], "2月": [20, None], "3月": [7, None]}
+
+
+def test_pivot_errors():
+    df = frame({"門市": ["北"], "月份": ["1月"], "金額": ["10"]})
+    with pytest.raises(RunError, match="「金額」是文字，合計要先用「文字轉數字」"):
+        run(make("pivot", index=["門市"], on="月份", values="金額", columns=["1月"]), df)
+    first = make("pivot", index=["門市"], on="月份", values="金額", op="first", columns=["1月"])
+    assert run(first, df)[0]["1月"].to_list() == ["10"]
+    with pytest.raises(RunError, match="新欄名「門市」和現有欄位重複"):
+        run(
+            make("pivot", index=["門市"], on="月份", values="金額", op="first", columns=["門市"]),
+            df,
+        )
+
+
+def test_aggregate_suggestions():
+    df = frame({"門市": ["北", "中"], "金額": [1, 2], "月份": ["1月", "2月"]})
+    assert get("group_by").suggest(df, {"column": "門市"}) == {
+        "by": ["門市"],
+        "aggregations": [{"column": "金額", "op": "sum", "name": "金額合計"}],
+    }
+    assert get("group_by").suggest(df, {"column": "金額"})["by"] == []  # 數字欄不能當分組欄
+    assert get("pivot").suggest(df, {"column": "月份"}) == {"on": "月份", "columns": ["1月", "2月"]}
+    assert get("dedupe").suggest(df, {"column": "門市"}) == {"columns": ["門市"]}
+    assert get("unpivot").suggest(df, {"column": "金額"}) == {"columns": ["金額"]}
+
+
+def test_aggregate_effects():
+    cols = ["門市", "1月", "2月"]
+    unpivot = {"kind": "unpivot", "columns": ["1月", "2月"], "name": "月份", "value": "金額"}
+    assert apply_effect(cols, unpivot) == ["門市", "月份", "金額"]
+    assert apply_effect(None, unpivot) is None
+    with pytest.raises(EffectError, match="欄位不存在：3月"):
+        apply_effect(cols, {**unpivot, "columns": ["3月"]})
+    group = {
+        "kind": "group",
+        "by": ["門市"],
+        "aggregations": [{"column": "1月", "op": "sum", "name": "合計"}],
+        "count": "筆數",
+    }
+    assert apply_effect(cols, group) == ["門市", "合計", "筆數"]
+    assert apply_effect(None, group) == ["門市", "合計", "筆數"]  # 分組後的欄位不看之前的欄位
+    with pytest.raises(EffectError, match="要有至少一項彙總"):
+        apply_effect(cols, {**group, "aggregations": [], "count": ""})
+    with pytest.raises(EffectError, match="新欄名「門市」和現有欄位重複"):
+        apply_effect(cols, {**group, "count": "門市"})
+    pivot = {"kind": "pivot", "index": ["門市"], "on": "月", "values": "金額", "names": ["1月"]}
+    assert apply_effect(None, pivot) == ["門市", "1月"]
+    with pytest.raises(EffectError, match="欄位不存在：月、金額"):
+        apply_effect(cols, pivot)
+    with pytest.raises(EffectError, match="已經是每一列依的欄"):
+        apply_effect(cols, {**pivot, "on": "門市"})

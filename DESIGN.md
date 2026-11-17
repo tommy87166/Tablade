@@ -195,7 +195,35 @@
 
 ### 7.2 第二階段
 
-`join`（合併查詢，`maintain_order="left"`）、`append`（附加查詢）、`group_by`、`unpivot`、`pivot`、`dedupe`、`sort`、`conditional_column`、`add_index`、`custom_expression`（限定用白名單語法組成，不可任意執行程式）。
+已完成（M5 第一批）：`dedupe`、`unpivot`、`group_by`、`pivot`。和其他步驟一樣，**合併來源檔之前每個來源檔各自處理**（讀 Excel 全部工作表時每個工作表各自處理），合併之後才是整份一起處理；要整份一起彙總就先「合併來源檔」。`dedupe` 在「列」分類，其他三個在「彙總」分類。
+
+| 類型 | 說明 | Polars 實作方向 |
+|---|---|---|
+| `dedupe` | 移除重複：依指定的欄判斷（不選代表整列都一樣才算），留第一筆或最後一筆；空字串和空值是不一樣的值 | `unique(subset, keep=…, maintain_order=True)`：留下的是原本的列，順序與行號不變 |
+| `unpivot` | 取消樞紐（寬轉長）：把好幾欄攤開成「名稱、值」兩欄，沒攤開的欄保留；可以不展開空白的值。攤開的欄型別不一樣時全部轉成文字 | `concat_list(struct(名稱, 值)…)` → `explode` → `unnest`：一列展開成連續的幾列，每列都保留原本的行號。不用 Polars 的 `unpivot()`：串流執行時會打亂順序 |
+| `group_by` | 群組彙總：依分組欄（只能是文字或日期欄）分組，算合計、平均、最大、最小、有值的筆數、不同值個數、第一筆、最後一筆，另外可以加一欄「這一組有幾列」。**不選分組欄就是整個來源檔彙總成一列**；沒有資料的來源檔不產生彙總列 | `group_by(by).agg(…)`，整個來源檔時 `select(…)`；`__source_file`、`__sheet` 取 `first`（同一個來源裡是固定值），`__line_no` 是這一組第一筆的行號（`min`），再依 `__line_no` 排序＝每組第一次出現的順序。排的是彙總後的少量資料，記憶體只跟組數有關 |
+| `pivot` | 樞紐（長轉寬）：某一欄的值變成新的欄名，每一組一列。要變成欄的值在建立步驟時從資料讀出、寫死在 Recipe；資料裡多出來的值**不轉成欄**，產生附行號（這一組第一筆）的警告。沒有資料的格子是空值（不是 0） | 原生運算：`group_by(index).agg(對每個值：values.filter(on == 值).彙總)`，這一組沒有這個值時 `when(…).then(…)` 給空值；另外記「沒轉成欄的值」當暫存欄給警告用。不用 Polars 的 `pivot()`：欄位要看資料才知道，不能串流 |
+
+彙總類的步驟（`unpivot`、`group_by`、`pivot`，`reshapes = True`）輸出的列不再一對一對應輸入的列：之前步驟的暫存欄位不帶過去，串流執行時引擎在這一步之前先算好之前步驟的警告（見 §8）。
+
+未完成：`join`（合併查詢，`maintain_order="left"`）、`append`（附加查詢）要等「多個輸入」；`sort`、`conditional_column`、`add_index`、`custom_expression`（限定用白名單語法組成，不可任意執行程式）。
+
+### 7.2.1 型別
+
+讀進來的資料一律是文字；型別只有在轉換步驟之後才會改變。型別分頁（下方「型別」分頁）顯示每一欄目前的型別。
+
+| 型別 | 中文名稱 | 從哪裡來 |
+|---|---|---|
+| `String` | 文字 | 所有讀進來的資料欄（文字行、CSV、Excel 都讀成文字）、`__source_file`、`__sheet` |
+| `Int64` | 整數 | `__line_no`；`parse_number` 選整數；`group_by` / `pivot` 的筆數、有值的筆數、不同值個數 |
+| `Decimal(38, N)` | 小數（N 位） | `parse_number` 選小數（精確小數，不是浮點數）；合計維持同樣的位數 |
+| `Date` | 日期 | `parse_date` |
+| `Float64` | 浮點數 | `group_by` / `pivot` 的平均 |
+| `Null` | 空 | 整欄都是空值時；文字步驟把它當成文字 |
+
+- 會改變型別的步驟：`parse_number`、`parse_date`、`group_by` / `pivot` 的彙總（合計、最大、最小、第一筆、最後一筆和原本的欄同型別），以及 `unpivot`（攤開的欄型別不一樣時轉成文字）。
+- 會檢查型別的步驟：文字步驟（`trim_clean`、`replace_values` 等）只能用在文字欄；`group_by` 的分組欄與 `pivot` 的「每一列依哪些欄」只能是文字或日期欄；合計、平均只能用在數字欄（提示先用「文字轉數字」）。
+- 型別分頁另外認得日期時間、是／否，但目前沒有步驟會產生這兩種。
 
 ### 7.3 每種步驟都要提供
 
@@ -216,11 +244,11 @@
 - **平行轉碼**（`ingest/transcode.py`，只用標準函式庫）：64 MB 以上要轉碼的檔，在換行後面切成約 32 MB 的段，交給多個工作程序（`ProcessPoolExecutor`、spawn；CPU 核心數減 1，最多 8 個）同時轉，再依序接起來。cp950、Big5-HKSCS、UTF-8 的多位元組字元裡都不會出現 `0x0A`，`\n` 後面一定是一個字元的開頭，所以接起來的結果和單核心完全相同；`\r\n` 也不會被切開。SHA-256 一定要從頭讀到尾，由主程序另一條執行緒同時算。解碼錯誤依檔案順序回報第一個（和單核心相同的訊息）。開不了工作程序（受管控的電腦、`__main__` 不是檔案等）就改用單核心，之後不再嘗試。打包後的 App 靠 `__main__.py` 的 `multiprocessing.freeze_support()` 讓工作程序從同一個執行檔啟動；自我檢測有一項「多核心轉碼」確認這件事：不管核心數多少都實際開 2 個工作程序轉碼一次（CI 的 Windows 只有 2 個核心，平常會用單核心，不這樣做就測不到），訊息裡另外寫這台電腦的大檔平常用幾個工作程序。
 - **預覽**：輸入不超過 `SAMPLE_THRESHOLD`（20 萬行）時整份讀進記憶體，每一步的列數是精確值；超過時只用**每個來源檔的前 10 萬行與最後 1,000 行**當樣本（一次串流掃描取得），步驟的列數標示為樣本的。結尾的頁尾、合計也在樣本裡，「移除後 N 列」的預覽仍然正確。
 - **快取**：以「輸入檔指紋＋前 k 步的 recipe 雜湊」當 key，快取每一步的預覽結果。修改第 k 步時，只需重算第 k 步之後的步驟。
-- **列順序**：讀檔時就依 `__source_file, __line_no` 排好，filter / with_columns 會保持順序，所以**步驟不排序**（排序在串流下會把整份資料放進記憶體）。Polars 2.x 的串流引擎在 join / group_by / unpivot 之後不保證順序，M5 加入這些步驟時要在步驟內恢復順序。
-- **各檔分開處理**：資料在引擎裡是一串 part（每個來源檔一個 LazyFrame），每個檔各自一條流水線，到「合併來源檔」（`combines = True` 的步驟，`combine(parts)`）或寫出前才依序接起來。`per_file = True` 的步驟 `apply()` 一次只收到一個 part，不需要把每個檔的資訊套回每一列；需要整檔資訊（列數、第一列）時對這個 part 用 `collect_small()`。預覽（資料在記憶體裡）依 `__source_file` 把資料切成 parts，一列一列的步驟直接套在整張表上。以後要看整份資料的步驟（group_by、去重、排序、join）要做成合併型步驟。
+- **列順序**：讀檔時就依 `__source_file, __line_no` 排好，filter / with_columns 會保持順序，所以**步驟不排序**（排序在串流下會把整份資料放進記憶體）。Polars 2.x 的串流引擎在 join / group_by / unpivot 之後不保證順序，所以 `group_by`、`pivot` 依 `__line_no`（每組第一筆的行號）排序彙總後的少量結果，`dedupe` 用 `maintain_order=True`，`unpivot` 不用 Polars 的 `unpivot()`（見 §7.2）。
+- **各檔分開處理**：資料在引擎裡是一串 part（每個來源檔一個 LazyFrame），每個檔各自一條流水線，到「合併來源檔」（`combines = True` 的步驟，`combine(parts)`）或寫出前才依序接起來。`per_file = True` 的步驟 `apply()` 一次只收到一個 part，不需要把每個檔的資訊套回每一列；需要整檔資訊（列數、第一列）時對這個 part 用 `collect_small()`。預覽（資料在記憶體裡）依 `__source_file` 把資料切成 parts，一列一列的步驟直接套在整張表上。要看整個來源檔的步驟（`group_by`、`dedupe`、`pivot`）也是 `per_file = True`：合併來源檔之前每個檔各自處理，合併之後就是整份。以後要接多個輸入的步驟（join、附加查詢）才做成合併型步驟。
 - **串流規則**（新增步驟時必須遵守）：不用 window 函式（`.over()`）與 `replace_strict`，串流引擎不支援，會退回整份放進記憶體。`split_delimited` 用 Polars 原生正規表示式拆欄，不呼叫 Python。
 - **完整執行**（`engine/run.py`）：小資料整份讀進記憶體、每步 `collect()`（`eager`）；大資料整條 lazy 查詢用串流引擎寫成暫存 Parquet，再寫出最後結果（`stream`）。試跑（`validate --run`、錯誤報告）在大資料時用樣本（`sample`）。
-  - 警告：步驟用 `warning_checks()` 宣告「輸出上哪些列要警告」，可以引用自己留下的 `__w_<步驟id>_*` 暫存欄位。eager / sample 模式每一步收集一次；stream 模式暫存欄位一路保留到最後才收集，所以**只算最後還留著的列**。
+  - 警告：步驟用 `warning_checks()` 宣告「輸出上哪些列要警告」，可以引用自己留下的 `__w_<步驟id>_*` 暫存欄位。eager / sample 模式每一步收集一次；stream 模式暫存欄位一路保留到最後才收集，所以**只算最後還留著的列**。遇到彙總類的步驟（`reshapes = True`）或「合併來源檔」時，引擎在這一步之前先算好之前步驟的警告（每項檢查另外串流掃一次資料，記憶體用量照樣固定）：彙總之後列的意義變了，合併之後來源檔與行號變了，在這裡先算才會指到原本的列。
   - stream 模式不提供每一步的列數（要多跑好幾遍資料）；每一步的列數看預覽或試跑。
   - **進度**（`engine/progress.py`）：Polars 的串流引擎執行中不會告訴 Python 做到哪裡。所以讀檔時每一列多一個暫存的位置欄（在所有輸入裡是第幾行），暫存結果用 `pl.PartitionBy(max_rows_per_file=…)` 分成大約 100 個檔寫（每 1% 一個），另一條執行緒每 0.2 秒看哪些檔寫完了、讀出位置欄，每個來源檔取看過的最大位置加起來，就是處理到第幾行（合併來源檔改了順序也算得對）。資料流裡完全沒有 Python：執行緒慢了只會讓進度更新得少一點。不用 `sink_batches` 把資料交回 Python：實測 Python 每批只要慢 1 毫秒，整個執行就慢一倍、記憶體從 1.4 GB 變成 5 GB 以上。實測（2 GB、3,678 萬列）：分檔寫與寫成一個檔一樣快（5.6 秒）、記憶體相同，約 85 次更新、間隔最多 0.3 秒，輸出逐列相同；位置欄約多 2% 的時間。進度列另外顯示這次動作已經過的時間；「寫出 Parquet」這一段（約占 15%）沒有百分比。
   - 實測（macOS arm64）：5 GB UTF-8 文字檔（8,560 萬行）開啟並產生預覽 20 秒、峰值記憶體 1.9 GB；串流匯出 62 秒、峰值 2.5 GB（各檔分開處理之前測的）。各檔分開處理後（範例 Recipe、串流執行）：2 個 1.5 GB 的檔 29 秒、峰值 2.4 GB（之前 51 秒、3.2 GB）；200 個 10 MB 的檔 23 秒（之前 57 秒）；1000 個 100 KB 的檔 15 秒（之前 106 秒）；19 個 10 MB 的檔合併並改順序 2 秒（之前 31 秒）。很多個檔時峰值記憶體略高（200 個檔 1.3 GB，之前 1.1 GB），約 100 個檔以上就持平。2 GB cp950 檔轉碼：單核心 9 秒（約 230 MB/秒），平行轉碼（10 核心、8 個工作程序）3 秒；記憶體主程序約 70 MB、每個工作程序約 70 MB，不隨檔案大小成長（改成 1 MB 分塊之前：單核心 1.5 GB、平行時每個工作程序 800 MB）。改寫前 1 GB 檔就要 10 GB 記憶體。
@@ -256,7 +284,6 @@
 - 先寫暫存檔再改名，不會留下半個檔案。自我檢測的「完整執行範例 Recipe」也檢查 manifest 的 SHA-256。
 - 輸入檔的 SHA-256 加上 recipe 雜湊，可以證明「這份輸出是用這份 recipe，從這些原始檔產生的」。
 - 每一步的列數變化可以直接拿來核對資料有沒有漏掉或重複。
-- 另外提供「匯出成 Python 腳本」，把 recipe 轉成獨立可執行的 Polars 程式碼，方便檢查或重跑（第二階段）。
 
 ---
 
@@ -408,7 +435,7 @@ tablade/
 | M2 UI | 步驟清單（新增、排序、停用、刪除）、預覽表格、參數表單、匯入 recipe（版本檢查、錯誤報告）、下載 AI skill | 不寫 JSON，也能在 UI 完成範例整理流程（✅ 完成） |
 | M3 台灣格式與留痕 | parse_number、parse_date（民國）、trim_clean、replace_values、remove_columns、select_columns、rename_columns、型別分頁、manifest | 輸出附 manifest，警告附行號（✅ 完成） |
 | M4 多檔與 Excel | glob、diagonal concat、excel reader、classify_rows、extract_regex、split_fixed_width | 分段報表的範例可以完整攤平（✅ 完成） |
-| M5 進階步驟 | join、group_by、unpivot、pivot、dedupe、匯出 Python 腳本 | — |
+| M5 進階步驟 | dedupe、unpivot、group_by、pivot（✅ 完成）；join、附加查詢（要等多個輸入）。不做匯出 Python 腳本 | — |
 
 **M0 要最先做**：它決定單一執行檔這條路走不走得通。已在權限受管控的公司電腦上確認 Windows onefile 版可以開啟，所以 Windows 只發布 onefile（§10）。
 
@@ -594,6 +621,9 @@ tablade-recipe-skill-v1.4.zip
 | 拆分 | `split_column`：移除 `column`，新增 `names` |
 | 整組換掉 | `split_delimited`、`promote_headers`：換成參數裡寫死的欄名 |
 | 刪除 / 選取 / 改名 | `remove_columns`（`drop`）、`select_columns`（`select`）、`rename_columns`（`rename`） |
+| 取消樞紐 | `unpivot`：沒攤開的欄保留，後面接名稱欄與值欄 |
+| 分組 | `group_by`（`group`）：分組欄＋每個彙總的新欄名＋筆數欄；之前的其他欄都不保留，所以就算之前不知道有哪些欄，之後也知道 |
+| 樞紐 | `pivot`：「每一列依的欄」＋要變成欄的值 |
 
 Tablade 的 `output_columns()` 與驗證器都從這份宣告推算，所以不需要資料就能檢查「第 5 步引用的欄位在那之前存在嗎」。
 

@@ -22,8 +22,8 @@ Tablade：本機執行、Power Query 式的資料清洗工具（Python + Polars 
 - `src/tablade/recipe/validator.py` 只能用 Python 標準函式庫、不能 import tablade（它會原封不動放進 AI skill），有測試檢查。
 - 步驟 `apply()` 必須是純函式：不讀寫檔案、不 print、不碰 UI。
 - **串流規則**（DESIGN.md §8；幾 GB 的檔案要在固定記憶體內跑完）：
-  - **各檔分開處理**：引擎讓每個來源檔各自跑步驟，到「合併來源檔」或寫出前才接起來。`per_file = True` 的步驟 `apply()` 一次只會收到一個來源檔（或合併後的那一份），需要整檔資訊（例如列數）時用 `collect_small()` 做一次小聚合；要看整份資料的步驟（group_by、去重、排序、join）要做成 `combines = True` 的合併型步驟。
-  - 每個來源檔已依 `__line_no` 排好，步驟**不要 sort**。
+  - **各檔分開處理**：引擎讓每個來源檔各自跑步驟，到「合併來源檔」或寫出前才接起來。`per_file = True` 的步驟 `apply()` 一次只會收到一個來源檔（或合併後的那一份），需要整檔資訊（例如列數）時用 `collect_small()` 做一次小聚合；要看整個來源檔的步驟（群組彙總、移除重複、樞紐）也是 `per_file = True`（合併來源檔之前每個檔各自處理，合併之後就是整份）；輸出的列不再一對一對應輸入時加 `reshapes = True`、用 `reshape_order()` 排欄位；要接多個輸入的步驟（join、附加查詢）才做成 `combines = True` 的合併型步驟。
+  - 每個來源檔已依 `__line_no` 排好，步驟**不要 sort**（只有彙總後的少量結果可以排序）。
   - 不用 window 函式（`.over()`）、`replace_strict`、`map_batches` 呼叫 Python：串流引擎不支援，會把整份資料放進記憶體。
   - 改了步驟後，用 `tests/test_large.py` 的 stream ＝ eager 測試確認結果一致；大改時用幾 GB 的假資料量一次記憶體。
 - 不使用 `eval` / `exec`；不加入任何網路連線程式碼（`scripts/check_code_policy.py` 會檢查 `src/`）。唯一例外是 `src/tablade/update.py`：啟動時向 GitHub 查最新版號，只讀版號，不送出資料、不下載、不自動更新（`TABLADE_NO_UPDATE_CHECK=1` 可關閉）。

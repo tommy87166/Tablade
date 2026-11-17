@@ -318,10 +318,21 @@ def _execute_stream(
             progress({"stage": stage, "file": "", "done": 0, "total": 0})
 
     last = None
+    early: dict[str, tuple[int, list[RowWarning]]] = {}
+    pending: list[Step] = []
     for step in recipe.enabled_steps():
+        if (step.reshapes or step.combines) and pending:
+            # 群組彙總、樞紐、取消樞紐之後列的意義變了，合併來源檔之後來源檔與行號變了：
+            # 之前步驟的警告要在這裡先算好，才會指到原本的列（每項檢查另外串流掃一次資料，記憶體用量照樣固定）
+            report("檢查警告")
+            before = concat_parts(parts, last)
+            for done in pending:
+                early[done.id] = _warnings(done, before, limit)
+            pending = []
         report(f"準備 {step.id}")
         # 每個檔各自一條流水線；暫存欄位（__w_）一路保留到最後，才能取出警告
         parts = apply_parts(step, parts, progress)
+        pending.append(step)
         last = step
     lf = concat_parts(parts, last)
 
@@ -352,7 +363,12 @@ def _execute_stream(
         result = pl.scan_parquet(sorted(staged.glob("*.parquet")))
         reports = []
         for step in recipe.steps:
-            total, warnings = _warnings(step, result, limit) if step.enabled else (0, [])
+            if not step.enabled:
+                total, warnings = 0, []
+            elif step.id in early:
+                total, warnings = early[step.id]
+            else:
+                total, warnings = _warnings(step, result, limit)
             reports.append(
                 StepReport(
                     step.id,
