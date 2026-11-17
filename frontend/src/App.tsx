@@ -62,21 +62,41 @@ function formatBytes(n: number) {
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
 }
 
-/** 讀檔、轉碼、匯出時的進度（大檔可能要好幾分鐘）。 */
+function formatAmount(progress: Progress) {
+  const { done, total, unit } = progress
+  if (unit === 'rows') return `${done.toLocaleString()} / ${total.toLocaleString()} 行`
+  if (unit === 'files') return `第 ${done + 1} / ${total} 個檔`
+  return `${formatBytes(done)} / ${formatBytes(total)}`
+}
+
+function formatElapsed(seconds: number) {
+  const m = Math.floor(seconds / 60)
+  const s = seconds % 60
+  return m >= 60
+    ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    : `${m}:${String(s).padStart(2, '0')}`
+}
+
+/** 讀檔、轉碼、匯出時的進度（大檔可能要好幾分鐘）；右邊是這次動作已經過的時間。 */
 function ProgressBar({ progress }: { progress: Progress }) {
+  const [start] = useState(() => Date.now())
+  const [elapsed, setElapsed] = useState(0)
+  useEffect(() => {
+    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000)
+    return () => window.clearInterval(timer)
+  }, [start])
   const ratio = progress.total > 0 ? Math.min(progress.done / progress.total, 1) : null
   return (
     <div className="border-b bg-primary/5 px-3 py-1.5 text-xs">
       <div className="flex items-center gap-2">
         <span className="font-medium">{progress.stage}</span>
         <span className="min-w-0 flex-1 truncate text-muted-foreground">{progress.file}</span>
-        {ratio !== null ? (
-          <span className="tabular-nums text-muted-foreground">
-            {formatBytes(progress.done)} / {formatBytes(progress.total)}（{Math.round(ratio * 100)}%）
-          </span>
-        ) : (
-          <span className="text-muted-foreground">處理中…</span>
-        )}
+        <span className="tabular-nums text-muted-foreground">
+          {ratio !== null ? `${formatAmount(progress)}（${Math.round(ratio * 100)}%）` : '處理中…'}
+        </span>
+        <span className="tabular-nums text-muted-foreground" title="已經過的時間">
+          {formatElapsed(elapsed)}
+        </span>
       </div>
       <div className="mt-1 h-1 overflow-hidden rounded bg-primary/15">
         <div

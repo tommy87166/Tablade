@@ -312,8 +312,9 @@ tablade.spec          PyInstaller config (onefile / onedir via TABLADE_BUILD)
 - **One input per recipe** for now; joining or appending several inputs comes with M5.
 - **Large files are previewed from a sample.** Above 200,000 lines the preview uses the first
   100,000 and last 1,000 lines of each file, so per-step row counts in the UI are sample counts;
-  export streams through everything. Streaming export reports only the final row count, and its
-  warnings cover the rows that are still in the output.
+  export streams through everything, and the progress bar shows how many lines have been processed.
+  Streaming export reports only the final row count, and its warnings cover the rows that are still
+  in the output.
 - **Non-UTF-8 files are transcoded to a temporary UTF-8 copy first** (about 230 MB/s per core for cp950;
   files of 64 MB or more are split and transcoded by up to 8 processes at once, with the same result as a
   single core; needs roughly 1.5× the file size in free temp space); the copy is deleted when the window closes, and copies left by a crash are

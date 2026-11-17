@@ -11,12 +11,14 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from tablade.engine import progress as stream_progress
 from tablade.engine import run as engine_run
+from tablade.engine.progress import POSITION, Watcher, with_positions
 from tablade.engine.run import execute
 from tablade.fixtures import messy_export, write_all
 from tablade.ingest import sources, transcode
 from tablade.ingest.encoding import DecodeError
-from tablade.ingest.sources import prepare, sample, scan, scan_parts
+from tablade.ingest.sources import SourceFile, concat, prepare, sample, scan, scan_parts
 from tablade.recipe.schema import load_json, parse_recipe
 from tablade.session import Session
 
@@ -188,6 +190,75 @@ def test_session_previews_a_sample_and_exports_everything(workdir, monkeypatch, 
         pl.read_parquet(tmp_path / "out.parquet").drop("__source_file", "__line_no").to_dicts()
         == EXPECTED
     )
+
+
+# ── 串流執行的進度 ──────────────────────────────────────────────
+
+
+def source(rows: int) -> SourceFile:
+    return SourceFile("x.txt", 0, "", "utf-8", rows)
+
+
+def write_positions(folder: Path, name: str, positions: list[int]) -> None:
+    folder.mkdir(exist_ok=True)
+    pl.DataFrame({POSITION: positions}, schema={POSITION: pl.Int64}).write_parquet(folder / name)
+
+
+def test_positions_count_lines_across_files(tmp_path):
+    for name, n in (("a.txt", 3), ("b.txt", 0), ("c.txt", 2)):
+        (tmp_path / name).write_text("".join(f"{name}{i}\n" for i in range(n)), encoding="utf-8")
+    parts, files = scan_parts(["a.txt", "b.txt", "c.txt"], "text_lines", "auto", tmp_path)
+    got = concat(with_positions(parts, files, "text_lines")).collect()[POSITION].to_list()
+    assert got == [1, 2, 3, 4, 5]
+    (tmp_path / "d.csv").write_text("欄\n1\n2\n", encoding="utf-8")  # csv 的資料從第 2 行開始
+    (tmp_path / "e.csv").write_text("欄\n3\n", encoding="utf-8")
+    parts, files = scan_parts(["d.csv", "e.csv"], "csv", "auto", tmp_path)
+    got = concat(with_positions(parts, files, "csv")).collect()[POSITION].to_list()
+    assert got == [1, 2, 3]
+
+
+def test_watcher_reads_only_finished_files_and_counts_each_source(tmp_path):
+    """合併來源檔改了順序也算得對：每個來源檔各自取看過的最大位置再加起來。"""
+    folder = tmp_path / "run"
+    watcher = Watcher(folder, [source(3), source(0), source(4)], None)
+    assert not watcher.poll()  # 資料夾還沒建立
+    write_positions(folder, "00000000.parquet", [4, 5])  # 第 3 個檔的第 1、2 行
+    assert not watcher.poll() and watcher.done() == 0  # 最新的檔可能還在寫
+    write_positions(folder, "00000001.parquet", [6, 1])  # 篩掉了第 3 個檔的最後一行
+    assert watcher.poll() and watcher.done() == 2
+    write_positions(folder, "00000002.parquet", [])
+    assert watcher.poll() and watcher.done() == 4  # 第 3 個檔到第 3 行、第 1 個檔到第 1 行
+    assert watcher.poll(finished=True) and watcher.done() == 4
+    assert not watcher.poll(finished=True)
+
+
+def test_stream_reports_progress_in_rows_and_cleans_up(workdir, monkeypatch):
+    monkeypatch.setattr(stream_progress, "MIN_ROWS_PER_FILE", 7)  # 很多個小暫存檔
+    seen = []
+    _, report = execute(
+        recipe(workdir), workdir, output=workdir / "s.parquet", mode="stream", progress=seen.append
+    )
+    run = [p for p in seen if p["stage"] == "執行（串流）"]
+    assert run and all(p["unit"] == "rows" and p["total"] == report.input_rows for p in run)
+    assert [p["done"] for p in run] == sorted(p["done"] for p in run)
+    assert run[0]["done"] == 0 and run[-1]["done"] == report.input_rows
+    units = {p["stage"].split(" ")[0]: p["unit"] for p in seen if p["total"]}
+    assert units == {"檢查編碼": "bytes", "轉碼": "bytes", "準備": "files", "執行（串流）": "rows"}
+    assert (
+        pl.read_parquet(workdir / "s.parquet").drop("__source_file", "__line_no").to_dicts()
+        == EXPECTED
+    )
+    assert not list(sources.staging_dir().glob("run-*"))  # 分檔寫的暫存結果刪掉了
+
+
+def test_stream_handles_an_empty_result(workdir):
+    data = json.loads(EXAMPLE.read_text(encoding="utf-8"))
+    data["steps"].append({"id": "z", "type": "remove_top_rows", "n": 1_000_000})
+    (workdir / "empty.recipe.json").write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+    r = parse_recipe(load_json(workdir / "empty.recipe.json"))
+    _, report = execute(r, workdir, output=workdir / "s.parquet", mode="stream")
+    out = pl.read_parquet(workdir / "s.parquet")
+    assert report.rows == 0 and out.height == 0 and "金額" in out.columns
 
 
 # ── 暫存資料夾的清理 ────────────────────────────────────────────

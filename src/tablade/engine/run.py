@@ -5,6 +5,7 @@
 - ``sample``：資料很大時的試跑與預覽，只用每個來源檔的前幾行與最後幾行（``SAMPLE_HEAD`` / ``SAMPLE_TAIL``）。
 - ``stream``：資料很大時的完整執行。整條 lazy 查詢用串流引擎寫成暫存 Parquet（記憶體用量固定），
   再從暫存檔取出警告、寫出最後的結果。每一步的列數只在 eager / sample 模式提供。
+  暫存結果分成很多個檔寫，另一條執行緒看寫完了幾個來回報進度（``engine/progress.py``）。
 
 三種模式都「各檔分開處理」：資料是一串 part（每個來源檔一個），分檔的步驟一次只套在一個 part 上，
 到「合併來源檔」（``combines``）或寫出前才接起來（DESIGN.md §8）。
@@ -12,6 +13,7 @@
 
 from __future__ import annotations
 
+import shutil
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -19,6 +21,7 @@ from typing import Any, Literal
 
 import polars as pl
 
+from tablade.engine.progress import Watcher, rows_per_file, with_positions
 from tablade.export.parquet import write_parquet
 from tablade.ingest.sources import (
     Part,
@@ -135,7 +138,15 @@ def apply_parts(step: Step, parts: list[Part], progress: Progress = None) -> lis
     out = []
     for i, (name, lf) in enumerate(parts):
         if progress is not None and len(parts) > 1:
-            progress({"stage": f"準備 {step.id}", "file": name, "done": i, "total": len(parts)})
+            progress(
+                {
+                    "stage": f"準備 {step.id}",
+                    "file": name,
+                    "done": i,
+                    "total": len(parts),
+                    "unit": "files",
+                }
+            )
         out.append((name, _apply(step, lf, name if len(parts) > 1 else "")))
     return out
 
@@ -213,6 +224,8 @@ def execute(
     if mode == "stream":
         if output is None:
             raise ValueError("stream 模式一定會寫出檔案")
+        # 每一列帶著在所有輸入裡的位置，執行中才能回報進度（寫出前拿掉）
+        parts = with_positions(parts, files, source.reader)
         return None, _execute_stream(recipe, parts, files, input_rows, output, limit, progress)
 
     frame = (
@@ -281,14 +294,31 @@ def _execute_stream(
         last = step
     lf = concat_parts(parts, last)
 
-    staged = staging_dir() / f"run-{uuid.uuid4().hex}.parquet"
+    staged = staging_dir() / f"run-{uuid.uuid4().hex}"
     try:
-        report("執行（串流）")
-        try:
-            lf.sink_parquet(staged, engine="streaming")
-        except pl.exceptions.PolarsError as err:
-            raise RuntimeError(f"執行失敗：{type(err).__name__}: {err}") from None
-        result = pl.scan_parquet(staged)
+        # 分成很多個檔寫（大約每 1% 一個），另一條執行緒看寫完了幾個來回報進度
+        with Watcher(staged, files, progress) as watcher:
+            try:
+                lf.sink_parquet(
+                    pl.PartitionBy(staged, max_rows_per_file=rows_per_file(input_rows)),
+                    engine="streaming",
+                    mkdir=True,
+                )
+            except pl.exceptions.PolarsError as err:
+                raise RuntimeError(f"執行失敗：{type(err).__name__}: {err}") from None
+        watcher.poll(finished=True)
+        if progress is not None:
+            progress(
+                {
+                    "stage": "執行（串流）",
+                    "file": "",
+                    "done": input_rows,
+                    "total": input_rows,
+                    "unit": "rows",
+                }
+            )
+        # 檔名是補零的流水號（00000000.parquet…），排序就是寫出的順序
+        result = pl.scan_parquet(sorted(staged.glob("*.parquet")))
         reports = []
         for step in recipe.steps:
             total, warnings = _warnings(step, result, limit) if step.enabled else (0, [])
@@ -318,6 +348,6 @@ def _execute_stream(
             tmp.unlink(missing_ok=True)
         rows = pl.scan_parquet(target).select(pl.len()).collect().item()
     finally:
-        staged.unlink(missing_ok=True)
+        shutil.rmtree(staged, ignore_errors=True)
     columns = _data_columns(keep)
     return RunReport(files, input_rows, reports, rows, columns, target.as_posix(), "stream")

@@ -185,6 +185,8 @@ export interface Progress {
   file: string
   done: number
   total: number
+  /** done / total 的單位：檔案大小、行數或檔案數；total 是 0 時不知道總量 */
+  unit?: 'bytes' | 'rows' | 'files'
 }
 
 export interface RowsPage {

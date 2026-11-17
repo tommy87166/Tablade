@@ -5,7 +5,7 @@
  * 資料來自 `uv run python scripts/gen_frontend_dev_data.py` 產生的 src/dev/sample.json（不進版控）：
  * 用假資料跑過範例 recipe 的真實畫面狀態。選取步驟會切換畫面；其他修改只回傳目前的狀態。
  */
-import type { Cell, ReadyInfo, RowsPage, TabladeApi, ViewState } from './bridge'
+import type { Cell, Progress, ReadyInfo, RowsPage, TabladeApi, ViewState } from './bridge'
 
 interface Sample {
   ready: { ok: true } & ReadyInfo
@@ -38,6 +38,24 @@ const current = () => {
 }
 const withState = <T extends object>(extra?: T) => delay({ ok: true as const, state: current(), ...(extra ?? ({} as T)) })
 const fail = () => delay({ ok: false as const, error: missing })
+
+/** pywebview 的 window.state：開發時用來模擬匯出的進度（Python 那邊是 api.py 的 _push_progress） */
+const progressState = new EventTarget()
+const pushProgress = (value: Progress | null) =>
+  progressState.dispatchEvent(new CustomEvent('change', { detail: { key: 'progress', value } }))
+
+/** 假的匯出：看得到「執行（串流）」的行數與百分比，再來是沒有百分比的「寫出 Parquet」。 */
+async function fakeExport() {
+  const total = 40_743_027
+  for (let i = 0; i <= 30; i++) {
+    pushProgress({ stage: '執行（串流）', file: '', done: Math.round((total * i) / 30), total, unit: 'rows' })
+    await delay(null, 200)
+  }
+  pushProgress({ stage: '寫出 Parquet', file: '', done: 0, total: 0 })
+  await delay(null, 1500)
+  pushProgress(null)
+  return { ok: true as const, cancelled: true }
+}
 
 export const mockApi: TabladeApi = sample
   ? {
@@ -125,8 +143,11 @@ export const mockApi: TabladeApi = sample
       },
       undo: () => withState(),
       redo: () => withState(),
-      export_parquet: () => delay({ ok: true, cancelled: true }),
+      export_parquet: fakeExport,
       error_report: () => delay({ ok: true, text: 'Tablade 驗證結果（開發用假資料）\n\n沒有發現問題。' }),
       download_skill: () => delay({ ok: true, cancelled: true }),
     }
   : (new Proxy({}, { get: (_, name) => (name === 'ready' ? fail : fail) }) as TabladeApi)
+
+// App 從 window.pywebview.state 收進度（bridge.ts 的 onProgress）
+if (sample) window.pywebview = { api: mockApi, state: progressState }

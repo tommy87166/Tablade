@@ -188,7 +188,7 @@ def display_name(path: Path, base_dir: Path) -> str:
 
 def _report(progress: Progress, stage: str, name: str, done: int, total: int) -> None:
     if progress is not None:
-        progress({"stage": stage, "file": name, "done": done, "total": total})
+        progress({"stage": stage, "file": name, "done": done, "total": total, "unit": "bytes"})
 
 
 def _failure(encoding: str, offset: int, newlines: int, byte: int) -> str:
