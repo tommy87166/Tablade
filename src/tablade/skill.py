@@ -37,6 +37,10 @@ _EFFECT_TEXT = {
     "split": "移除{source}指定的欄位（keep_source 為 true 時保留），在原位置插入{names}列出的欄位",
     "replace_data": "所有資料欄換成{names}列出的欄位",
     "rename_data": "資料欄依序改名為{names}列出的欄名（數量必須和目前的資料欄相同）",
+    "drop": (
+        "刪除欄位：by 是 name 時刪除{names}列出的欄位，by 是 position 時刪除{positions}"
+        "列出的第幾個資料欄（從 1 起，不算系統欄位）；至少要留下一個資料欄"
+    ),
 }
 
 
@@ -60,15 +64,15 @@ def _type_text(prop: dict[str, Any], defs: dict[str, Any]) -> str:
         items = prop.get("items", {})
         if "discriminator" in items:
             return "條件陣列（見下方）"
-        return (
-            f"文字陣列（至少 {prop.get('minItems', 0)} 項）"
-            if items.get("type") == "string"
-            else "陣列"
-        )
+        noun = {"string": "文字", "integer": "整數"}.get(items.get("type"), "")
+        at_least = f"（至少 {prop['minItems']} 項）" if prop.get("minItems") else ""
+        return f"{noun}陣列{at_least}"
     labels = {"string": "文字", "integer": "整數", "number": "數字", "boolean": "true / false"}
     text = labels.get(kind, str(kind))
     if "minimum" in prop:
         text += f"，≥ {prop['minimum']}"
+    if "maximum" in prop:
+        text += f"，≤ {prop['maximum']}"
     if "maxLength" in prop:
         text += f"，最多 {prop['maxLength']} 字元"
     return text
@@ -78,6 +82,7 @@ def _ui_text(prop: dict[str, Any]) -> str:
     return {
         "column": "引用現有欄位",
         "columns": "引用現有欄位（多個）",
+        "column_positions": "第幾個資料欄（多個，從 1 起）",
         "new_columns": "新欄名",
         "regex": "正規表示式（Rust regex）",
     }.get(prop.get("ui", ""), "")
@@ -122,7 +127,7 @@ def _effect_text(cls: type[Step]) -> str:
         k: (f" `{v[1:]}` 參數" if isinstance(v, str) and v.startswith("$") else v)
         for k, v in effect.items()
     }
-    return template.format(**{k: values.get(k, "") for k in ("names", "source")})
+    return template.format(**{k: values.get(k, "") for k in ("names", "source", "positions")})
 
 
 def steps_markdown(spec: dict[str, Any] | None = None) -> str:

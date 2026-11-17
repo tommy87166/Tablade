@@ -158,6 +158,46 @@ def test_stream_matches_eager_with_reordered_merge(workdir):
     assert b["單號"][0] == messy_export(30, 1)[1][0]["單號"]
 
 
+def test_stream_matches_eager_with_conversions_and_removed_columns(workdir):
+    """文字轉數字、文字轉日期、刪除欄：串流與整份讀進記憶體的結果和警告都一致。"""
+    data = json.loads(EXAMPLE.read_text(encoding="utf-8"))
+    data["steps"] += [
+        {"id": "n", "type": "parse_number", "columns": ["金額", "品號"]},  # 品號轉不了：每列都警告
+        {
+            "id": "d",
+            "type": "parse_date",
+            "columns": ["日期"],
+            "pattern": "slash",
+            "calendar": "roc",
+        },
+        {"id": "x", "type": "remove_columns", "by": "position", "positions": [5, 6]},
+    ]
+    (workdir / "conv.recipe.json").write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+    r = parse_recipe(load_json(workdir / "conv.recipe.json"))
+    _, eager = execute(r, workdir, output=workdir / "e.parquet", mode="eager")
+    _, streamed = execute(r, workdir, output=workdir / "s.parquet", mode="stream")
+    a = pl.read_parquet(workdir / "e.parquet")
+    b = pl.read_parquet(workdir / "s.parquet")
+    assert a.equals(b) and b.height == 70
+    assert b.schema["金額"] == pl.Decimal(38, 2) and b.schema["日期"] == pl.Date
+    assert b.columns == [
+        "__source_file",
+        "__line_no",
+        "日期",
+        "門市",
+        "品號",
+        "品名",
+        "單號",
+        "金額",
+    ]
+    assert b["品號"].null_count() == 70 and b["日期"].null_count() == 0
+    pick = lambda rep: sorted(  # noqa: E731
+        (w.source_file, w.line_no, w.message) for s in rep.steps for w in s.warnings
+    )
+    assert streamed.warning_count == eager.warning_count == 70
+    assert pick(streamed) == pick(eager)
+
+
 def test_auto_mode_samples_dry_runs_and_streams_exports(workdir, monkeypatch):
     monkeypatch.setattr(engine_run, "SAMPLE_THRESHOLD", 10)
     monkeypatch.setattr(engine_run, "SAMPLE_HEAD", 20)

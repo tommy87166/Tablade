@@ -159,6 +159,16 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
                 <ContextMenuItem onSelect={() => onAddStep({ type: 'filter', context: { column: name } })}>
                   篩選：不是空白
                 </ContextMenuItem>
+                <ContextMenuSeparator />
+                <ContextMenuItem onSelect={() => onAddStep({ type: 'parse_number', context: { column: name } })}>
+                  轉成數字
+                </ContextMenuItem>
+                <ContextMenuItem onSelect={() => onAddStep({ type: 'parse_date', context: { column: name } })}>
+                  轉成日期
+                </ContextMenuItem>
+                <ContextMenuItem onSelect={() => onAddStep({ type: 'remove_columns', context: { column: name } })}>
+                  刪除這一欄
+                </ContextMenuItem>
               </ContextMenuContent>
             </ContextMenu>
           ))}

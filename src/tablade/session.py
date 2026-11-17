@@ -107,6 +107,63 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
+EXAMPLE_ROWS = 1_000
+"""型別分頁的範例值從前這麼多列找。"""
+
+
+def type_label(dtype: pl.DataType) -> str:
+    """型別的中文名稱（型別分頁用）。"""
+    if dtype == pl.String:
+        return "文字"
+    if isinstance(dtype, pl.Decimal):
+        return f"小數（{dtype.scale} 位）"
+    if dtype.is_integer():
+        return "整數"
+    if dtype.is_float():
+        return "浮點數"
+    if dtype == pl.Date:
+        return "日期"
+    if isinstance(dtype, pl.Datetime):
+        return "日期時間"
+    if dtype == pl.Boolean:
+        return "是／否"
+    if dtype == pl.Null:
+        return "空"
+    return str(dtype)
+
+
+def column_summary(frame: pl.DataFrame) -> list[dict[str, Any]]:
+    """每一欄的型別、空值、空白字串、最小～最大與範例值；位置是第幾個資料欄（和刪除欄的位置相同）。"""
+    out, position = [], 0
+    head = frame.head(EXAMPLE_ROWS)
+    for name, dtype in frame.schema.items():
+        system = name.startswith(SYSTEM_PREFIX)
+        if not system:
+            position += 1
+        series = frame.get_column(name)
+        ranged = dtype.is_numeric() or dtype.is_temporal()
+        examples = head.get_column(name).drop_nulls().unique(maintain_order=True).head(3)
+        out.append(
+            {
+                "position": None if system else position,
+                "name": name,
+                "system": system,
+                "dtype": f"Decimal({dtype.precision},{dtype.scale})"
+                if isinstance(dtype, pl.Decimal)
+                else str(dtype),
+                "label": type_label(dtype),
+                "nulls": series.null_count(),
+                "blanks": int((series.str.strip_chars() == "").sum())
+                if dtype == pl.String
+                else None,
+                "min": _jsonable(series.min()) if ranged else None,
+                "max": _jsonable(series.max()) if ranged else None,
+                "examples": [_jsonable(v) for v in examples.to_list()],
+            }
+        )
+    return out
+
+
 class Session:
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -654,6 +711,21 @@ class Session:
                 "total": frame.height,
                 "columns": part.columns,
                 "rows": [[_jsonable(v) for v in row] for row in part.iter_rows()],
+            }
+
+    def column_info(self, index: int) -> dict[str, Any]:
+        """第 index 步輸出的每一欄型別與概況（下方面板的「型別」分頁）；資料跟預覽同一份。"""
+        with self._lock:
+            frame = self.frame_at(index)
+            files = self._load_source()[1]
+            sampled = bool(files) and sum(f.rows for f in files) > SAMPLE_THRESHOLD
+            if frame is None:
+                return {"step": index, "rows": 0, "sampled": sampled, "columns": []}
+            return {
+                "step": index,
+                "rows": frame.height,
+                "sampled": sampled,
+                "columns": column_summary(frame),
             }
 
     def find_row(self, index: int, source_file: str, line_no: int) -> int | None:

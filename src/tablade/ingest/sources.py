@@ -252,11 +252,15 @@ def _workers() -> int:
     return min(8, cores - 1) if cores > 2 and not _pool_failed else 0
 
 
+def new_pool(workers: int) -> ProcessPoolExecutor:
+    """開工作程序。spawn：各平台行為一致，打包後的 App 也能用（__main__.py 呼叫了 freeze_support）。"""
+    return ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn"))
+
+
 def _get_pool() -> ProcessPoolExecutor:
     global _pool
     if _pool is None:
-        # spawn：各平台行為一致，打包後的 App 也能用（__main__.py 呼叫了 freeze_support）
-        _pool = ProcessPoolExecutor(_workers(), mp_context=multiprocessing.get_context("spawn"))
+        _pool = new_pool(_workers())
         atexit.register(_shutdown_pool)
     return _pool
 
@@ -304,9 +308,17 @@ def _transcode_single(path: Path, encoding: str, target: Path, progress: Progres
 
 
 def _transcode_parallel(
-    path: Path, encoding: str, target: Path, progress: Progress, segment: int
+    path: Path,
+    encoding: str,
+    target: Path,
+    progress: Progress,
+    segment: int,
+    pool: ProcessPoolExecutor | None = None,
 ) -> str | None:
-    """在換行處切段、多個程序同時轉碼，再依序接起來；切不出兩段時回傳 None（改用單核心）。"""
+    """在換行處切段、多個程序同時轉碼，再依序接起來；切不出兩段時回傳 None（改用單核心）。
+
+    ``pool`` 預設是共用的工作程序；自我檢測會傳自己開的（不管核心數多少都實際開程序）。
+    """
     total = path.stat().st_size
     cuts = segment_bounds(str(path), total, segment)
     if len(cuts) <= 2:
@@ -328,7 +340,8 @@ def _transcode_parallel(
     hasher = threading.Thread(target=hash_file, daemon=True)
     hasher.start()
     try:
-        futures = [_get_pool().submit(transcode_segment, job) for job in jobs]
+        workers = pool or _get_pool()
+        futures = [workers.submit(transcode_segment, job) for job in jobs]
         done = 0
         for i, future in enumerate(futures):  # 依序等：第一個失敗的就是檔案裡最前面的錯誤
             failure = future.result()

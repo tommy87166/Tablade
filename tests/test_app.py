@@ -19,6 +19,7 @@ API_METHODS = {
     "smoke_example",
     "state",
     "rows",
+    "column_info",
     "find_row",
     "new_recipe",
     "open_recipe",

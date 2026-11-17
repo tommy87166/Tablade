@@ -11,11 +11,12 @@ import {
   Play,
   Redo2,
   Save,
+  Shapes,
   Stethoscope,
   TriangleAlert,
   Undo2,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { usePanelRef } from 'react-resizable-panels'
 
 import iconUrl from '../../assets/icon.svg'
@@ -51,6 +52,7 @@ import { SelftestDialog } from './components/SelftestDialog'
 import { ReportDialog } from './components/ReportDialog'
 import { InputPanel, OutputPanel } from './components/SourcePanel'
 import { StepsPanel } from './components/StepsPanel'
+import { TypesPane } from './components/TypesPane'
 import { UpdateNotice } from './components/UpdateNotice'
 
 type Status = { text: string; error?: boolean }
@@ -75,6 +77,23 @@ function formatElapsed(seconds: number) {
   return m >= 60
     ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}:${String(s).padStart(2, '0')}`
     : `${m}:${String(s).padStart(2, '0')}`
+}
+
+/** 下方面板標題列的分頁按鈕（警告、型別）。 */
+function BottomTab({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      className={`flex items-center gap-1.5 rounded-md px-2 py-0.5 text-sm font-medium ${
+        active ? 'bg-background text-foreground shadow-xs ring-1 ring-border' : 'text-muted-foreground hover:bg-muted'
+      }`}
+    >
+      {children}
+    </button>
+  )
 }
 
 /** 讀檔、轉碼、匯出時的進度（大檔可能要好幾分鐘）；右邊是這次動作已經過的時間。 */
@@ -138,6 +157,7 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState<Status>({ text: '載入中…' })
   const [showSystem, setShowSystem] = useState(false)
+  const [bottomTab, setBottomTab] = useState<'warnings' | 'types'>('warnings')
   const [report, setReport] = useState<{ open: boolean; issues: Issue[]; text: string }>({ open: false, issues: [], text: '' })
   const [selftest, setSelftest] = useState<SelftestResult | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
@@ -146,6 +166,11 @@ export default function App() {
   const leftPanel = usePanelRef()
   const rightPanel = usePanelRef()
   const warnPanel = usePanelRef()
+  /** 切換下方面板的分頁；收合時順便展開。 */
+  const openBottomTab = (tab: 'warnings' | 'types') => {
+    setBottomTab(tab)
+    if (warnPanel.current?.isCollapsed()) warnPanel.current.expand()
+  }
 
   const gridLoaded = useRef<((total: number) => void) | null>(null)
 
@@ -594,49 +619,61 @@ export default function App() {
                 {/* 收合到只剩標題列時，右邊的按鈕改成「展開」（index.css 的 .warn-pane） */}
                 <div className="warn-pane flex h-full flex-col">
                   <PaneHeader className={warnings.length ? 'bg-amber-500/10' : ''}>
-                    {warnings.length ? (
-                      <TriangleAlert className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
-                    ) : (
-                      <CircleCheck className="size-4 shrink-0 text-green-600" />
-                    )}
-                    <span
-                      className={`text-sm font-medium ${warnings.length ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}
-                    >
-                      {warnings.length ? `有警告（${warnings.length.toLocaleString()}）` : '沒有警告'}
-                    </span>
+                    <div role="tablist" aria-label="下方面板" className="flex items-center gap-1">
+                      <BottomTab active={bottomTab === 'warnings'} onClick={() => openBottomTab('warnings')}>
+                        {warnings.length ? (
+                          <TriangleAlert className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                        ) : (
+                          <CircleCheck className="size-4 shrink-0 text-green-600" />
+                        )}
+                        <span className={warnings.length ? 'text-amber-700 dark:text-amber-400' : ''}>
+                          {warnings.length ? `警告（${warnings.length.toLocaleString()}）` : '沒有警告'}
+                        </span>
+                      </BottomTab>
+                      <BottomTab active={bottomTab === 'types'} onClick={() => openBottomTab('types')}>
+                        <Shapes className="size-4 shrink-0" />
+                        型別
+                      </BottomTab>
+                    </div>
                     <Button
                       variant="ghost"
                       size="icon-xs"
                       className="ml-auto"
-                      aria-label="收合或展開警告"
-                      title="收合或展開警告"
+                      aria-label="收合或展開下方面板"
+                      title="收合或展開下方面板"
                       onClick={() => (warnPanel.current?.isCollapsed() ? warnPanel.current.expand() : warnPanel.current?.collapse())}
                     >
                       <ChevronDown className="warn-collapse" />
                       <ChevronUp className="warn-expand" />
                     </Button>
                   </PaneHeader>
-                  <ul className="flex-1 overflow-auto text-sm">
-                    {warnings.map((w, i) => (
-                      <li key={i}>
-                        <button
-                          type="button"
-                          className="flex w-full gap-2 px-3 py-1 text-left hover:bg-muted"
-                          onClick={async () => {
-                            if (w.source_file === null || w.line_no === null) return
-                            const res = await api.find_row(state.preview.step, w.source_file, w.line_no)
-                            if (res.ok && res.row !== null) grid.current?.scrollToRow(res.row)
-                          }}
-                        >
-                          <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-600" />
-                          <span className="shrink-0 font-mono text-xs text-muted-foreground">
-                            {w.source_file}:{w.line_no}
-                          </span>
-                          <span>{w.message}</span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
+                  {bottomTab === 'types' ? (
+                    <div className="min-h-0 flex-1 overflow-auto">
+                      <TypesPane api={api} step={state.preview.step} resetKey={previewKey} showSystem={showSystem} />
+                    </div>
+                  ) : (
+                    <ul className="flex-1 overflow-auto text-sm">
+                      {warnings.map((w, i) => (
+                        <li key={i}>
+                          <button
+                            type="button"
+                            className="flex w-full gap-2 px-3 py-1 text-left hover:bg-muted"
+                            onClick={async () => {
+                              if (w.source_file === null || w.line_no === null) return
+                              const res = await api.find_row(state.preview.step, w.source_file, w.line_no)
+                              if (res.ok && res.row !== null) grid.current?.scrollToRow(res.row)
+                            }}
+                          >
+                            <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-600" />
+                            <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                              {w.source_file}:{w.line_no}
+                            </span>
+                            <span>{w.message}</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               </ResizablePanel>
             </ResizablePanelGroup>

@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import type { CatalogItem, StepState } from '../../bridge'
-import { editableFields, resolve } from '../../lib/schema'
+import { editableFields, resolve, visible } from '../../lib/schema'
 import { StepScope } from '../StepScope'
 import { Field, FieldErrors } from './fields'
 
@@ -41,10 +41,15 @@ export function StepForm({ step, item, onChange }: Props) {
     [],
   )
 
+  const schema = item.schema
+  const fields = editableFields(schema)
+
   const set = (name: string, value: unknown) => {
     const next = { ...latest.current.draft }
     if (value === undefined) delete next[name]
     else next[name] = value
+    // 因為這次修改而隱藏的欄位回到預設值（例如刪除欄改成依位置時，清掉選過的欄名）
+    for (const [other, prop] of fields) if (other !== name && !visible(prop, next, schema)) delete next[other]
     setDraft(next)
     latest.current.draft = next
     pending.current = true
@@ -55,8 +60,6 @@ export function StepForm({ step, item, onChange }: Props) {
     }, DEBOUNCE_MS)
   }
 
-  const schema = item.schema
-  const fields = editableFields(schema)
   const required = new Set(schema.required ?? [])
   const shown = new Set(fields.map(([n]) => n))
   const stray = step.errors.filter((i) => !shown.has(i.path.split(/[.[]/)[0]))
@@ -68,21 +71,23 @@ export function StepForm({ step, item, onChange }: Props) {
         <StepScope scope={item.scope} />
         <p className="text-xs text-muted-foreground">{item.description}</p>
       </div>
-      {fields.map(([name, prop]) => (
-        <Field
-          key={name}
-          name={name}
-          path={name}
-          schema={prop}
-          root={schema}
-          value={name in draft ? draft[name] : resolve(prop, schema).default}
-          onChange={(v) => set(name, v)}
-          columns={step.input_columns}
-          files={step.input_files}
-          issues={step.errors}
-          required={required.has(name)}
-        />
-      ))}
+      {fields
+        .filter(([, prop]) => visible(prop, draft, schema))
+        .map(([name, prop]) => (
+          <Field
+            key={name}
+            name={name}
+            path={name}
+            schema={prop}
+            root={schema}
+            value={name in draft ? draft[name] : resolve(prop, schema).default}
+            onChange={(v) => set(name, v)}
+            columns={step.input_columns}
+            files={step.input_files}
+            issues={step.errors}
+            required={required.has(name)}
+          />
+        ))}
       {fields.length === 0 ? <p className="text-sm text-muted-foreground">這個步驟沒有參數。</p> : null}
       <FieldErrors issues={stray} />
       {step.run_error ? <p className="rounded-md bg-destructive/10 p-2 text-sm text-destructive">執行失敗：{step.run_error}</p> : null}

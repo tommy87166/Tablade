@@ -24,8 +24,12 @@ export type JsonSchema = {
   default?: unknown
   enum?: unknown[]
   const?: unknown
-  ui?: 'column' | 'columns' | 'new_columns' | 'regex'
+  ui?: 'column' | 'columns' | 'column_positions' | 'new_columns' | 'regex' | 'source_files'
   ui_labels?: Record<string, string>
+  /** 選到某個選項時，顯示在選單下面的說明（例如日期樣式的正規表示式） */
+  ui_option_hints?: Record<string, string>
+  /** 其他參數是這些值時才顯示這個欄位（例如刪除欄依位置時才顯示 positions） */
+  ui_show_if?: Record<string, unknown>
   properties?: Record<string, JsonSchema>
   required?: string[]
   items?: JsonSchema
@@ -189,6 +193,31 @@ export interface Progress {
   unit?: 'bytes' | 'rows' | 'files'
 }
 
+/** 型別分頁的一欄（session.py 的 column_summary） */
+export interface ColumnInfo {
+  /** 第幾個資料欄（和刪除欄的位置相同）；系統欄位是 null */
+  position: number | null
+  name: string
+  system: boolean
+  dtype: string
+  /** 型別的中文名稱：文字、整數、小數（2 位）、日期… */
+  label: string
+  nulls: number
+  /** 空白字串的數量；只有文字欄才有 */
+  blanks: number | null
+  /** 最小值與最大值；只有數字和日期欄才有 */
+  min: Cell
+  max: Cell
+  examples: Cell[]
+}
+
+export interface ColumnsInfo {
+  step: number
+  rows: number
+  sampled: boolean
+  columns: ColumnInfo[]
+}
+
 export interface RowsPage {
   offset: number
   total: number
@@ -207,6 +236,7 @@ export interface TabladeApi {
   smoke_example(): Promise<WithState<{ issues: Issue[] }>>
   state(): Promise<WithState>
   rows(step: number, offset: number, limit: number): Promise<Result<RowsPage>>
+  column_info(step: number): Promise<Result<ColumnsInfo>>
   find_row(step: number, source_file: string, line_no: number): Promise<Result<{ row: number | null }>>
   new_recipe(): Promise<Dialog<{ path: string }>>
   open_recipe(): Promise<Dialog<{ issues: Issue[] }>>

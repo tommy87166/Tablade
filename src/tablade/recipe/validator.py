@@ -31,7 +31,7 @@ EMBEDDED_SPEC: dict[str, Any] | None = None
 
 SYSTEM_COLUMNS = ("__source_file", "__line_no", "__sheet", "__row_type")
 VERSION_RE = re.compile(r"^(\d+)\.(\d+)$")
-EFFECT_KINDS = ("keep", "add", "split", "replace_data", "rename_data")
+EFFECT_KINDS = ("keep", "add", "split", "replace_data", "rename_data", "drop")
 
 Issue = dict[str, Any]
 
@@ -100,7 +100,34 @@ def apply_effect(columns: list[str] | None, effect: dict[str, Any]) -> list[str]
         if columns is not None and len(columns) != len(names):
             raise EffectError(f"目前有 {len(columns)} 個資料欄，但列了 {len(names)} 個欄名")
         return names
+    if kind == "drop":
+        return _drop(columns, effect)
     raise EffectError(f"未知的欄位效果：{kind}")
+
+
+def _drop(columns: list[str] | None, effect: dict[str, Any]) -> list[str] | None:
+    """刪除欄：依名稱（names）或依位置（positions，第幾個資料欄，從 1 起）。"""
+    by_position = effect.get("by") == "position"
+    picked = list(effect.get("positions") or []) if by_position else list(effect.get("names") or [])
+    if not picked:
+        raise EffectError("要選至少一個要刪除的欄位")
+    if columns is None:
+        return None
+    if by_position:
+        bad = [p for p in picked if not isinstance(p, int) or not 1 <= p <= len(columns)]
+        if bad:
+            shown = "、".join(str(p) for p in bad)
+            raise EffectError(f"目前只有 {len(columns)} 個資料欄，沒有第 {shown} 欄")
+        drop = {columns[p - 1] for p in picked}
+    else:
+        missing = [n for n in picked if n not in columns]
+        if missing:
+            raise EffectError(f"欄位不存在：{'、'.join(missing)}")
+        drop = set(picked)
+    rest = [c for c in columns if c not in drop]
+    if not rest:
+        raise EffectError("不能刪除所有資料欄，至少要留下一個")
+    return rest
 
 
 # ── JSON Schema（pydantic 產生的子集）───────────────────────────────

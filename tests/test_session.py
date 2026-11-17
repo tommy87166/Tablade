@@ -404,3 +404,44 @@ def test_export_needs_loaded_data(data, tmp_path):
     s.set_input({"encoding": "utf-8"})  # 設定變了：要重新載入才能匯出
     with pytest.raises(SessionError, match="載入資料"):
         s.export(tmp_path / "out.parquet")
+
+
+# ── 型別分頁 ────────────────────────────────────────────────────
+
+
+def test_column_info_follows_conversions_and_positions(data):
+    import shutil
+
+    shutil.copy(EXAMPLE, data.parent / EXAMPLE.name)
+    s = Session()
+    s.load_recipe(data.parent / EXAMPLE.name)
+    s.load_data()
+    end = len(s.steps)
+    before = s.column_info(end - 1)
+    columns = {c["name"]: c for c in before["columns"]}
+    assert before["rows"] == 70 and before["sampled"] is False
+    assert columns["金額"]["label"] == "文字" and columns["金額"]["blanks"] == 0
+    assert columns["__line_no"]["system"] and columns["__line_no"]["position"] is None
+    # 位置是第幾個資料欄，和「刪除欄」依位置時一樣
+    positions = [c["name"] for c in before["columns"] if not c["system"]]
+    assert [c["position"] for c in before["columns"] if not c["system"]] == list(
+        range(1, len(positions) + 1)
+    )
+
+    s.add_step("parse_number", {"column": "金額"}, index=end)
+    assert s.state()["steps"][end]["input_columns"] == positions  # 下一步看到的欄位順序
+    s.add_step("parse_date", {"column": "日期"}, index=end + 1)
+    # 文字轉日期不會自動判斷：沒選樣式和民國／西元之前，這一步是錯誤
+    added = s.state()["steps"][end + 1]
+    assert added["status"] == "error"
+    assert {e["path"] for e in added["errors"]} >= {"pattern", "calendar"}
+    s.update_step(end + 1, {"columns": ["日期"], "pattern": "slash", "calendar": "roc"})
+    s.add_step("remove_columns", index=end + 2)
+    s.update_step(end + 2, {"by": "position", "positions": [positions.index("單號") + 1]})
+    after = {c["name"]: c for c in s.column_info(end + 2)["columns"]}
+    assert after["金額"]["label"] == "小數（2 位）" and after["金額"]["dtype"] == "Decimal(38,2)"
+    assert after["金額"]["blanks"] is None and after["金額"]["nulls"] == 0
+    assert after["日期"]["label"] == "日期" and after["日期"]["min"] <= after["日期"]["max"]
+    assert "單號" not in after and len(after["金額"]["examples"]) == 3
+    assert s.state()["steps"][end + 2]["describe"] == f"刪除第 {positions.index('單號') + 1} 欄"
+    assert s.column_info(-1)["columns"][2]["name"] == "line"  # 讀取資料（-1）也可以看

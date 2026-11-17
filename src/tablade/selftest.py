@@ -20,6 +20,10 @@ from .ingest.csv_reader import read_csv
 ROWS = 200
 
 
+SELFTEST_WORKERS = 2
+"""自我檢測「多核心轉碼」實際開幾個工作程序（不管核心數多少）。"""
+
+
 @dataclass
 class Check:
     name: str
@@ -93,18 +97,36 @@ def run_selftest() -> dict[str, Any]:
             return f"fastexcel {getattr(fastexcel, '__version__', '?')}"
 
         def parallel_transcode() -> str:
-            # 打包後的 App 能不能開工作程序同時轉碼（切成很小的段，強迫走平行）
+            # 不管這台電腦有幾個核心，都實際開 2 個工作程序轉碼一次（切成很小的段，強迫走平行），
+            # 確認打包後的 App 開得了工作程序；核心太少時，平常的大檔才改用單核心
+            import os
+            from concurrent.futures.process import BrokenProcessPool
+
             from .fixtures import write_big_messy_export
             from .ingest import sources
 
             src = write_big_messy_export(Path(tmp) / "平行.csv", 300_000, encoding="cp950")
             single, parallel = Path(tmp) / "single.txt", Path(tmp) / "parallel.txt"
             sources._transcode_single(src, "cp950", single, None)
-            sources._transcode(src, "cp950", parallel, None, parallel_min=0, segment=16_384)
+            usual = sources._workers()
+            normally = (
+                f"大檔平常用 {usual} 個工作程序"
+                if usual
+                else f"這台電腦只有 {os.cpu_count()} 個核心，大檔平常用單核心轉碼"
+            )
+            pool = sources.new_pool(SELFTEST_WORKERS)
+            try:
+                digest = sources._transcode_parallel(
+                    src, "cp950", parallel, None, 16_384, pool=pool
+                )
+            except (OSError, RuntimeError, BrokenProcessPool):
+                sources._pool_failed = True  # 這次執行之後的大檔都用單核心，不再重試
+                return "這台電腦不能開工作程序，大檔改用單核心轉碼（結果正確）"
+            finally:
+                pool.shutdown(wait=True, cancel_futures=True)
+            assert digest is not None, "測試檔沒有切成多段"
             assert parallel.read_bytes() == single.read_bytes(), "平行轉碼的結果和單核心不同"
-            if sources._pool_failed:
-                return "這台電腦不能開工作程序，改用單核心轉碼（結果正確）"
-            return f"{sources._workers()} 個工作程序同時轉碼，結果與單核心相同"
+            return f"開 {SELFTEST_WORKERS} 個工作程序同時轉碼，結果與單核心相同；{normally}"
 
         def full_recipe() -> str:
             # 跟按「處理並匯出資料」同一條路：轉碼成暫存檔、各檔分開處理、8 個步驟、串流匯出；

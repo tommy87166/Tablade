@@ -274,6 +274,127 @@
           },
           "type": "object"
         },
+        "ParseDate": {
+          "additionalProperties": false,
+          "properties": {
+            "calendar": {
+              "enum": [
+                "roc",
+                "ad"
+              ],
+              "type": "string"
+            },
+            "columns": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "ui": "columns"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "pattern": {
+              "enum": [
+                "slash",
+                "dash",
+                "dot",
+                "chinese",
+                "compact",
+                "custom"
+              ],
+              "type": "string",
+              "ui_option_hints": {
+                "chinese": "正規表示式：^(\\d{1,4})\\s*年\\s*(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*日$",
+                "compact": "正規表示式：^(\\d{1,4})(\\d{2})(\\d{2})$",
+                "custom": "在下面輸入正規表示式，要有三個群組，依序是年、月、日",
+                "dash": "正規表示式：^(\\d{1,4})-(\\d{1,2})-(\\d{1,2})$",
+                "dot": "正規表示式：^(\\d{1,4})\\.(\\d{1,2})\\.(\\d{1,2})$",
+                "slash": "正規表示式：^(\\d{1,4})/(\\d{1,2})/(\\d{1,2})$"
+              }
+            },
+            "regex": {
+              "default": "",
+              "type": "string",
+              "ui": "regex",
+              "ui_show_if": {
+                "pattern": "custom"
+              }
+            },
+            "type": {
+              "const": "parse_date",
+              "default": "parse_date",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "columns",
+            "pattern",
+            "calendar"
+          ],
+          "type": "object"
+        },
+        "ParseNumber": {
+          "additionalProperties": false,
+          "properties": {
+            "columns": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "ui": "columns"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "kind": {
+              "default": "decimal",
+              "enum": [
+                "decimal",
+                "integer"
+              ],
+              "type": "string"
+            },
+            "scale": {
+              "default": 2,
+              "maximum": 9,
+              "minimum": 0,
+              "type": "integer",
+              "ui_show_if": {
+                "kind": "decimal"
+              }
+            },
+            "type": {
+              "const": "parse_number",
+              "default": "parse_number",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "columns"
+          ],
+          "type": "object"
+        },
         "PromoteHeaders": {
           "additionalProperties": false,
           "properties": {
@@ -386,6 +507,60 @@
           "required": [
             "id",
             "n"
+          ],
+          "type": "object"
+        },
+        "RemoveColumns": {
+          "additionalProperties": false,
+          "properties": {
+            "by": {
+              "default": "name",
+              "enum": [
+                "name",
+                "position"
+              ],
+              "type": "string"
+            },
+            "columns": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": "array",
+              "ui": "columns",
+              "ui_show_if": {
+                "by": "name"
+              }
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "positions": {
+              "items": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "type": "array",
+              "ui": "column_positions",
+              "ui_show_if": {
+                "by": "position"
+              }
+            },
+            "type": {
+              "const": "remove_columns",
+              "default": "remove_columns",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
           ],
           "type": "object"
         },
@@ -601,9 +776,12 @@
                 "fill_down": "#/$defs/FillDown",
                 "filter": "#/$defs/Filter",
                 "merge_files": "#/$defs/MergeFiles",
+                "parse_date": "#/$defs/ParseDate",
+                "parse_number": "#/$defs/ParseNumber",
                 "promote_headers": "#/$defs/PromoteHeaders",
                 "remove_blank_rows": "#/$defs/RemoveBlankRows",
                 "remove_bottom_rows": "#/$defs/RemoveBottomRows",
+                "remove_columns": "#/$defs/RemoveColumns",
                 "remove_top_rows": "#/$defs/RemoveTopRows",
                 "split_column": "#/$defs/SplitColumn",
                 "split_delimited": "#/$defs/SplitDelimited"
@@ -631,6 +809,15 @@
               },
               {
                 "$ref": "#/$defs/FillDown"
+              },
+              {
+                "$ref": "#/$defs/RemoveColumns"
+              },
+              {
+                "$ref": "#/$defs/ParseNumber"
+              },
+              {
+                "$ref": "#/$defs/ParseDate"
               },
               {
                 "$ref": "#/$defs/Filter"
@@ -673,6 +860,18 @@
         },
         "schema_ref": "MergeFiles"
       },
+      "parse_date": {
+        "effect": {
+          "kind": "keep"
+        },
+        "schema_ref": "ParseDate"
+      },
+      "parse_number": {
+        "effect": {
+          "kind": "keep"
+        },
+        "schema_ref": "ParseNumber"
+      },
       "promote_headers": {
         "effect": {
           "kind": "rename_data",
@@ -691,6 +890,15 @@
           "kind": "keep"
         },
         "schema_ref": "RemoveBottomRows"
+      },
+      "remove_columns": {
+        "effect": {
+          "by": "$by",
+          "kind": "drop",
+          "names": "$columns",
+          "positions": "$positions"
+        },
+        "schema_ref": "RemoveColumns"
       },
       "remove_top_rows": {
         "effect": {

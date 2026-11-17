@@ -158,6 +158,10 @@ class Api:
         return self._session.rows(int(step), int(offset), int(limit))
 
     @_wrap
+    def column_info(self, step: int) -> dict[str, Any]:
+        return self._session.column_info(int(step))
+
+    @_wrap
     def find_row(self, step: int, source_file: str, line_no: int) -> dict[str, Any]:
         return {"row": self._session.find_row(int(step), str(source_file), int(line_no))}
 

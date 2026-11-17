@@ -86,7 +86,7 @@ function NumberInput({ value, onChange, integer }: { value: unknown; onChange: (
 
 function EnumSelect({ value, onChange, schema }: { value: unknown; onChange: (v: unknown) => void; schema: JsonSchema }) {
   const labels = schema.ui_labels ?? {}
-  return (
+  const select = (
     <Select value={asString(value)} onValueChange={onChange}>
       <SelectTrigger className="w-full">
         <SelectValue placeholder="請選擇" />
@@ -99,6 +99,15 @@ function EnumSelect({ value, onChange, schema }: { value: unknown; onChange: (v:
         ))}
       </SelectContent>
     </Select>
+  )
+  // 選到的選項有說明時（例如日期樣式的正規表示式）顯示在下面
+  const hint = schema.ui_option_hints?.[asString(value)]
+  if (!hint) return select
+  return (
+    <div className="space-y-1">
+      {select}
+      <p className="break-all font-mono text-xs text-muted-foreground">{hint}</p>
+    </div>
   )
 }
 
@@ -140,6 +149,47 @@ function ColumnChecklist({ value, onChange, columns }: { value: unknown; onChang
         .map((c) => (
           <span key={c} className="text-sm text-destructive">
             {c}（不存在）
+          </span>
+        ))}
+    </div>
+  )
+}
+
+/** 依位置選欄：外觀和 ColumnChecklist 一樣，存的是第幾個資料欄（從 1 起）。 */
+function PositionChecklist({ value, onChange, columns }: { value: unknown; onChange: (v: unknown) => void; columns: string[] | null }) {
+  const selected = Array.isArray(value) ? value.filter((v): v is number => typeof v === 'number') : []
+  if (!columns) {
+    return (
+      <Input
+        value={selected.join(', ')}
+        placeholder="例如 2, 5"
+        onChange={(e) =>
+          onChange(
+            e.target.value
+              .split(/[,，\s]+/)
+              .map((t) => Number.parseInt(t, 10))
+              .filter((n) => Number.isInteger(n)),
+          )
+        }
+      />
+    )
+  }
+  const toggle = (position: number, on: boolean) =>
+    onChange(on ? [...selected.filter((p) => p !== position), position].sort((a, b) => a - b) : selected.filter((p) => p !== position))
+  return (
+    <div className="flex flex-wrap gap-x-4 gap-y-1.5 rounded-md border p-2">
+      {columns.map((c, i) => (
+        <label key={c} className="flex items-center gap-1.5 text-sm">
+          <Checkbox checked={selected.includes(i + 1)} onCheckedChange={(on) => toggle(i + 1, on === true)} />
+          <span className="tabular-nums text-muted-foreground">{i + 1}</span>
+          {c}
+        </label>
+      ))}
+      {selected
+        .filter((p) => p > columns.length)
+        .map((p) => (
+          <span key={p} className="text-sm text-destructive">
+            第 {p} 欄（不存在）
           </span>
         ))}
     </div>
@@ -342,6 +392,8 @@ function control(kind: FieldKind, props: FieldProps) {
       return <ColumnSelect value={value} onChange={onChange} columns={columns} />
     case 'columns':
       return <ColumnChecklist value={value} onChange={onChange} columns={columns} />
+    case 'column_positions':
+      return <PositionChecklist value={value} onChange={onChange} columns={columns} />
     case 'new_columns':
       return <TagsEditor value={value} onChange={onChange} placeholder="欄名" />
     case 'conditions':

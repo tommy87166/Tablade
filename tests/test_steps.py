@@ -1,10 +1,12 @@
 """步驟：registry 的範例（同時是文件）＋各步驟的邊界情況。"""
 
+import re
+
 import polars as pl
 import pytest
 
 from tablade.engine.run import RunError, apply_step
-from tablade.recipe.validator import apply_effect, resolve_effect
+from tablade.recipe.validator import EffectError, apply_effect, resolve_effect
 from tablade.steps import all_steps, get
 from tablade.steps.base import LINE_NO, SOURCE_FILE, TEMP_PREFIX
 from tablade.steps.headers import PromoteHeaders
@@ -98,6 +100,9 @@ def test_registry_metadata_is_complete():
         "split_column",
         "promote_headers",
         "fill_down",
+        "remove_columns",
+        "parse_number",
+        "parse_date",
         "filter",
         "merge_files",
     ]
@@ -239,6 +244,180 @@ def test_fill_down_does_not_cross_files_and_respects_blank_option():
     assert out["g"].to_list() == ["A", "A", "A", None, "B"]
     strict, _, _ = run(make("fill_down", columns=["g"], blank_as_null=False), df)
     assert strict["g"].to_list() == ["A", "", "", "", "B"]
+
+
+# ── 刪除欄 ─────────────────────────────────────────────────────
+
+FOUR = {"a": ["1"], "b": ["2"], "c": ["3"], "d": ["4"]}
+
+
+def test_remove_columns_by_name_and_position_keep_system_columns():
+    out, _, _ = run(make("remove_columns", columns=["d", "b"]), frame(FOUR))
+    assert out.columns == [SOURCE_FILE, LINE_NO, "a", "c"]
+    out, _, _ = run(make("remove_columns", by="position", positions=[4, 1, 4]), frame(FOUR))
+    assert out.columns == [SOURCE_FILE, LINE_NO, "b", "c"]
+    # 依位置時不用填 columns（反之亦然）
+    assert make("remove_columns", by="position", positions=[2]).columns == []
+    assert make("remove_columns", by="position", positions=[2], columns=["x"]).describe() == (
+        "刪除第 2 欄"
+    )
+
+
+@pytest.mark.parametrize(
+    ("params", "message"),
+    [
+        ({"columns": ["nope"]}, "欄位不存在：nope"),
+        ({"by": "position", "positions": [5]}, "目前只有 4 個資料欄，沒有第 5 欄"),
+        ({"columns": ["a", "b", "c", "d"]}, "不能刪除所有資料欄"),
+    ],
+)
+def test_remove_columns_errors(params, message):
+    with pytest.raises(RunError, match=message):
+        run(make("remove_columns", **params), frame(FOUR))
+
+
+def test_remove_columns_needs_something_picked():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="要選至少一個") as by_name:
+        make("remove_columns")
+    assert by_name.value.errors()[0]["loc"] == ("columns",)
+    with pytest.raises(ValidationError, match="要選至少一個") as by_position:
+        make("remove_columns", by="position")
+    assert by_position.value.errors()[0]["loc"] == ("positions",)
+    with pytest.raises(ValidationError):
+        make("remove_columns", by="position", positions=[0])
+    effect = {"kind": "drop", "by": "position", "names": [], "positions": []}
+    with pytest.raises(EffectError, match="要選至少一個"):
+        apply_effect(["a"], effect)
+    assert apply_effect(None, {**effect, "positions": [3]}) is None  # 還不知道有哪些欄
+
+
+# ── 轉型別 ─────────────────────────────────────────────────────
+
+
+def test_parse_number_formats_rounding_and_warnings():
+    from decimal import Decimal
+
+    values = ["1,234.5", " (1,000) ", "1,000-", "+5", "1e3", "12.345", "-12.345", "1 234", "", None]
+    df = frame({"金額": values + ["abc", "$100", "--5"]})
+    out, total, warnings = run(make("parse_number", columns=["金額"]), df)
+    assert out.schema["金額"] == pl.Decimal(38, 2)
+    assert out["金額"].to_list() == [
+        Decimal("1234.50"),
+        Decimal("-1000.00"),
+        Decimal("-1000.00"),
+        Decimal("5.00"),
+        Decimal("1000.00"),
+        Decimal("12.35"),  # 四捨五入，不是銀行家捨入
+        Decimal("-12.35"),
+        Decimal("1234.00"),
+        None,
+        None,
+        None,
+        None,
+        None,
+    ]
+    # 空白不算失敗；有值但轉不了的才警告，訊息帶原始值與行號
+    assert total == 3 and [w.line_no for w in warnings] == [11, 12, 13]
+    assert warnings[0].message == "「金額」的「abc」不是數字，已改成空值"
+    zero, _, _ = run(make("parse_number", columns=["金額"], scale=0), frame({"金額": ["2.5"]}))
+    assert zero["金額"].to_list() == [Decimal("3")]
+
+
+def test_parse_number_integers_and_several_columns():
+    df = frame({"a": ["12", "12.0", "12.5", "-3"], "b": ["1", "2", "x", "4"], "c": ["k"] * 4})
+    out, total, warnings = run(make("parse_number", columns=["a", "b"], kind="integer"), df)
+    assert out.schema["a"] == pl.Int64 and out.schema["b"] == pl.Int64
+    assert out["a"].to_list() == [12, 12, None, -3] and out["b"].to_list() == [1, 2, None, 4]
+    assert out["c"].to_list() == ["k"] * 4
+    assert total == 2
+    assert {w.message for w in warnings} == {
+        "「a」的「12.5」不是整數，已改成空值",
+        "「b」的「x」不是整數，已改成空值",
+    }
+    # 原本就不是文字的欄也可以轉；欄位不存在是步驟錯誤
+    again, total, _ = run(make("parse_number", columns=["a"]), out)
+    assert again["a"].to_list()[0] == 12 and total == 0
+    with pytest.raises(RunError, match="欄位不存在：nope"):
+        run(make("parse_number", columns=["nope"]), df)
+
+
+def parse_date(pattern: str, calendar: str, **extra):
+    return make("parse_date", columns=["d"], pattern=pattern, calendar=calendar, **extra)
+
+
+@pytest.mark.parametrize(
+    ("pattern", "calendar", "value", "expected"),
+    [
+        ("slash", "roc", "115/01/05", "2026-01-05"),
+        ("slash", "roc", " 115/1/5 ", "2026-01-05"),  # 先去掉前後空白
+        ("slash", "roc", "99/12/31", "2010-12-31"),
+        ("slash", "roc", "2026/01/05", None),  # 民國年最多 3 位數
+        ("slash", "ad", "2026/01/05", "2026-01-05"),
+        ("slash", "ad", "115/01/05", None),  # 西元年要 4 位數：不會變成西元 115 年
+        ("slash", "roc", "115-01-05", None),  # 每個樣式只認自己的寫法
+        ("dash", "roc", "115-1-5", "2026-01-05"),
+        ("dash", "ad", "2026-01-05", "2026-01-05"),
+        ("dot", "roc", "115.01.05", "2026-01-05"),
+        ("chinese", "roc", "115 年 1 月 5 日", "2026-01-05"),
+        ("chinese", "ad", "2026年1月5日", "2026-01-05"),
+        ("compact", "roc", "1150105", "2026-01-05"),
+        ("compact", "roc", "991231", "2010-12-31"),
+        ("compact", "ad", "20260105", "2026-01-05"),
+        ("compact", "ad", "1150105", None),
+        ("slash", "roc", "115/02/30", None),  # 不存在的日期
+        ("slash", "roc", "115/13/01", None),
+        ("slash", "ad", "2026/01/05 13:45", None),  # 帶時間
+    ],
+)
+def test_parse_date_patterns(pattern, calendar, value, expected):
+    out, total, _ = run(parse_date(pattern, calendar), frame({"d": [value]}))
+    assert out.schema["d"] == pl.Date
+    got = out["d"].to_list()[0]
+    assert (got.isoformat() if got else None) == expected
+    assert total == (0 if expected else 1)
+
+
+def test_parse_date_custom_regex_needs_three_groups():
+    from pydantic import ValidationError
+
+    custom = parse_date("custom", "ad", regex=r"^(\d{2})/(\d{2})/(\d{4})$")
+    assert custom.describe() == "轉成日期（/^(\\d{2})/(\\d{2})/(\\d{4})$/，西元年）：d"
+    # 三個群組一定是年、月、日的順序：這裡的「年」是 01，西元年不是 4 位數 → 轉換失敗
+    out, total, _ = run(custom, frame({"d": ["01/05/2026"]}))
+    assert out["d"].to_list() == [None] and total == 1
+    named = parse_date("custom", "roc", regex=r"^(?P<y>\d+)年(?P<m>\d+)月(?P<d>\d+)日$")
+    assert run(named, frame({"d": ["115年1月5日"]}))[0]["d"].to_list()[0].isoformat() == (
+        "2026-01-05"
+    )
+    for regex, message in [
+        ("", "要輸入正規表示式"),
+        (r"^(\d+)/(\d+)$", "要剛好三個群組（年、月、日），這個正規表示式有 2 個"),
+        (r"^(\d+)/(\d+)/(\d+)/(\d+)$", "這個正規表示式有 4 個"),
+        ("^(\\d+", "正規表示式有誤"),
+    ]:
+        with pytest.raises(ValidationError, match=re.escape(message)):
+            parse_date("custom", "ad", regex=regex)
+    # 不是自訂時不看 regex
+    assert parse_date("slash", "ad", regex="(").active_regex().startswith("^(")
+
+
+def test_parse_date_needs_pattern_and_calendar():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as missing:
+        make("parse_date", columns=["d"])
+    assert {e["loc"][0] for e in missing.value.errors()} == {"pattern", "calendar"}
+    with pytest.raises(ValidationError):
+        parse_date("auto", "roc")
+
+
+def test_parse_date_blank_is_not_a_warning():
+    out, total, warnings = run(parse_date("slash", "roc"), frame({"d": ["", "  ", None, "x"]}))
+    assert out["d"].to_list() == [None] * 4
+    assert total == 1 and warnings[0].message == "「d」的「x」不是日期，已改成空值"
+    assert parse_date("compact", "roc").describe() == "轉成日期（連寫，月日各 2 碼，民國年）：d"
 
 
 # ── 合併來源檔 ─────────────────────────────────────────────────

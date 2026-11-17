@@ -40,8 +40,9 @@
 > 測試資料一律由 `scripts/gen_fixtures.py` 產生；pre-commit hook 會擋下資料檔與疑似個資。
 > 詳見 [不讓真實資料進入 repo](#️-不讓真實資料進入-repo)。
 
-> **目前進度：M2 步驟 UI。** 可以在視窗裡一步一步建立 recipe（套用的步驟、即時預覽、依步驟 schema 自動產生的表單），
-> 也可以用產生的 skill 讓 Microsoft 365 Copilot 撰寫，或從命令列執行。見 [路線圖](#️-路線圖)。
+> **目前進度：M2 步驟 UI，M3 進行中。** 可以在視窗裡一步一步建立 recipe（套用的步驟、即時預覽、依步驟 schema 自動產生的表單），
+> 也可以用產生的 skill 讓 Microsoft 365 Copilot 撰寫，或從命令列執行。已經可以把文字轉成數字與日期（轉不了的列附行號警告）、
+> 依名稱或位置刪除欄，下方面板的「型別」分頁看得到每一欄的型別。見 [路線圖](#️-路線圖)。
 
 ---
 
@@ -284,7 +285,7 @@ tablade.spec          PyInstaller 設定（以 TABLADE_BUILD 切換 onefile / on
 | M1 引擎 | 有版本號的 recipe schema、步驟 registry、`text_lines` / `csv` 讀取、compiler、CLI（`run` / `validate` / `schema`）、前 8 種步驟 | `tablade run examples/sales_detail.recipe.json` 產出正確結果 ✅ |
 | M1.5 AI skill | 沙箱實測、`tablade profile`、skill 產生器、單一檔案驗證器 | Copilot 載入 skill 後能寫出通過驗證的 recipe（已完成，等 Copilot 實測） |
 | M2 UI | 步驟清單（新增、排序、停用、刪除）、預覽表格、參數表單、匯入 recipe 與錯誤報告、下載 skill | 不寫 JSON 也能完成範例清洗流程 ✅ |
-| M3 在地格式與追溯 | `parse_number`、`parse_date`（民國）、`trim_clean`、manifest | 輸出附 manifest，警告附行號 |
+| M3 在地格式與追溯 | `parse_number`、`parse_date`（民國）✅、`remove_columns` ✅、型別分頁 ✅、`trim_clean`、manifest | 輸出附 manifest，警告附行號 |
 | M4 多檔與 Excel | glob、diagonal concat、Excel 讀取、`classify_rows`、`extract_regex` | 分段報表的範例可以完整攤平 |
 | M5 進階步驟 | join、group_by、unpivot、pivot、dedupe、匯出成 Python 腳本 | — |
 

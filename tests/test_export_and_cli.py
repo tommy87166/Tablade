@@ -53,6 +53,36 @@ def test_selftest_reports_each_check():
     assert result["versions"]["polars"].startswith("2.")
 
 
+def multicore(result: dict) -> str:
+    return next(c["detail"] for c in result["checks"] if c["name"] == "多核心轉碼")
+
+
+def test_selftest_opens_workers_even_on_two_cores(monkeypatch):
+    """CI 的 Windows 只有 2 個核心：平常改用單核心，但自我檢測還是要實際開工作程序測一次。"""
+    import os
+
+    monkeypatch.setattr(os, "cpu_count", lambda: 2)
+    detail = multicore(run_selftest())
+    assert (
+        detail
+        == "開 2 個工作程序同時轉碼，結果與單核心相同；這台電腦只有 2 個核心，大檔平常用單核心轉碼"
+    )
+
+
+def test_selftest_reports_when_workers_cannot_start(monkeypatch):
+    from tablade.ingest import sources
+
+    def refuse(*args, **kwargs):
+        raise OSError("不能開新程序")
+
+    monkeypatch.setattr(sources, "_transcode_parallel", refuse)
+    monkeypatch.setattr(sources, "_pool_failed", False)
+    result = run_selftest()
+    assert result["ok"]
+    assert multicore(result) == "這台電腦不能開工作程序，大檔改用單核心轉碼（結果正確）"
+    assert sources._pool_failed  # 之後的大檔都用單核心，不再重試
+
+
 def test_selftest_marks_checks_after_a_failure_as_not_run(monkeypatch):
     import tablade.selftest as selftest
 

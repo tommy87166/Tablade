@@ -3,7 +3,8 @@
 
     uv run python scripts/gen_frontend_dev_data.py
 
-用假資料跑一次範例 recipe，把每一步（含讀取資料、輸出資料）的畫面狀態與前 200 列存起來。之後用一般瀏覽器跑
+用假資料跑一次範例 recipe（最後再加上「文字轉數字」「文字轉日期」「刪除欄」，看得到型別的變化），
+把每一步（含讀取資料、輸出資料）的畫面狀態、前 200 列與型別分頁的內容存起來。之後用一般瀏覽器跑
 ``npm --prefix frontend run dev`` 時，``src/mock.ts`` 會用這份資料，畫面和真的一樣。
 """
 
@@ -32,9 +33,16 @@ def main() -> int:
         )
         api._session.load_recipe(work / "sales_detail.recipe.json")
         api._session.load_data()
+        session = api._session
+        session.add_step("parse_number", {"column": "金額"}, index=len(session.steps))
+        session.add_step("parse_date", {"column": "日期"}, index=len(session.steps))
+        session.update_step(
+            len(session.steps) - 1, {"columns": ["日期"], "pattern": "slash", "calendar": "roc"}
+        )
+        session.add_step("remove_columns", {"column": "單號"}, index=len(session.steps))
         ready = api.ready()
-        states, rows = {}, {}
-        count = len(api._session.steps)
+        states, rows, columns_info = {}, {}, {}
+        count = len(session.steps)
         for index in range(-1, count + 1):  # count 是「輸出資料」
             state = api.select_step(index)["state"]
             state["recipe"]["path"] = "（開發用假資料）/sales_detail.recipe.json"
@@ -42,11 +50,15 @@ def main() -> int:
             states[str(index)] = state
             if index < count:
                 rows[str(index)] = api.rows(index, 0, 200)
+                columns_info[str(index)] = api.column_info(index)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     TARGET.parent.mkdir(parents=True, exist_ok=True)
     TARGET.write_text(
-        json.dumps({"ready": ready, "states": states, "rows": rows}, ensure_ascii=False),
+        json.dumps(
+            {"ready": ready, "states": states, "rows": rows, "columns_info": columns_info},
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
     print(f"已寫入 {TARGET.relative_to(ROOT)}（{TARGET.stat().st_size:,} bytes）")

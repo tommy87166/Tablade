@@ -5,12 +5,13 @@
  * 資料來自 `uv run python scripts/gen_frontend_dev_data.py` 產生的 src/dev/sample.json（不進版控）：
  * 用假資料跑過範例 recipe 的真實畫面狀態。選取步驟會切換畫面；其他修改只回傳目前的狀態。
  */
-import type { Cell, Progress, ReadyInfo, RowsPage, TabladeApi, ViewState } from './bridge'
+import type { Cell, ColumnsInfo, Progress, ReadyInfo, RowsPage, TabladeApi, ViewState } from './bridge'
 
 interface Sample {
   ready: { ok: true } & ReadyInfo
   states: Record<string, ViewState>
   rows: Record<string, { ok: true } & RowsPage>
+  columns_info?: Record<string, { ok: true } & ColumnsInfo>
 }
 
 const files = import.meta.glob<Sample>('./dev/sample.json', { eager: true, import: 'default' })
@@ -72,7 +73,11 @@ export const mockApi: TabladeApi = sample
               ['讀回 Parquet 並比對', '寫出的內容完全正確', '內容一致'],
               ['Lazy 查詢', 'Polars 的查詢引擎正常', 'group_by 得到 3 組'],
               ['Excel 引擎', '讀 Excel 的元件存在、能載入', 'fastexcel（開發用假資料）'],
-              ['多核心轉碼', '大檔可以用多個程序同時轉碼，結果和單核心相同', '8 個工作程序同時轉碼，結果與單核心相同'],
+              [
+                '多核心轉碼',
+                '大檔可以用多個程序同時轉碼，結果和單核心相同',
+                '開 2 個工作程序同時轉碼，結果與單核心相同；大檔平常用 8 個工作程序',
+              ],
               [
                 '完整執行範例 Recipe',
                 '轉碼、各檔分開處理、8 個步驟、合併來源檔、串流匯出整條流程正常',
@@ -143,6 +148,8 @@ export const mockApi: TabladeApi = sample
       },
       undo: () => withState(),
       redo: () => withState(),
+      column_info: (step) =>
+        delay(sample.columns_info?.[String(loaded ? step : -2)] ?? { ok: true as const, step, rows: 0, sampled: false, columns: [] }),
       export_parquet: fakeExport,
       error_report: () => delay({ ok: true, text: 'Tablade 驗證結果（開發用假資料）\n\n沒有發現問題。' }),
       download_skill: () => delay({ ok: true, cancelled: true }),

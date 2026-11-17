@@ -143,9 +143,8 @@
     { "id": "s3", "type": "fill_down", "columns": ["門市"] },
     { "id": "s4", "type": "split_column", "column": "備註", "delimiter": "|",
       "names": ["備註_1", "備註_2", "備註_3"], "on_extra": "warn" },
-    { "id": "s5", "type": "parse_number", "column": "金額",
-      "negative": "parentheses", "on_error": "null_and_report" },
-    { "id": "s6", "type": "parse_date", "column": "日期", "format": "roc" }
+    { "id": "s5", "type": "parse_number", "columns": ["金額"], "kind": "decimal", "scale": 2 },
+    { "id": "s6", "type": "parse_date", "columns": ["日期"], "pattern": "slash", "calendar": "roc" }
   ],
   "output": { "format": "parquet", "keep_system_columns": true }
 }
@@ -165,7 +164,7 @@
 
 ### 7.1 MVP（第一版）
 
-M1 已完成：`remove_top_rows`、`remove_bottom_rows`、`remove_blank_rows`、`promote_headers`、`split_delimited`、`split_column`、`fill_down`、`filter`、`merge_files`。
+已完成：`remove_top_rows`、`remove_bottom_rows`、`remove_blank_rows`、`promote_headers`、`split_delimited`、`split_column`、`fill_down`、`remove_columns`、`parse_number`、`parse_date`、`filter`、`merge_files`。
 
 | 類型 | 說明 | Polars 實作方向 |
 |---|---|---|
@@ -178,12 +177,13 @@ M1 已完成：`remove_top_rows`、`remove_bottom_rows`、`remove_blank_rows`、
 | `fill_down` | 向下填滿 | 每個來源檔各自 `forward_fill()`（各檔分開跑，不會填到別的檔） |
 | `filter` | 條件篩選（等於、包含、開頭是、正規表示式、空值、數值比較） | `filter(expr)`，條件用結構化參數組成，不接受任意字串運算式 |
 | `merge_files` | 依指定順序把所有來源檔接成一份；`__source_file` 改成同一個名稱、`__line_no` 從 1 重編，之後「前 N 列」等步驟改對整份計算 | 合併型步驟（`combine()`）：照指定順序把各檔的流水線 `concat` 起來，每個檔只讀一次 |
-| `select_columns` | 保留、刪除、重新排序欄位 | `select` |
+| `remove_columns` | 刪除欄位：依名稱或依位置（第幾個資料欄），可以多選 | 欄位效果 `drop` 算出剩下的欄，`select`；欄不存在、位置超出範圍、刪光所有資料欄都是錯誤 |
+| `select_columns` | 保留、重新排序欄位 | `select` |
 | `rename_columns` | 重新命名欄位 | `rename` |
 | `trim_clean` | 修剪空白、全形轉半形（NFKC）、移除不可見字元 | `str.strip_chars`、`map_batches` 加 `unicodedata` |
 | `replace_values` | 取代值（一般文字或正規表示式） | `str.replace_all` |
-| `parse_number` | 文字轉數字：千分位、括號負數 `(1,000)`、尾端負號 `1,000-` | 正規化字串後再轉型；失敗的列記錄行號 |
-| `parse_date` | 文字轉日期：西元、民國 `115/01/05`、`1150105` | 民國年加 1911；失敗的列記錄行號 |
+| `parse_number` | 文字轉數字：千分位、括號負數 `(1,000)`、尾端負號 `1,000-`；精確小數（`Decimal`，指定位數、四捨五入）或整數 | 正規化字串後 `cast(Decimal(38, 18), strict=False)`，再 `round(mode="half_away_from_zero")`（直接 cast 是銀行家捨入）；原本有值、轉完是空值的列產生附行號的警告 |
+| `parse_date` | 文字轉日期。**不自動判斷**：一定要先選樣式，再選民國年或西元年。樣式各是一個獨立的正規表示式（年/月/日、年-月-日、年.月.日、年月日、連寫），也可以自訂；正規表示式要剛好三個群組，依序是年、月、日 | `str.extract` 取出三個群組；民國年 1～3 位數、加 1911，西元年要 4 位數，位數不對算失敗（不會變成西元 115 年）；`str.to_date(strict=False)`（不能用 `pl.date()`：不存在的日期會讓整個執行失敗）；失敗的列產生附行號的警告 |
 | `classify_rows` | 依規則替每一列貼標籤（開頭是、包含、正規表示式） | `when/then` 產生 `__row_type` |
 | `extract_regex` | 用正規表示式從欄位擷取一或多個群組 | `str.extract_groups` |
 
@@ -209,7 +209,7 @@ M1 已完成：`remove_top_rows`、`remove_bottom_rows`、`remove_blank_rows`、
 ## 8. 預覽與執行
 
 - **讀檔**（`ingest/sources.py`）：不把整個檔案讀進記憶體。以 1 MB 分塊讀取，同時算 SHA-256、檢查是否為 UTF-8；UTF-8 檔直接交給 Polars 的 `scan_lines` / `scan_csv`（lazy、可串流），cp950 等其他編碼（或有單獨 `\r` 換行）的檔案先分塊轉成 UTF-8 暫存檔再掃描。分塊不用更大：16 MB 的區塊解碼後釋放的記憶體，macOS 的配置器會留著不還，每個程序會長到幾百 MB 到 1.5 GB，1 MB 時固定在幾十 MB、速度一樣。暫存檔依「路徑＋大小＋修改時間＋編碼」快取，**關閉視窗時刪除**（macOS 關視窗時不一定會跑 Python 的結束程序，所以不能只靠 atexit）。暫存資料夾裡有一個鎖檔，程式開著時一直鎖住；啟動時把沒有人鎖著的 `tablade-stage-*` 資料夾（上次當掉或被強制結束時留下的轉碼副本）清掉，另一個開著的 Tablade 正在用的不會動。**需要約原檔 1.5 倍的暫存空間。**
-- **平行轉碼**（`ingest/transcode.py`，只用標準函式庫）：64 MB 以上要轉碼的檔，在換行後面切成約 32 MB 的段，交給多個工作程序（`ProcessPoolExecutor`、spawn；CPU 核心數減 1，最多 8 個）同時轉，再依序接起來。cp950、Big5-HKSCS、UTF-8 的多位元組字元裡都不會出現 `0x0A`，`\n` 後面一定是一個字元的開頭，所以接起來的結果和單核心完全相同；`\r\n` 也不會被切開。SHA-256 一定要從頭讀到尾，由主程序另一條執行緒同時算。解碼錯誤依檔案順序回報第一個（和單核心相同的訊息）。開不了工作程序（受管控的電腦、`__main__` 不是檔案等）就改用單核心，之後不再嘗試。打包後的 App 靠 `__main__.py` 的 `multiprocessing.freeze_support()` 讓工作程序從同一個執行檔啟動；自我檢測有一項「多核心轉碼」確認這件事。
+- **平行轉碼**（`ingest/transcode.py`，只用標準函式庫）：64 MB 以上要轉碼的檔，在換行後面切成約 32 MB 的段，交給多個工作程序（`ProcessPoolExecutor`、spawn；CPU 核心數減 1，最多 8 個）同時轉，再依序接起來。cp950、Big5-HKSCS、UTF-8 的多位元組字元裡都不會出現 `0x0A`，`\n` 後面一定是一個字元的開頭，所以接起來的結果和單核心完全相同；`\r\n` 也不會被切開。SHA-256 一定要從頭讀到尾，由主程序另一條執行緒同時算。解碼錯誤依檔案順序回報第一個（和單核心相同的訊息）。開不了工作程序（受管控的電腦、`__main__` 不是檔案等）就改用單核心，之後不再嘗試。打包後的 App 靠 `__main__.py` 的 `multiprocessing.freeze_support()` 讓工作程序從同一個執行檔啟動；自我檢測有一項「多核心轉碼」確認這件事：不管核心數多少都實際開 2 個工作程序轉碼一次（CI 的 Windows 只有 2 個核心，平常會用單核心，不這樣做就測不到），訊息裡另外寫這台電腦的大檔平常用幾個工作程序。
 - **預覽**：輸入不超過 `SAMPLE_THRESHOLD`（20 萬行）時整份讀進記憶體，每一步的列數是精確值；超過時只用**每個來源檔的前 10 萬行與最後 1,000 行**當樣本（一次串流掃描取得），步驟的列數標示為樣本的。結尾的頁尾、合計也在樣本裡，「移除後 N 列」的預覽仍然正確。
 - **快取**：以「輸入檔指紋＋前 k 步的 recipe 雜湊」當 key，快取每一步的預覽結果。修改第 k 步時，只需重算第 k 步之後的步驟。
 - **列順序**：讀檔時就依 `__source_file, __line_no` 排好，filter / with_columns 會保持順序，所以**步驟不排序**（排序在串流下會把整份資料放進記憶體）。Polars 2.x 的串流引擎在 join / group_by / unpivot 之後不保證順序，M5 加入這些步驟時要在步驟內恢復順序。
@@ -389,7 +389,7 @@ tablade/
 | M1 引擎 | recipe schema（版本 `MAJOR.MINOR`、schema lock）、registry（含 §7.3 的 8 件事）、ingest（text_lines / csv）、compiler、CLI（`run` / `validate` / `schema`）、MVP 中的 8 種步驟 | `tablade run examples/sales_detail.recipe.json` 產出正確結果，測試全過（✅ 完成） |
 | M1.5 AI skill | probe skill 實測沙箱、`tablade profile`、skill 產生器、單一檔案驗證器（§17） | Copilot 載入 skill 後，能依描述寫出通過驗證的範例 recipe（程式已完成，等 Copilot 實測） |
 | M2 UI | 步驟清單（新增、排序、停用、刪除）、預覽表格、參數表單、匯入 recipe（版本檢查、錯誤報告）、下載 AI skill | 不寫 JSON，也能在 UI 完成範例整理流程（✅ 完成） |
-| M3 台灣格式與留痕 | parse_number、parse_date（民國）、trim_clean、manifest | 輸出附 manifest，警告附行號 |
+| M3 台灣格式與留痕 | parse_number、parse_date（民國）✅、remove_columns ✅、型別分頁 ✅、trim_clean、manifest | 輸出附 manifest，警告附行號 |
 | M4 多檔與 Excel | glob、diagonal concat、excel reader、classify_rows、extract_regex | 分段報表的範例可以完整攤平 |
 | M5 進階步驟 | join、group_by、unpivot、pivot、dedupe、匯出 Python 腳本 | — |
 
@@ -475,13 +475,14 @@ tablade/
 | `type: string` | Input |
 | `type: integer` / `number` | 數字 Input |
 | `type: boolean` | Switch |
-| `enum`（來自 `Literal[...]`） | Select；選項文字用 `ui_labels` |
+| `enum`（來自 `Literal[...]`） | Select；選項文字用 `ui_labels`，選到的選項有 `ui_option_hints` 時顯示在下面（例如日期樣式的正規表示式） |
 | `type: array` + `items: string` | 可增減的標籤輸入 |
 | `ui: "column"` / `ui: "columns"` | 欄位選擇器（單選 / 多選），選項是上一步的輸出欄位 |
+| `ui: "column_positions"` | 依位置勾選欄位（顯示「2 門市」，存的是第幾欄） |
 | `ui: "regex"` | 正規表示式輸入框＋即時測試 |
 | `oneOf` + `discriminator` | 先選類型，再顯示對應的子表單（例如篩選條件「等於 / 包含 / 數值比較」） |
 
-3. 欄位標題用 `Field(title=...)`、說明用 `Field(description=...)`、預設值用 Python 的預設值；`ui`、`ui_labels` 等提示放在 `json_schema_extra`。
+3. 欄位標題用 `Field(title=...)`、說明用 `Field(description=...)`、預設值用 Python 的預設值；`ui`、`ui_labels` 等提示放在 `json_schema_extra`。`ui_show_if: {"by": "position"}` 表示其他參數是這個值時才顯示這個欄位（例如刪除欄的名稱／位置、只有小數才有的小數位數）；因為修改而隱藏的欄位回到預設值。
 4. **驗證只在 Python 做**：前端送出原始值，pydantic 驗證；錯誤的 `loc`（例如 `["delimiter"]`）對應回表單欄位顯示。前端不重複寫驗證規則。
 5. 驗證通過後，Python 重算預覽並回傳 `describe()` 的一句話說明，步驟清單即時更新。
 
@@ -492,7 +493,9 @@ tablade/
 - 左側：輸入檔案與步驟清單（拖曳排序、停用、刪除、每步的列數變化）。
 - 中間：預覽表格。欄標題顯示型別與空值比例；在欄標題按右鍵可直接建立步驟（拆欄、轉數字…）。
 - 右側：目前步驟的參數表單（§16.5）。
-- 下方：警告區，每則附來源檔名與行號，點一下跳到該列。
+- 下方：兩個分頁。
+  - 「警告」：每則附來源檔名與行號，點一下跳到該列。
+  - 「型別」：目前預覽那一步每一欄的位置（和刪除欄的位置相同）、型別（中文＋Polars 型別）、空值、空白字串、最小～最大（數字與日期）、範例值。由 `session.column_info()` 算，只有打開這個分頁時才算；大檔時是預覽樣本的統計。
 
 ### 16.7 檢查
 
