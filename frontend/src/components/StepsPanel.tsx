@@ -1,11 +1,29 @@
-/** 左側：目前階段的讀取資料 → 步驟清單（點選、拖曳排序、停用、刪除）→ 輸出資料（中間的階段是「階段結果」），以及新增步驟選單。 */
-import { AlertTriangle, ArrowDown, ArrowUp, CircleX, FileInput, FileOutput, GripVertical, Pause, Play, Plus, Trash2 } from 'lucide-react'
+/**
+ * 左側：目前階段的讀取資料 → 步驟清單（點選、拖曳排序、停用、刪除）→ 輸出資料（中間的階段是「階段結果」），以及新增步驟選單。
+ * 標題列可以切換精簡／詳細（預設精簡）：精簡只顯示步驟名稱與錯誤、警告的標記；詳細另外顯示步驟說明、列數與來源檔數。
+ */
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  CircleX,
+  FileInput,
+  FileOutput,
+  GripVertical,
+  List,
+  ListCollapse,
+  Pause,
+  Play,
+  Plus,
+  Trash2,
+} from 'lucide-react'
 import { useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { CatalogItem, ViewState } from '../bridge'
 import { CollapseButton, PaneHeader, PaneTitle } from './Pane'
 import { StepScope } from './StepScope'
@@ -102,6 +120,8 @@ export function AddStepMenu({ catalog, onAdd, disabled }: { catalog: CatalogItem
 export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onToggle, onDelete, onCollapse }: Props) {
   const [dragging, setDragging] = useState<number | null>(null)
   const [over, setOver] = useState<number | null>(null)
+  /** 詳細：顯示步驟說明、列數與來源檔數；預設精簡 */
+  const [detailed, setDetailed] = useState(false)
   const input = state.input
   const missing = input.entries.filter((e) => !e.found).length
   const sourceText =
@@ -135,8 +155,24 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
             {state.stages.length > 1 && stage ? stage.name : '步驟'}
           </span>
         </PaneTitle>
-        {state.input.sampled ? <span className="truncate text-[11px] text-amber-700 dark:text-amber-400">列數為樣本</span> : null}
+        {detailed && state.input.sampled ? (
+          <span className="truncate text-[11px] text-amber-700 dark:text-amber-400">列數為樣本</span>
+        ) : null}
         <span className="ml-auto flex shrink-0 items-center gap-1">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-pressed={detailed}
+                aria-label={detailed ? '改成精簡' : '改成詳細'}
+                onClick={() => setDetailed((v) => !v)}
+              >
+                {detailed ? <ListCollapse /> : <List />}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{detailed ? '改成精簡（只顯示步驟名稱）' : '改成詳細（顯示步驟說明與列數）'}</TooltipContent>
+          </Tooltip>
           <AddStepMenu catalog={catalog} onAdd={onAdd} disabled={busy} />
           <CollapseButton side="left" label="步驟" onClick={onCollapse} />
         </span>
@@ -151,9 +187,12 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
             <FileInput className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
             <span className="min-w-0 flex-1">
               <span className="block font-medium">讀取資料</span>
-              <span className={`block truncate text-xs ${sourceTone}`}>{sourceText}</span>
+              {/* 精簡時只在有問題（找不到檔、要重新載入、讀取錯誤）時顯示 */}
+              {detailed || sourceTone !== 'text-muted-foreground' ? (
+                <span className={`block truncate text-xs ${sourceTone}`}>{sourceText}</span>
+              ) : null}
             </span>
-            {input.loaded && input.total_rows !== null ? (
+            {detailed && input.loaded && input.total_rows !== null ? (
               <span className="text-xs text-muted-foreground tabular-nums">{input.total_rows.toLocaleString()} 行</span>
             ) : null}
           </button>
@@ -201,29 +240,54 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
                     <GripVertical className="mt-0.5 size-4 shrink-0 cursor-grab text-muted-foreground/50" />
                     <span className="mt-0.5 w-5 shrink-0 text-right text-xs text-muted-foreground tabular-nums">{step.index + 1}</span>
                     <span className="min-w-0 flex-1">
-                      <span className={`block font-medium ${step.enabled ? '' : 'line-through'}`}>{step.label}</span>
-                      <span className="block truncate text-xs text-muted-foreground">
-                        {step.status === 'error' ? (step.run_error ?? step.errors[0]?.error ?? '參數有誤') : (step.describe ?? '')}
-                      </span>
-                      <span className="mt-0.5 flex flex-wrap items-center gap-1">
-                        {rows ? <span className="text-xs whitespace-nowrap text-muted-foreground tabular-nums">{rows}</span> : null}
-                        {step.files !== null ? (
-                          <span className="text-xs whitespace-nowrap text-muted-foreground tabular-nums">{step.files} 個來源檔</span>
-                        ) : null}
-                        {step.status === 'error' ? (
-                          <Badge variant="destructive" className="h-4 px-1 text-[10px]">
-                            <CircleX /> 錯誤
-                          </Badge>
-                        ) : null}
-                        {step.status === 'pending' ? (
-                          <span className="text-xs text-muted-foreground">（前面的步驟有錯，尚未計算）</span>
-                        ) : null}
-                        {step.warning_count ? (
-                          <Badge variant="outline" className="h-4 border-amber-500/50 px-1 text-[10px] text-amber-700 dark:text-amber-400">
-                            <AlertTriangle /> {step.warning_count.toLocaleString()}
-                          </Badge>
-                        ) : null}
-                      </span>
+                      {detailed ? null : (
+                        <span className="flex min-w-0 items-center gap-1">
+                          <span className={`min-w-0 truncate font-medium ${step.enabled ? '' : 'line-through'}`}>{step.label}</span>
+                          {step.status === 'error' ? (
+                            <Badge variant="destructive" className="h-4 shrink-0 px-1 text-[10px]">
+                              <CircleX /> 錯誤
+                            </Badge>
+                          ) : null}
+                          {step.warning_count ? (
+                            <Badge
+                              variant="outline"
+                              className="h-4 shrink-0 border-amber-500/50 px-1 text-[10px] text-amber-700 dark:text-amber-400"
+                            >
+                              <AlertTriangle /> {step.warning_count.toLocaleString()}
+                            </Badge>
+                          ) : null}
+                        </span>
+                      )}
+                      {detailed ? <span className={`block font-medium ${step.enabled ? '' : 'line-through'}`}>{step.label}</span> : null}
+                      {detailed ? (
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {step.status === 'error' ? (step.run_error ?? step.errors[0]?.error ?? '參數有誤') : (step.describe ?? '')}
+                        </span>
+                      ) : null}
+                      {detailed ? (
+                        <span className="mt-0.5 flex flex-wrap items-center gap-1">
+                          {rows ? <span className="text-xs whitespace-nowrap text-muted-foreground tabular-nums">{rows}</span> : null}
+                          {step.files !== null ? (
+                            <span className="text-xs whitespace-nowrap text-muted-foreground tabular-nums">{step.files} 個來源檔</span>
+                          ) : null}
+                          {step.status === 'error' ? (
+                            <Badge variant="destructive" className="h-4 px-1 text-[10px]">
+                              <CircleX /> 錯誤
+                            </Badge>
+                          ) : null}
+                          {step.status === 'pending' ? (
+                            <span className="text-xs text-muted-foreground">（前面的步驟有錯，尚未計算）</span>
+                          ) : null}
+                          {step.warning_count ? (
+                            <Badge
+                              variant="outline"
+                              className="h-4 border-amber-500/50 px-1 text-[10px] text-amber-700 dark:text-amber-400"
+                            >
+                              <AlertTriangle /> {step.warning_count.toLocaleString()}
+                            </Badge>
+                          ) : null}
+                        </span>
+                      ) : null}
                     </span>
                     <span className="flex shrink-0 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                       <Button
@@ -279,7 +343,7 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
             <FileOutput className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
             <span className="min-w-0 flex-1">
               <span className="block font-medium">{stage && !stage.last ? '階段結果' : '輸出資料'}</span>
-              {stage && !stage.last ? (
+              {detailed && stage && !stage.last ? (
                 <span className="block text-xs text-muted-foreground">暫存，後面的階段用 @{stage.name} 讀它</span>
               ) : null}
             </span>
