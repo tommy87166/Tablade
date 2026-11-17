@@ -9,7 +9,11 @@ from __future__ import annotations
 import csv
 import io
 import random
+import unicodedata
+import zipfile
+from datetime import date
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 STORES = ("北區門市", "中區門市", "南區門市")
 ITEMS = (
@@ -129,43 +133,255 @@ def write_messy_export(
     return target
 
 
-def report_lines(seed: int = 0, sections: int = 3, entries: int = 6) -> list[str]:
-    """分段報表：標題雜訊、每個門市一段（段落標題、欄位標題、明細、小計）、段落間空行。"""
+# ── 分段報表（列印格式）──────────────────────────────────────────
+
+REPORT_TITLE = "範例零售股份有限公司（假資料）"
+REPORT_COLUMNS = ("日期", "品號", "品名", "數量", "單價", "金額")
+REPORT_LAYOUT = ((10, False), (5, False), (12, False), (6, True), (8, True), (11, True))
+"""每一欄的寬度（格數，中文字 2 格）與是否靠右；欄與欄之間空一格。"""
+REPORT_STARTS = (1, 12, 18, 31, 38, 47)
+"""每一欄的開始位置（第幾格，從 1 起），範例 Recipe 的 split_fixed_width 用這組。"""
+
+
+def _width(text: str) -> int:
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
+def _pad(text: str, width: int, right: bool = False) -> str:
+    """依顯示寬度補空白（舊系統印出的 Big5 報表一個中文字佔兩格）。"""
+    space = " " * max(width - _width(text), 0)
+    return space + text if right else text + space
+
+
+def _report_row(values: list[str]) -> str:
+    cells = (_pad(v, w, right) for v, (w, right) in zip(values, REPORT_LAYOUT, strict=True))
+    return " ".join(cells).rstrip()
+
+
+def sectioned_report(
+    seed: int = 0, sections: int = 3, entries: int = 6, page_lines: int = 40
+) -> tuple[list[str], list[dict[str, str]]]:
+    """分段報表，回傳（檔案的各行, 攤平後預期的明細）。
+
+    頁首（每頁重複）→ 每個門市一段：段落標題「門市：…」、欄位標題與分隔線、明細、小計 → 段落間空行
+    → 總計 → 報表結束。一頁超過 ``page_lines`` 行就換頁：重複頁首與欄位標題，但不重複段落標題
+    （跨頁的明細要靠向下填滿補上門市）。欄位用空白對齊，中文字算兩格寬。
+    """
     rng = random.Random(seed)
-    lines = [
-        "範例零售股份有限公司（假資料）",
-        "門市銷售報表",
-        "期間：115/01/01 ~ 115/01/31                         頁次：1",
-        "",
-    ]
+    lines: list[str] = []
+    expected: list[dict[str, str]] = []
+    page, page_start = 0, 0
+
+    def new_page() -> None:
+        nonlocal page, page_start
+        page += 1
+        if lines:
+            lines.append("")
+        page_start = len(lines)
+        lines.append(REPORT_TITLE)
+        lines.append(_pad("門市銷售報表", 52) + f"頁次：{page}")
+        lines.append("期間：115/01/01 ~ 115/01/31")
+        lines.append("")
+
+    def column_header() -> None:
+        lines.append(_report_row(list(REPORT_COLUMNS)))
+        lines.append(" ".join("-" * w for w, _ in REPORT_LAYOUT))
+
+    new_page()
+    grand_qty = grand_amount = 0
     for store in STORES[:sections]:
-        qty_total = amount_total = 0
         lines.append(f"門市：{store}")
-        lines.append(f"{'日期':<10}{'品號':<6}{'品名':<10}{'數量':>6}{'單價':>8}{'金額':>12}")
+        column_header()
+        qty_total = amount_total = 0
         for _ in range(entries):
+            if len(lines) - page_start >= page_lines:
+                new_page()
+                column_header()
             code, name, price = rng.choice(ITEMS)
             qty = rng.randint(1, 12)
             if rng.random() < 0.15:
-                qty = -qty
+                qty = -qty  # 退貨
+            day = _roc_date(rng)
+            amount = _amount(price * qty)
+            lines.append(_report_row([day, code, name, str(qty), f"{price:,}", amount]))
+            expected.append(
+                {
+                    "門市": store,
+                    "日期": day,
+                    "品號": code,
+                    "品名": name,
+                    "數量": str(qty),
+                    "單價": f"{price:,}",
+                    "金額": amount,
+                }
+            )
             qty_total += qty
             amount_total += price * qty
-            lines.append(
-                f"{_roc_date(rng):<10}{code:<6}{name:<10}{qty:>6}{price:>8,}{_amount(price * qty):>12}"
-            )
-        lines.append(f"{'':<10}{'':<6}{'小計':<10}{qty_total:>6}{'':>8}{_amount(amount_total):>12}")
+        lines.append(_report_row(["", "", "小計", str(qty_total), "", _amount(amount_total)]))
         lines.append("")
+        grand_qty += qty_total
+        grand_amount += amount_total
+    lines.append(_report_row(["", "", "總計", str(grand_qty), "", _amount(grand_amount)]))
     lines.append("*** 報表結束 ***")
-    return lines
+    return lines, expected
+
+
+def report_lines(seed: int = 0, sections: int = 3, entries: int = 6) -> list[str]:
+    """分段報表的各行（見 ``sectioned_report``）。"""
+    return sectioned_report(seed, sections, entries)[0]
 
 
 def write_report(
-    path: str | Path, seed: int = 0, encoding: str = "cp950", sections: int = 3, entries: int = 6
+    path: str | Path,
+    seed: int = 0,
+    encoding: str = "cp950",
+    sections: int = 3,
+    entries: int = 6,
+    page_lines: int = 40,
 ) -> Path:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    text = "\r\n".join(report_lines(seed, sections, entries)) + "\r\n"
-    target.write_bytes(text.encode(encoding))
+    lines, _ = sectioned_report(seed, sections, entries, page_lines)
+    target.write_bytes(("\r\n".join(lines) + "\r\n").encode(encoding))
     return target
+
+
+# ── Excel（只用標準函式庫寫最小的 .xlsx，不需要額外的套件）────────────────
+
+Cell = str | int | float | date | None
+
+
+def _column_name(index: int) -> str:
+    letters, n = "", index + 1
+    while n:
+        n, rest = divmod(n - 1, 26)
+        letters = chr(65 + rest) + letters
+    return letters
+
+
+def _xlsx_cell(ref: str, value: Cell) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, date):  # Excel 的日期是 1899-12-30 起算的天數，加上日期格式
+        serial = (value - date(1899, 12, 30)).days
+        return f'<c r="{ref}" s="1"><v>{serial}</v></c>'
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return f'<c r="{ref}"><v>{value}</v></c>'
+    text = escape(str(value))
+    return f'<c r="{ref}" t="inlineStr"><is><t xml:space="preserve">{text}</t></is></c>'
+
+
+def write_xlsx(path: str | Path, sheets: dict[str, list[list[Cell] | None]]) -> Path:
+    """寫一個最小的 .xlsx：每個工作表是一串列（None 代表整列空白），格子可以是文字、數字、日期。"""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    names = list(sheets)
+    ns = "http://schemas.openxmlformats.org"
+    main = f"{ns}/spreadsheetml/2006/main"
+    rel = f"{ns}/officeDocument/2006/relationships"
+    pkg = f"{ns}/package/2006"
+    head = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    sheet_type = "application/vnd.openxmlformats-officedocument.spreadsheetml"
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as z:
+        overrides = "".join(
+            f'<Override PartName="/xl/worksheets/sheet{i + 1}.xml" '
+            f'ContentType="{sheet_type}.worksheet+xml"/>'
+            for i in range(len(names))
+        )
+        z.writestr(
+            "[Content_Types].xml",
+            f'{head}<Types xmlns="{pkg}/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            f'<Override PartName="/xl/workbook.xml" ContentType="{sheet_type}.sheet.main+xml"/>'
+            f'<Override PartName="/xl/styles.xml" ContentType="{sheet_type}.styles+xml"/>'
+            f"{overrides}</Types>",
+        )
+        z.writestr(
+            "_rels/.rels",
+            f'{head}<Relationships xmlns="{pkg}/relationships">'
+            f'<Relationship Id="rId1" Type="{rel}/officeDocument" Target="xl/workbook.xml"/>'
+            "</Relationships>",
+        )
+        sheet_list = "".join(
+            f'<sheet name="{escape(n)}" sheetId="{i + 1}" r:id="rId{i + 1}"/>'
+            for i, n in enumerate(names)
+        )
+        z.writestr(
+            "xl/workbook.xml",
+            f'{head}<workbook xmlns="{main}" xmlns:r="{rel}"><sheets>{sheet_list}</sheets></workbook>',
+        )
+        links = "".join(
+            f'<Relationship Id="rId{i + 1}" Type="{rel}/worksheet" Target="worksheets/sheet{i + 1}.xml"/>'
+            for i in range(len(names))
+        )
+        z.writestr(
+            "xl/_rels/workbook.xml.rels",
+            f'{head}<Relationships xmlns="{pkg}/relationships">{links}'
+            f'<Relationship Id="rId{len(names) + 1}" Type="{rel}/styles" Target="styles.xml"/>'
+            "</Relationships>",
+        )
+        z.writestr(
+            "xl/styles.xml",
+            f'{head}<styleSheet xmlns="{main}"><fonts count="1"><font/></fonts>'
+            '<fills count="1"><fill/></fills><borders count="1"><border/></borders>'
+            '<cellStyleXfs count="1"><xf/></cellStyleXfs>'
+            '<cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="14" applyNumberFormat="1"/></cellXfs>'
+            "</styleSheet>",
+        )
+        for i, name in enumerate(names):
+            rows = "".join(
+                f'<row r="{r + 1}">'
+                + "".join(_xlsx_cell(f"{_column_name(c)}{r + 1}", v) for c, v in enumerate(row))
+                + "</row>"
+                for r, row in enumerate(sheets[name])
+                if row
+            )
+            z.writestr(
+                f"xl/worksheets/sheet{i + 1}.xml",
+                f'{head}<worksheet xmlns="{main}"><sheetData>{rows}</sheetData></worksheet>',
+            )
+    return target
+
+
+def excel_export(
+    n: int = 20, seed: int = 0
+) -> tuple[list[list[Cell] | None], list[dict[str, str]]]:
+    """Excel 版的明細：上面有標題與空白列，日期是 Excel 的日期格子、金額與數量是數字格子。
+
+    回傳（工作表的各列, 讀成文字後預期的明細）。
+    """
+    rng = random.Random(seed)
+    rows: list[list[Cell] | None] = [
+        ["門市銷售明細（假資料）"],
+        [f"匯出時間：2026/02/01 09:{rng.randint(10, 59)}"],
+        None,
+        ["日期", "門市", "品號", "品名", "數量", "金額"],
+    ]
+    expected = []
+    for _ in range(n):
+        code, name, price = rng.choice(ITEMS)
+        day = date(2026, 1, rng.randint(1, 28))
+        qty = rng.randint(1, 12)
+        store = rng.choice(STORES)
+        rows.append([day, store, code, name, qty, price * qty])
+        expected.append(
+            {
+                "日期": day.isoformat(),
+                "門市": store,
+                "品號": code,
+                "品名": name,
+                "數量": str(qty),
+                "金額": str(price * qty),
+            }
+        )
+    return rows, expected
+
+
+def write_excel_export(path: str | Path, n: int = 20, seed: int = 0) -> Path:
+    """明細在第一個工作表「明細」，另外有一個「說明」工作表。"""
+    rows, _ = excel_export(n, seed)
+    return write_xlsx(path, {"明細": rows, "說明": [["這是假資料，只用來測試讀 Excel"]]})
 
 
 def write_many(
@@ -202,12 +418,16 @@ def write_big_messy_export(
 
 
 def write_all(directory: str | Path, seed: int = 0) -> list[Path]:
-    """產生所有範例假資料到指定資料夾（examples/sales_detail.recipe.json 讀的是 明細_*.csv）。"""
+    """產生所有範例假資料到指定資料夾。
+
+    examples/sales_detail.recipe.json 讀 明細_*.csv；examples/sales_report.recipe.json 讀 銷售報表.txt。
+    """
     out = Path(directory)
     return [
         write_messy_export(out / "明細_01.csv", n=50, seed=seed),
         write_messy_export(out / "明細_02.csv", n=30, seed=seed + 1),
         write_simple_csv(out / "乾淨_01.csv", n=20, seed=seed + 3),
         write_simple_csv(out / "乾淨_utf8.csv", n=20, seed=seed + 2, encoding="utf-8-sig"),
-        write_report(out / "銷售報表.txt", seed=seed),
+        write_report(out / "銷售報表.txt", seed=seed, entries=20),
+        write_excel_export(out / "明細.xlsx", n=20, seed=seed + 4),
     ]

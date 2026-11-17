@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import shutil
 import sys
@@ -23,42 +24,55 @@ ROOT = Path(__file__).resolve().parents[1]
 TARGET = ROOT / "frontend" / "src" / "dev" / "sample.json"
 
 
-def main() -> int:
+def add_demo_steps(session) -> None:
+    """範例後面加上各種欄位步驟，開發畫面才看得到它們的表單。"""
+    session.add_step("parse_number", {"column": "金額"}, index=len(session.steps))
+    session.add_step("parse_date", {"column": "日期"}, index=len(session.steps))
+    session.update_step(
+        len(session.steps) - 1, {"columns": ["日期"], "pattern": "slash", "calendar": "roc"}
+    )
+    session.add_step("remove_columns", {"column": "單號"}, index=len(session.steps))
+    session.add_step("trim_clean", {"column": "品名"}, index=len(session.steps))
+    session.add_step("replace_values", {"column": "付款方式"}, index=len(session.steps))
+    session.update_step(
+        len(session.steps) - 1,
+        {
+            "columns": ["付款方式"],
+            "match": "whole",
+            "replacements": [
+                {"find": "行動支付", "replace": "行動"},
+                {"find": "信用卡", "replace": "刷卡"},
+            ],
+        },
+    )
+    session.add_step("rename_columns", {"column": "品名"}, index=len(session.steps))
+    session.update_step(len(session.steps) - 1, {"names": {"品名": "商品"}})
+    session.add_step("select_columns", {}, index=len(session.steps))
+    session.update_step(
+        len(session.steps) - 1, {"columns": ["日期", "門市", "商品", "付款方式", "金額"]}
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="產生前端開發用的假 API 資料")
+    parser.add_argument(
+        "--recipe",
+        default="sales_detail",
+        choices=["sales_detail", "sales_report"],
+        help="用哪一個範例 Recipe（sales_report 是分段報表，看得到替列分類等步驟的表單）",
+    )
+    args = parser.parse_args(argv)
     api = Api()
     work = Path(tempfile.mkdtemp(prefix="tablade-dev-"))
     try:
         write_all(work / "data")
-        shutil.copy(
-            ROOT / "examples" / "sales_detail.recipe.json", work / "sales_detail.recipe.json"
-        )
-        api._session.load_recipe(work / "sales_detail.recipe.json")
+        name = f"{args.recipe}.recipe.json"
+        shutil.copy(ROOT / "examples" / name, work / name)
+        api._session.load_recipe(work / name)
         api._session.load_data()
         session = api._session
-        session.add_step("parse_number", {"column": "金額"}, index=len(session.steps))
-        session.add_step("parse_date", {"column": "日期"}, index=len(session.steps))
-        session.update_step(
-            len(session.steps) - 1, {"columns": ["日期"], "pattern": "slash", "calendar": "roc"}
-        )
-        session.add_step("remove_columns", {"column": "單號"}, index=len(session.steps))
-        session.add_step("trim_clean", {"column": "品名"}, index=len(session.steps))
-        session.add_step("replace_values", {"column": "付款方式"}, index=len(session.steps))
-        session.update_step(
-            len(session.steps) - 1,
-            {
-                "columns": ["付款方式"],
-                "match": "whole",
-                "replacements": [
-                    {"find": "行動支付", "replace": "行動"},
-                    {"find": "信用卡", "replace": "刷卡"},
-                ],
-            },
-        )
-        session.add_step("rename_columns", {"column": "品名"}, index=len(session.steps))
-        session.update_step(len(session.steps) - 1, {"names": {"品名": "商品"}})
-        session.add_step("select_columns", {}, index=len(session.steps))
-        session.update_step(
-            len(session.steps) - 1, {"columns": ["日期", "門市", "商品", "付款方式", "金額"]}
-        )
+        if args.recipe == "sales_detail":
+            add_demo_steps(session)
         ready = api.ready()
         states, rows, columns_info = {}, {}, {}
         count = len(session.steps)

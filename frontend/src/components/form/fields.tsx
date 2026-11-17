@@ -1,5 +1,6 @@
 /** 表單欄位元件：依 JSON Schema 的型別與 ui 提示挑選（DESIGN.md §16.5）。 */
 import { ArrowDown, ArrowUp, Plus, X } from 'lucide-react'
+import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -196,6 +197,37 @@ function PositionChecklist({ value, onChange, columns }: { value: unknown; onCha
   )
 }
 
+/** 整數清單（例如依固定位置拆欄的開始位置）：用逗號或空白分開，例如 1, 12, 18。 */
+function IntListInput({ value, onChange }: { value: unknown; onChange: (v: unknown) => void }) {
+  const numbers = Array.isArray(value) ? value.filter((v): v is number => typeof v === 'number') : []
+  const serverText = numbers.join(', ')
+  const [text, setText] = useState(serverText)
+  const [synced, setSynced] = useState(serverText)
+  // 外面（建議值、復原）改了才同步；正在輸入「1, 1」這種還沒打完的值時不覆蓋（在 render 時調整，不用 effect）
+  if (serverText !== synced) {
+    setSynced(serverText)
+    if (parseInts(text).join(', ') !== serverText) setText(serverText)
+  }
+  return (
+    <Input
+      value={text}
+      placeholder="例如 1, 12, 18"
+      className="font-mono tabular-nums"
+      onChange={(e) => {
+        setText(e.target.value)
+        onChange(parseInts(e.target.value))
+      }}
+    />
+  )
+}
+
+function parseInts(text: string): number[] {
+  return text
+    .split(/[,，\s]+/)
+    .map((t) => Number.parseInt(t, 10))
+    .filter((n) => Number.isInteger(n))
+}
+
 /** 保留和排序欄位：上面是要保留的欄（依順序，可以上下移、移除），下面是沒保留的欄（勾選就加到最後）。 */
 function ColumnOrderEditor({ value, onChange, columns }: { value: unknown; onChange: (v: unknown) => void; columns: string[] | null }) {
   const selected = asList(value)
@@ -317,7 +349,7 @@ function ObjectListEditor(props: FieldProps) {
               name,
               path: `${path}[${i}].${name}`,
               schema: prop,
-              value: item[name],
+              value: name in item ? item[name] : resolve(prop, root).default, // 存檔時省略的預設值也要顯示
               required: required.includes(name),
               onChange: (v) => update(i, name, v),
             }
@@ -554,6 +586,8 @@ function control(kind: FieldKind, props: FieldProps) {
       return <ColumnOrderEditor value={value} onChange={onChange} columns={columns} />
     case 'rename_map':
       return <RenameMapEditor value={value} onChange={onChange} columns={columns} />
+    case 'int_list':
+      return <IntListInput value={value} onChange={onChange} />
     case 'objects':
       return <ObjectListEditor {...props} />
     case 'enum':

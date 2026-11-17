@@ -24,7 +24,7 @@ export type JsonSchema = {
   default?: unknown
   enum?: unknown[]
   const?: unknown
-  ui?: 'column' | 'columns' | 'column_positions' | 'column_order' | 'rename_map' | 'new_columns' | 'regex' | 'source_files'
+  ui?: 'column' | 'columns' | 'column_positions' | 'column_order' | 'rename_map' | 'int_list' | 'new_columns' | 'regex' | 'source_files'
   ui_labels?: Record<string, string>
   /** 選到某個選項時，顯示在選單下面的說明（例如日期樣式的正規表示式） */
   ui_option_hints?: Record<string, string>
@@ -143,8 +143,12 @@ export interface ViewState {
     loaded: boolean
     /** 載入之後設定或檔案變了，要重新載入 */
     stale: boolean
-    reader: 'text_lines' | 'csv'
+    reader: 'text_lines' | 'csv' | 'excel'
     encoding: string
+    /** Excel 的工作表名稱；空白代表第一個工作表 */
+    sheet: string
+    /** 讀取方式是 Excel 時，第一個 Excel 檔有哪些工作表 */
+    sheets: string[]
     error: string | null
     /** 預覽用的列數（大檔時是樣本的列數） */
     rows: number | null

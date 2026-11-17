@@ -36,6 +36,7 @@ from .engine.run import (
     execute,
 )
 from .ingest.encoding import DecodeError
+from .ingest.excel import ExcelError, is_excel, sheet_names
 from .ingest.sources import (
     InputError,
     Progress,
@@ -51,7 +52,7 @@ from .steps import all_steps, get
 from .steps.base import SOURCE_FILE, SYSTEM_PREFIX, Step
 
 MAX_UNDO = 100
-DEFAULT_INPUT = {"id": "src", "files": [], "reader": "text_lines", "encoding": "auto"}
+DEFAULT_INPUT = {"id": "src", "files": [], "reader": "text_lines", "encoding": "auto", "sheet": ""}
 DEFAULT_OUTPUT = {"format": "parquet", "keep_system_columns": True, "manifest": True}
 INVALID_FILENAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
@@ -178,6 +179,7 @@ class Session:
         self.issues: list[dict[str, Any]] = []
         self._undo: list[dict[str, Any]] = []
         self._redo: list[dict[str, Any]] = []
+        self._sheets: dict[tuple[str, int, int], list[str]] = {}
         self._source: tuple[str, pl.DataFrame | None, list[SourceFile], str | None] | None = None
         """按「載入資料」讀進來的資料（設定指紋、資料、來源檔、錯誤）；不會自動讀檔。"""
         self._stale = False
@@ -230,11 +232,14 @@ class Session:
     # ── recipe 的組成與載入 ────────────────────────────────────
 
     def recipe_dict(self) -> dict[str, Any]:
+        source = dict(self.input)
+        if source.get("reader") != "excel" and not source.get("sheet"):
+            source.pop("sheet", None)  # 不是 Excel 時不寫工作表，Recipe 比較好讀
         return {
             "tablade_recipe": RECIPE_VERSION,
             "name": self.meta.get("name", ""),
             "description": self.meta.get("description", ""),
-            "inputs": [self.input],
+            "inputs": [source],
             "steps": self.steps,
             "output": self.output,
         }
@@ -355,7 +360,7 @@ class Session:
     def set_input(self, values: dict[str, Any]) -> None:
         with self._lock:
             self._change()
-            for key in ("reader", "encoding"):
+            for key in ("reader", "encoding", "sheet"):
                 if key in values:
                     self.input[key] = values[key]
 
@@ -461,6 +466,24 @@ class Session:
 
     # ── 計算 ─────────────────────────────────────────────────
 
+    def _sheet_names(self) -> list[str]:
+        """讀取方式是 Excel 時，第一個 Excel 檔有哪些工作表（給「工作表」選單；依檔案快取）。"""
+        if self.input.get("reader") != "excel" or not self.base_dir:
+            return []
+        for entry in self.input["files"]:
+            for path in expand(entry, self.base_dir):
+                if not is_excel(path):
+                    continue
+                try:
+                    st = path.stat()
+                    key = (str(path.resolve()), st.st_size, st.st_mtime_ns)
+                    if key not in self._sheets:
+                        self._sheets = {key: sheet_names(path)}
+                    return self._sheets[key]
+                except (OSError, ExcelError):
+                    return []
+        return []
+
     def _source_key(self) -> str:
         """目前設定的指紋：讀取方式、編碼，加上實際讀到的每個檔（位置、大小、修改時間）。
 
@@ -475,7 +498,7 @@ class Session:
                         files.append((str(p.resolve()), st.st_size, st.st_mtime_ns))
                     except OSError:
                         continue
-        reading = {k: self.input.get(k) for k in ("reader", "encoding")}
+        reading = {k: self.input.get(k) for k in ("reader", "encoding", "sheet")}
         return _digest({"reading": reading, "files": files})
 
     def load_data(self) -> None:
@@ -499,6 +522,7 @@ class Session:
                     self.input["encoding"],
                     base,
                     self.progress,
+                    self.input.get("sheet", ""),
                 )
                 if sum(f.rows for f in files) <= SAMPLE_THRESHOLD:
                     frame = concat(parts).collect(engine="streaming")
@@ -669,6 +693,7 @@ class Session:
                 },
                 "input": {
                     **self.input,
+                    "sheets": self._sheet_names(),
                     "entries": entries,
                     "can_load": bool(entries) and all(e["found"] for e in entries),
                     "loaded": source is not None,

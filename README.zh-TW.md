@@ -41,9 +41,9 @@
 > 測試資料一律由 `scripts/gen_fixtures.py` 產生；pre-commit hook 會擋下資料檔與疑似個資。
 > 詳見 [不讓真實資料進入 repo](#️-不讓真實資料進入-repo)。
 
-> **目前進度：M3 在地格式與追溯完成。** 可以在視窗裡一步一步建立 recipe（套用的步驟、即時預覽、依步驟 schema 自動產生的表單），
-> 也可以用產生的 skill 讓 Microsoft 365 Copilot 撰寫，或從命令列執行。共 16 種步驟：除了移除雜訊列、拆欄、向下填滿、篩選、
-> 合併來源檔，還有清理文字（全形轉半形、看不見的字元）、取代值、文字轉數字與日期（轉不了的列附行號警告）、
+> **目前進度：M4 多檔、Excel 與分段報表完成。** 可以在視窗裡一步一步建立 recipe（套用的步驟、即時預覽、依步驟 schema 自動產生的表單），
+> 也可以用產生的 skill 讓 Microsoft 365 Copilot 撰寫，或從命令列執行。共 19 種步驟：除了移除雜訊列、拆欄（分隔符號或固定位置）、
+> 向下填滿、篩選、合併來源檔，還有替列分類與正規表示式擷取（攤平分段的列印格式報表）、讀 Excel 工作表，以及清理文字（全形轉半形、看不見的字元）、取代值、文字轉數字與日期（轉不了的列附行號警告）、
 > 刪除、保留和排序、改欄名；下方面板的「型別」分頁看得到每一欄的型別，匯出時附上處理紀錄（manifest）。見 [路線圖](#️-路線圖)。
 
 ---
@@ -88,7 +88,7 @@
 |---|---|---|---|
 | `csv` | 乾淨的 CSV | 所有欄位（一律文字） | ✅ M0（系統欄位在 M1） |
 | `text_lines` | 爛格式 CSV / TXT 報表：每個實體行原封不動 | `__source_file`、`__line_no`、`line` | M1 |
-| `excel` | XLSX / XLS，指定工作表 | `__source_file`、`__sheet`、`__line_no`、各欄 | M4 |
+| `excel` | XLSX / XLSM / XLS / ODS，指定工作表：每一列都是資料（不當標題）、每一格都讀成文字 | `__source_file`、`__line_no`（Excel 的列號）、`A`、`B`、`C`… | ✅ M4 |
 
 - `__` 開頭的是系統欄位：UI 預設隱藏，匯出時可選擇是否保留。
 - Recipe 記一份**檔案清單**：Recipe 資料夾裡的檔存相對路徑，其他存絕對路徑，也可以手動輸入含 `*` 的路徑。清單裡的檔都找得到時，按「載入資料」才讀檔。
@@ -181,7 +181,7 @@ Tablade 會從步驟 registry 產生 [Agent Skills](https://learn.microsoft.com/
 |---|---|
 | 單元測試（`pytest`） | 244 項通過（每種步驟文件裡的範例都當成測試跑；UI 背後的 session 照使用者的操作順序一步步測） |
 | 範例 recipe（`examples/sales_detail.recipe.json`，2 個 cp950 檔、94 行 → 70 列） | ✅ 輸出與預期完全一致；每一列的 `__line_no` 都指回原始檔的那一行 |
-| 打包後的自我檢測（產生 cp950 CSV → Parquet → 讀回比對 → Lazy 查詢 → Excel 引擎 → 多核心轉碼 → 完整執行範例 recipe：轉碼、各檔分開處理、合併來源檔、串流匯出） | ✅ Windows x64（CI，2 個核心：仍實際開 2 個工作程序測試）與 macOS arm64 |
+| 打包後的自我檢測（產生 cp950 CSV → Parquet → 讀回比對 → Lazy 查詢 → 讀 Excel → 多核心轉碼 → 完整執行範例 recipe：轉碼、各檔分開處理、合併來源檔、串流匯出） | ✅ Windows x64（CI，2 個核心：仍實際開 2 個工作程序測試）與 macOS arm64 |
 | 視窗 smoke test（開視窗、自我檢測、透過 JS bridge 載入範例、等表格畫出 70 列、關閉） | ✅ macOS arm64 的 onefile、onedir；Windows 由 CI 跑 |
 | 打包後的 App 產生 AI skill（`tablade skill`） | ✅ onefile、onedir |
 
@@ -200,7 +200,7 @@ Tablade 會從步驟 registry 產生 [Agent Skills](https://learn.microsoft.com/
 | 1000 個 100 KB 的檔：同上 | 15 秒 | 0.7 GB |
 | 改寫前：1 GB cp950 | 96 秒 | 10.2 GB |
 
-Windows（CI）：onefile 壓縮後 68.5 MB、onedir 壓縮後 69.2 MB。在權限受管控的 Windows 筆電上的啟動時間還要實測（M0 的完成標準）。
+Windows（CI）：onefile 壓縮後 68.7 MB。已在權限受管控的公司電腦上確認 onefile 版可以開啟（M0 完成）；啟動時間還沒量。
 
 ---
 
@@ -243,6 +243,7 @@ tablade version
 ```bash
 uv run python scripts/gen_fixtures.py examples/data
 uv run tablade run examples/sales_detail.recipe.json
+uv run tablade run examples/sales_report.recipe.json   # 分段的列印格式報表 → 每一列明細
 ```
 
 若有不能出現在 repo 的字詞（人名、公司名稱、專案代號等），寫進 repo 根目錄的 `.tablade-denylist`
@@ -286,12 +287,12 @@ tablade.spec          PyInstaller 設定（以 TABLADE_BUILD 切換 onefile / on
 
 | 階段 | 內容 | 完成標準 |
 |---|---|---|
-| **M0 環境驗證** | 最小 pywebview + Polars 程式，onefile 與 onedir 打包 | 在權限受管控的 Windows 筆電上能開出視窗，並把 CSV 轉成 Parquet |
+| **M0 環境驗證** | 最小 pywebview + Polars 程式，onefile 與 onedir 打包 | 在權限受管控的 Windows 筆電上能開出視窗，並把 CSV 轉成 Parquet ✅ |
 | M1 引擎 | 有版本號的 recipe schema、步驟 registry、`text_lines` / `csv` 讀取、compiler、CLI（`run` / `validate` / `schema`）、前 8 種步驟 | `tablade run examples/sales_detail.recipe.json` 產出正確結果 ✅ |
 | M1.5 AI skill | 沙箱實測、`tablade profile`、skill 產生器、單一檔案驗證器 | Copilot 載入 skill 後能寫出通過驗證的 recipe（已完成，等 Copilot 實測） |
 | M2 UI | 步驟清單（新增、排序、停用、刪除）、預覽表格、參數表單、匯入 recipe 與錯誤報告、下載 skill | 不寫 JSON 也能完成範例清洗流程 ✅ |
 | M3 在地格式與追溯 | `parse_number`、`parse_date`（民國）、`trim_clean`、`replace_values`、`remove_columns`、`select_columns`、`rename_columns`、型別分頁、manifest | 輸出附 manifest，警告附行號 ✅ |
-| M4 多檔與 Excel | glob、diagonal concat、Excel 讀取、`classify_rows`、`extract_regex` | 分段報表的範例可以完整攤平 |
+| M4 多檔與 Excel | glob、diagonal concat、Excel 讀取、`classify_rows`、`extract_regex`、`split_fixed_width` | 分段報表的範例可以完整攤平 ✅ |
 | M5 進階步驟 | join、group_by、unpivot、pivot、dedupe、匯出成 Python 腳本 | — |
 
 ---

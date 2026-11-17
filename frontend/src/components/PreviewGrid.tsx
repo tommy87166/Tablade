@@ -192,10 +192,21 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
                 <ContextMenuLabel>欄位「{name}」</ContextMenuLabel>
                 <ContextMenuSeparator />
                 {name === 'line' ? (
-                  <ContextMenuItem onSelect={() => onAddStep({ type: 'split_delimited', context: { column: name } })}>
-                    依分隔符號拆成多欄
-                  </ContextMenuItem>
+                  <>
+                    <ContextMenuItem onSelect={() => onAddStep({ type: 'split_delimited', context: { column: name } })}>
+                      依分隔符號拆成多欄
+                    </ContextMenuItem>
+                    <ContextMenuItem onSelect={() => onAddStep({ type: 'split_fixed_width', context: { column: name } })}>
+                      依固定位置拆欄
+                    </ContextMenuItem>
+                    <ContextMenuItem onSelect={() => onAddStep({ type: 'classify_rows', context: { column: name } })}>
+                      替列分類
+                    </ContextMenuItem>
+                  </>
                 ) : null}
+                <ContextMenuItem onSelect={() => onAddStep({ type: 'extract_regex', context: { column: name } })}>
+                  用正規表示式擷取
+                </ContextMenuItem>
                 <ContextMenuItem onSelect={() => onAddStep({ type: 'split_column', context: { column: name } })}>
                   拆欄
                 </ContextMenuItem>

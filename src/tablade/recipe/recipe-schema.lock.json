@@ -5,6 +5,9 @@
       "csv": {
         "columns": null
       },
+      "excel": {
+        "columns": null
+      },
       "text_lines": {
         "columns": [
           "line"
@@ -14,6 +17,47 @@
     "recipe_version": "1.0",
     "schema": {
       "$defs": {
+        "ClassifyRows": {
+          "additionalProperties": false,
+          "properties": {
+            "column": {
+              "default": "類型",
+              "minLength": 1,
+              "type": "string"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "otherwise": {
+              "default": "其他",
+              "type": "string"
+            },
+            "rules": {
+              "items": {
+                "$ref": "#/$defs/Rule"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "type": {
+              "const": "classify_rows",
+              "default": "classify_rows",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "rules"
+          ],
+          "type": "object"
+        },
         "EmptyCondition": {
           "additionalProperties": false,
           "properties": {
@@ -33,6 +77,56 @@
           "required": [
             "column",
             "op"
+          ],
+          "type": "object"
+        },
+        "ExtractRegex": {
+          "additionalProperties": false,
+          "properties": {
+            "column": {
+              "minLength": 1,
+              "type": "string",
+              "ui": "column"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "keep_source": {
+              "default": true,
+              "type": "boolean"
+            },
+            "names": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "ui": "new_columns"
+            },
+            "pattern": {
+              "minLength": 1,
+              "type": "string",
+              "ui": "regex"
+            },
+            "type": {
+              "const": "extract_regex",
+              "default": "extract_regex",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "column",
+            "pattern",
+            "names"
           ],
           "type": "object"
         },
@@ -186,8 +280,13 @@
               "default": "text_lines",
               "enum": [
                 "text_lines",
-                "csv"
+                "csv",
+                "excel"
               ],
+              "type": "string"
+            },
+            "sheet": {
+              "default": "",
               "type": "string"
             }
           },
@@ -702,6 +801,64 @@
           ],
           "type": "object"
         },
+        "Rule": {
+          "additionalProperties": false,
+          "properties": {
+            "conditions": {
+              "items": {
+                "discriminator": {
+                  "mapping": {
+                    "contains": "#/$defs/TextCondition",
+                    "ends_with": "#/$defs/TextCondition",
+                    "equals": "#/$defs/TextCondition",
+                    "ge": "#/$defs/NumberCondition",
+                    "gt": "#/$defs/NumberCondition",
+                    "is_empty": "#/$defs/EmptyCondition",
+                    "is_not_empty": "#/$defs/EmptyCondition",
+                    "le": "#/$defs/NumberCondition",
+                    "lt": "#/$defs/NumberCondition",
+                    "not_contains": "#/$defs/TextCondition",
+                    "not_equals": "#/$defs/TextCondition",
+                    "not_regex": "#/$defs/RegexCondition",
+                    "num_equals": "#/$defs/NumberCondition",
+                    "regex": "#/$defs/RegexCondition",
+                    "starts_with": "#/$defs/TextCondition"
+                  },
+                  "propertyName": "op"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/TextCondition"
+                  },
+                  {
+                    "$ref": "#/$defs/RegexCondition"
+                  },
+                  {
+                    "$ref": "#/$defs/EmptyCondition"
+                  },
+                  {
+                    "$ref": "#/$defs/NumberCondition"
+                  }
+                ]
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "match": {
+              "default": "all",
+              "enum": [
+                "all",
+                "any"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "label",
+            "conditions"
+          ],
+          "type": "object"
+        },
         "SelectColumns": {
           "additionalProperties": false,
           "properties": {
@@ -860,6 +1017,63 @@
           ],
           "type": "object"
         },
+        "SplitFixedWidth": {
+          "additionalProperties": false,
+          "properties": {
+            "column": {
+              "default": "line",
+              "minLength": 1,
+              "type": "string",
+              "ui": "column"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "keep_source": {
+              "default": false,
+              "type": "boolean"
+            },
+            "names": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "ui": "new_columns"
+            },
+            "starts": {
+              "items": {
+                "type": "integer"
+              },
+              "minItems": 1,
+              "type": "array",
+              "ui": "int_list"
+            },
+            "trim": {
+              "default": true,
+              "type": "boolean"
+            },
+            "type": {
+              "const": "split_fixed_width",
+              "default": "split_fixed_width",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "starts",
+            "names"
+          ],
+          "type": "object"
+        },
         "TextCondition": {
           "additionalProperties": false,
           "properties": {
@@ -971,6 +1185,8 @@
           "items": {
             "discriminator": {
               "mapping": {
+                "classify_rows": "#/$defs/ClassifyRows",
+                "extract_regex": "#/$defs/ExtractRegex",
                 "fill_down": "#/$defs/FillDown",
                 "filter": "#/$defs/Filter",
                 "merge_files": "#/$defs/MergeFiles",
@@ -986,6 +1202,7 @@
                 "select_columns": "#/$defs/SelectColumns",
                 "split_column": "#/$defs/SplitColumn",
                 "split_delimited": "#/$defs/SplitDelimited",
+                "split_fixed_width": "#/$defs/SplitFixedWidth",
                 "trim_clean": "#/$defs/TrimClean"
               },
               "propertyName": "type"
@@ -1001,10 +1218,22 @@
                 "$ref": "#/$defs/RemoveBlankRows"
               },
               {
+                "$ref": "#/$defs/Filter"
+              },
+              {
                 "$ref": "#/$defs/SplitDelimited"
               },
               {
                 "$ref": "#/$defs/SplitColumn"
+              },
+              {
+                "$ref": "#/$defs/ClassifyRows"
+              },
+              {
+                "$ref": "#/$defs/ExtractRegex"
+              },
+              {
+                "$ref": "#/$defs/SplitFixedWidth"
               },
               {
                 "$ref": "#/$defs/PromoteHeaders"
@@ -1034,9 +1263,6 @@
                 "$ref": "#/$defs/ParseDate"
               },
               {
-                "$ref": "#/$defs/Filter"
-              },
-              {
                 "$ref": "#/$defs/MergeFiles"
               }
             ]
@@ -1056,6 +1282,22 @@
       "type": "object"
     },
     "steps": {
+      "classify_rows": {
+        "effect": {
+          "kind": "add",
+          "names": "$column"
+        },
+        "schema_ref": "ClassifyRows"
+      },
+      "extract_regex": {
+        "effect": {
+          "keep_source": "$keep_source",
+          "kind": "split",
+          "names": "$names",
+          "source": "$column"
+        },
+        "schema_ref": "ExtractRegex"
+      },
       "fill_down": {
         "effect": {
           "kind": "keep"
@@ -1157,6 +1399,15 @@
           "source": "$column"
         },
         "schema_ref": "SplitDelimited"
+      },
+      "split_fixed_width": {
+        "effect": {
+          "keep_source": "$keep_source",
+          "kind": "split",
+          "names": "$names",
+          "source": "$column"
+        },
+        "schema_ref": "SplitFixedWidth"
       },
       "trim_clean": {
         "effect": {

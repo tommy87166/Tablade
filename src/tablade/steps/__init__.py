@@ -5,13 +5,14 @@
 
 # ruff: noqa: I001
 from . import remove_rows  # noqa: F401  移除前 N 列、後 N 列、空白列
+from . import filter  # noqa: F401  篩選（替列分類沿用它的條件，所以排在前面）
 from . import split  # noqa: F401  依分隔符號拆成多欄、拆欄
+from . import report  # noqa: F401  替列分類、用正規表示式擷取、依固定位置拆欄
 from . import headers  # noqa: F401  提升標題列
 from . import fill_down  # noqa: F401  向下填滿
 from . import columns  # noqa: F401  刪除欄、保留和排序欄位、改欄名
 from . import text  # noqa: F401  清理文字、取代值
 from . import convert  # noqa: F401  文字轉數字、文字轉日期
-from . import filter  # noqa: F401  篩選
 from . import files  # noqa: F401  合併來源檔
 from .registry import all_steps, get
 

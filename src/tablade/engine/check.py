@@ -52,6 +52,7 @@ def check_recipe(data: dict[str, Any], base_dir: Path, *, dry_run: bool = False)
                 first.get("reader", "text_lines"),
                 first.get("encoding", "auto"),
                 base_dir,
+                first.get("sheet", "") if isinstance(first.get("sheet"), str) else "",
             )
             input_columns = {first.get("id", "src"): columns}
         except (InputError, DecodeError, LookupError) as err:

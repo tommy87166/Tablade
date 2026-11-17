@@ -12,6 +12,7 @@ export type FieldKind =
   | 'column_positions'
   | 'column_order'
   | 'rename_map'
+  | 'int_list'
   | 'new_columns'
   | 'regex'
   | 'enum'
@@ -41,6 +42,7 @@ export function fieldKind(prop: JsonSchema, root: JsonSchema): FieldKind {
     schema.ui === 'column_positions' ||
     schema.ui === 'column_order' ||
     schema.ui === 'rename_map' ||
+    schema.ui === 'int_list' ||
     schema.ui === 'new_columns' ||
     schema.ui === 'regex' ||
     schema.ui === 'source_files'
@@ -100,6 +102,7 @@ export function defaultFor(prop: JsonSchema, root: JsonSchema): unknown {
     case 'columns':
     case 'column_positions':
     case 'column_order':
+    case 'int_list':
     case 'new_columns':
     case 'conditions':
     case 'objects':

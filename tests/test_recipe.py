@@ -65,7 +65,7 @@ STRUCTURAL_CASES = {
     "bad step id": lambda d: d["steps"][0].update(id="s 1"),
     "two inputs": lambda d: d["inputs"].append(dict(d["inputs"][0], id="b")),
     "no inputs": lambda d: d.update(inputs=[]),
-    "bad reader": lambda d: d["inputs"][0].update(reader="excel"),
+    "bad reader": lambda d: d["inputs"][0].update(reader="pdf"),
     "missing output": lambda d: d.pop("output"),
     "bad output format": lambda d: d["output"].update(format="csv"),
     "unknown top-level": lambda d: d.update(author="x"),

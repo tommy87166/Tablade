@@ -27,7 +27,11 @@ from .recipe.schema import RECIPE_VERSION, RecipeError
 from .selftest import run_selftest
 from .session import Session, catalog
 
-DATA_TYPES = ("資料檔 (*.csv;*.txt;*.tsv;*.prn;*.dat)", "所有檔案 (*.*)")
+DATA_TYPES = (
+    "資料檔 (*.csv;*.txt;*.tsv;*.prn;*.dat;*.xlsx;*.xlsm;*.xls)",
+    "Excel (*.xlsx;*.xlsm;*.xlsb;*.xls;*.ods)",
+    "所有檔案 (*.*)",
+)
 RECIPE_TYPES = ("Tablade Recipe (*.json)", "所有檔案 (*.*)")
 PARQUET_TYPES = ("Parquet (*.parquet)",)
 

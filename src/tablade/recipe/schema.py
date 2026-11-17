@@ -27,6 +27,7 @@ RECIPE_VERSION = "1.0"
 READERS: dict[str, dict[str, Any]] = {
     "text_lines": {"columns": ["line"]},
     "csv": {"columns": None},
+    "excel": {"columns": None},
 }
 
 AnyStep = Annotated[Union[tuple(all_steps())], Field(discriminator="type")]  # noqa: UP007
@@ -46,14 +47,23 @@ class Input(_Model):
         title="檔案清單",
         description="相對於 Recipe 檔所在的資料夾（例如 data/明細_01.csv），或絕對路徑；可用 * 一次讀多個檔",
     )
-    reader: Literal["text_lines", "csv"] = Field(
+    reader: Literal["text_lines", "csv", "excel"] = Field(
         default="text_lines",
         title="讀取方式",
         json_schema_extra={
-            "ui_labels": {"text_lines": "逐行讀取（爛格式檔案）", "csv": "乾淨的 CSV"}
+            "ui_labels": {
+                "text_lines": "逐行讀取（爛格式檔案）",
+                "csv": "乾淨的 CSV",
+                "excel": "Excel 工作表",
+            }
         },
     )
-    encoding: Literal[SUPPORTED] = Field(default="auto", title="編碼")  # type: ignore[valid-type]
+    encoding: Literal[SUPPORTED] = Field(default="auto", title="編碼", description="Excel 不用設")  # type: ignore[valid-type]
+    sheet: str = Field(
+        default="",
+        title="工作表",
+        description="Excel 用：工作表名稱，空白代表第一個工作表。欄名是 A、B、C…，行號是 Excel 的列號",
+    )
 
 
 class Output(_Model):

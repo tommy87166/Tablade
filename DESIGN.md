@@ -101,10 +101,12 @@
 |---|---|---|
 | `text_lines` | 爛格式 CSV / TXT 報表：每一個實體行原封不動讀進來 | `__source_file`, `__line_no`, `line` |
 | `csv` | 乾淨的 CSV，交給 Polars 解析 | `__source_file`, `__line_no`, 各欄 |
-| `excel` | xlsx / xls，指定工作表 | `__source_file`, `__sheet`, `__line_no`, 各欄 |
+| `excel` | xlsx / xlsm / xlsb / xls / ods，指定工作表（`sheet`，空白是第一個工作表） | `__source_file`, `__line_no`, `A`, `B`, `C`… |
 
 - `text_lines` 是爛檔的預設模式。**不要讓解析器自動略過空行或猜測格式**，否則行號會跟原始檔對不起來。
 - `__line_no` 從 1 起算，對應原始檔的實體行號（Excel 則對應工作表列號）。
+- `excel`（`ingest/excel.py`，用 fastexcel）：**不把第一列當標題**，每一列都是資料，欄名是 Excel 的欄名 A、B、C…；上面的標題、說明列跟文字檔一樣用「移除前 N 列」「提升標題列」處理。每一格都讀成文字（數字是 Excel 顯示的樣子，例如 `1234.5`、`3`；沒有時間的日期寫成 `2026-01-05`）。空白的列也保留（含最上面的，`skip_rows=0`），所以行號就是 Excel 的列號。Excel 檔不能串流讀：整張工作表會讀進記憶體（Excel 本身最多約 104 萬列）。不需要 pyarrow（`ExcelSheet.to_polars()`）。
+- Excel 檔用文字的讀取方式會直接報錯，提示改選「Excel 工作表」。
 - 以 `__` 開頭的欄位是系統欄位，UI 預設隱藏但可顯示，匯出時可選擇是否保留。
 
 ### 5.2 編碼
@@ -184,10 +186,11 @@
 | `replace_values` | 取代值：一個步驟可以列很多組「找 → 換成」，依序取代；部分相符、整格相符或正規表示式（換成可以用 `$1`） | `str.replace_all(literal=…)`；整格相符用 `when(col == find)`；正規表示式在驗證時就編譯一次 |
 | `parse_number` | 文字轉數字：千分位、括號負數 `(1,000)`、尾端負號 `1,000-`；精確小數（`Decimal`，指定位數、四捨五入）或整數 | 正規化字串後 `cast(Decimal(38, 18), strict=False)`，再 `round(mode="half_away_from_zero")`（直接 cast 是銀行家捨入）；原本有值、轉完是空值的列產生附行號的警告 |
 | `parse_date` | 文字轉日期。**不自動判斷**：一定要先選樣式，再選民國年或西元年。樣式各是一個獨立的正規表示式（年/月/日、年-月-日、年.月.日、年月日、連寫），也可以自訂；正規表示式要剛好三個群組，依序是年、月、日 | `str.extract` 取出三個群組；民國年 1～3 位數、加 1911，西元年要 4 位數，位數不對算失敗（不會變成西元 115 年）；`str.to_date(strict=False)`（不能用 `pl.date()`：不存在的日期會讓整個執行失敗）；失敗的列產生附行號的警告 |
-| `classify_rows` | 依規則替每一列貼標籤（開頭是、包含、正規表示式） | `when/then` 產生 `__row_type` |
-| `extract_regex` | 用正規表示式從欄位擷取一或多個群組 | `str.extract_groups` |
+| `classify_rows` | 替列分類：依規則替每一列標上類別（段落、明細、小計…），結果放在**一般的資料欄**（預設名稱「類型」，可改；預覽看得到、篩選選得到，用完可以刪掉）。規則由上往下比對，第一條符合的就是那一列的類別；條件寫法和 `filter` 一樣 | `when/then` |
+| `extract_regex` | 用正規表示式擷取：每個括號群組變成一個新欄（可保留原欄位），群組數量要和新欄名一樣多（驗證時用 Polars 編譯檢查） | `str.extract(pattern, i)` |
+| `split_fixed_width` | 依固定位置拆欄：列印格式的報表用空白對齊，依每一欄的開始位置（第幾格，從 1 起）拆開；**中日韓文字與全形符號算 2 格**（和 Big5 報表一個字兩個位元組相同）；最後一欄到行尾。建立步驟時從對齊的空白自動猜一次位置 | 原生運算：寬字後面補一個私用區的佔位字元，讓「一格＝一個字元」，`str.slice` 後再拿掉佔位字元 |
 
-**`classify_rows` 是處理分段報表的關鍵**：先分類（段落標題、欄位標題、明細、小計）→ 從段落標題擷取分組名稱（例如門市）→ `fill_down` → 依類型拆欄位 → 篩掉標題和小計列。後續步驟可以指定 `only_row_types: [...]`，只套用在某些類型的列上。
+**`classify_rows` 是處理分段報表的關鍵**：先分類（段落標題、明細…）→ 從段落標題擷取分組名稱（例如門市）→ `fill_down`（跨頁沒有重複段落標題也補得上）→ 用 `filter` 只留明細 → `split_fixed_width` 拆欄 → 轉型別。範例見 `examples/sales_report.recipe.json`（假資料由 `fixtures.sectioned_report()` 產生：多頁、多段、小計、總計、退貨）。依這個順序就不需要「只套用在某幾類的列」（`only_row_types`），先不做。
 
 ### 7.2 第二階段
 
@@ -339,7 +342,7 @@ tablade/
 │   │   ├── csv_reader.py
 │   │   ├── sources.py         # glob、轉碼、讀取、多檔合併
 │   │   ├── transcode.py       # 轉碼核心（只用標準函式庫，平行轉碼的工作程序也用）
-│   │   └── excel_reader.py    # M4
+│   │   └── excel.py           # 讀 Excel 工作表（fastexcel）
 │   ├── engine/
 │   │   ├── run.py             # 依序套用步驟、每步列數、附行號的警告、寫出 Parquet
 │   │   ├── progress.py        # 串流執行的進度：位置欄、分檔寫暫存、看寫完幾個檔
@@ -353,7 +356,7 @@ tablade/
 │   │   ├── headers.py         # promote_headers
 │   │   ├── fill_down.py
 │   │   ├── filter.py
-│   │   ├── classify.py        # M4
+│   │   ├── report.py          # 替列分類、用正規表示式擷取、依固定位置拆欄
 │   │   ├── parse_tw.py        # M3：民國日期、括號負數、全形半形
 │   │   └── ...
 │   └── export/
@@ -397,15 +400,15 @@ tablade/
 
 | 階段 | 內容 | 完成標準 |
 |---|---|---|
-| **M0 環境驗證** | 最小 pywebview + Polars 程式，用 onefile 和 onedir 各打包一次 | **在目標 Windows 筆電（權限受管控的公司電腦）上能開出視窗，並讀一個 CSV 寫出 Parquet** |
+| **M0 環境驗證** | 最小 pywebview + Polars 程式，用 onefile 和 onedir 各打包一次 | **在目標 Windows 筆電（權限受管控的公司電腦）上能開出視窗，並讀一個 CSV 寫出 Parquet**（✅ 完成：已在公司電腦上確認 onefile 版可以開啟） |
 | M1 引擎 | recipe schema（版本 `MAJOR.MINOR`、schema lock）、registry（含 §7.3 的 8 件事）、ingest（text_lines / csv）、compiler、CLI（`run` / `validate` / `schema`）、MVP 中的 8 種步驟 | `tablade run examples/sales_detail.recipe.json` 產出正確結果，測試全過（✅ 完成） |
 | M1.5 AI skill | probe skill 實測沙箱、`tablade profile`、skill 產生器、單一檔案驗證器（§17） | Copilot 載入 skill 後，能依描述寫出通過驗證的範例 recipe（程式已完成，等 Copilot 實測） |
 | M2 UI | 步驟清單（新增、排序、停用、刪除）、預覽表格、參數表單、匯入 recipe（版本檢查、錯誤報告）、下載 AI skill | 不寫 JSON，也能在 UI 完成範例整理流程（✅ 完成） |
 | M3 台灣格式與留痕 | parse_number、parse_date（民國）、trim_clean、replace_values、remove_columns、select_columns、rename_columns、型別分頁、manifest | 輸出附 manifest，警告附行號（✅ 完成） |
-| M4 多檔與 Excel | glob、diagonal concat、excel reader、classify_rows、extract_regex | 分段報表的範例可以完整攤平 |
+| M4 多檔與 Excel | glob、diagonal concat、excel reader、classify_rows、extract_regex、split_fixed_width | 分段報表的範例可以完整攤平（✅ 完成） |
 | M5 進階步驟 | join、group_by、unpivot、pivot、dedupe、匯出 Python 腳本 | — |
 
-**M0 要最先做**：它決定單一執行檔這條路走不走得通。
+**M0 要最先做**：它決定單一執行檔這條路走不走得通。已在權限受管控的公司電腦上確認 Windows onefile 版可以開啟，所以 Windows 只發布 onefile（§10）。
 
 ---
 
@@ -585,7 +588,7 @@ tablade-recipe-skill-v1.4.zip
 | 形式 | 例子 |
 |---|---|
 | 不變 | `remove_top_rows`、`filter`、`fill_down` |
-| 新增 | `classify_rows` 新增 `__row_type` |
+| 新增 | `classify_rows` 新增「類型」欄（`names` 可以只寫一個名稱） |
 | 拆分 | `split_column`：移除 `column`，新增 `names` |
 | 整組換掉 | `split_delimited`、`promote_headers`：換成參數裡寫死的欄名 |
 | 刪除 / 選取 / 改名 | `remove_columns`（`drop`）、`select_columns`（`select`）、`rename_columns`（`rename`） |

@@ -219,7 +219,9 @@ def execute(
 ) -> tuple[pl.DataFrame | None, RunReport]:
     """執行 recipe。``stream`` 模式不回傳 DataFrame（結果直接寫到檔案）。"""
     source = recipe.inputs[0]
-    parts, files = scan_parts(source.files, source.reader, source.encoding, base_dir, progress)
+    parts, files = scan_parts(
+        source.files, source.reader, source.encoding, base_dir, progress, source.sheet
+    )
     input_rows = sum(f.rows for f in files)
     mode = choose_mode(files, write_output, mode)
     if write_output and output is None:

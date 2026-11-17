@@ -93,9 +93,22 @@ def run_selftest() -> dict[str, Any]:
             return f"group_by 得到 {summary.height} 組"
 
         def excel_engine() -> str:
+            # 寫一個假的 .xlsx 再讀回來：打包後的 App 讀得了 Excel，列號、日期、數字都對
             import fastexcel
 
-            return f"fastexcel {getattr(fastexcel, '__version__', '?')}"
+            from .fixtures import excel_export, write_excel_export
+            from .ingest.excel import read_sheet
+
+            path = write_excel_export(Path(tmp) / "明細.xlsx", n=20, seed=0)
+            frame = read_sheet(path, "明細", path.name)
+            first = excel_export(20, 0)[1][0]
+            row = frame.row(4, named=True)  # 第 5 列：標題、匯出時間、空白列、標題列之後
+            assert row["__line_no"] == 5, "Excel 的列號對不上"
+            assert row["A"] == first["日期"] and row["F"] == first["金額"], (
+                "Excel 的日期或數字讀錯了"
+            )
+            version = getattr(fastexcel, "__version__", "?")
+            return f"讀回 {frame.height} 列，列號、日期、數字正確（fastexcel {version}）"
 
         def parallel_transcode() -> str:
             # 不管這台電腦有幾個核心，都實際開 2 個工作程序轉碼一次（切成很小的段，強迫走平行），
@@ -169,7 +182,7 @@ def run_selftest() -> dict[str, Any]:
             ("寫出 Parquet", "可以輸出 Parquet 檔", write),
             ("讀回 Parquet 並比對", "寫出的內容完全正確", read_back),
             ("Lazy 查詢", "Polars 的查詢引擎正常", lazy),
-            ("Excel 引擎", "讀 Excel 的元件存在、能載入", excel_engine),
+            ("讀 Excel", "可以讀 Excel 工作表（列號、日期、數字）", excel_engine),
             ("多核心轉碼", "大檔可以用多個程序同時轉碼，結果和單核心相同", parallel_transcode),
             (
                 "完整執行範例 Recipe",

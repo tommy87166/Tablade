@@ -96,8 +96,12 @@ def test_registry_metadata_is_complete():
         "remove_top_rows",
         "remove_bottom_rows",
         "remove_blank_rows",
+        "filter",
         "split_delimited",
         "split_column",
+        "classify_rows",
+        "extract_regex",
+        "split_fixed_width",
         "promote_headers",
         "fill_down",
         "remove_columns",
@@ -107,7 +111,6 @@ def test_registry_metadata_is_complete():
         "replace_values",
         "parse_number",
         "parse_date",
-        "filter",
         "merge_files",
     ]
     for cls in all_steps():
@@ -427,6 +430,114 @@ def test_validator_checks_new_effects_and_maps():
         apply_effect(["a"], {"kind": "rename", "names": {}})
     with pytest.raises(EffectError, match="要選至少一個要保留的欄位"):
         apply_effect(["a"], {"kind": "select", "names": []})
+
+
+# ── 分段報表 ───────────────────────────────────────────────────
+
+
+def rule(label, op="starts_with", **cond):
+    return {"label": label, "conditions": [{"column": "line", "op": op, **cond}]}
+
+
+def test_classify_rows_first_match_wins_and_otherwise():
+    df = frame({"line": ["門市：北", "小計 門市：", "", "x"]})
+    rules = [
+        rule("段落", value="門市："),
+        rule("小計", "contains", value="小計"),
+        rule("空白", "is_empty"),
+    ]
+    out, _, _ = run(make("classify_rows", rules=rules), df)
+    assert out["類型"].to_list() == ["段落", "小計", "空白", "其他"]
+    # 名稱、都不符合時的類別可以改；空白代表空值
+    out, _, _ = run(make("classify_rows", column="kind", rules=rules[:1], otherwise=""), df)
+    assert out["kind"].to_list() == ["段落", None, None, None]
+    any_rule = {
+        "label": "有字",
+        "match": "any",
+        "conditions": [
+            {"column": "line", "op": "contains", "value": "北"},
+            {"column": "line", "op": "equals", "value": "x"},
+        ],
+    }
+    out, _, _ = run(make("classify_rows", rules=[any_rule]), df)
+    assert out["類型"].to_list() == ["有字", "其他", "其他", "有字"]
+    with pytest.raises(RunError, match="新欄名「line」和現有欄位重複"):
+        run(make("classify_rows", column="line", rules=rules), df)
+    assert make("classify_rows", rules=rules).describe() == (
+        "替列分類到「類型」：段落、小計、空白，其他是「其他」"
+    )
+
+
+def test_extract_regex_groups_and_validation():
+    from pydantic import ValidationError
+
+    df = frame({"t": ["門市：北區 115/01/05", "沒有", None]})
+    step = make(
+        "extract_regex",
+        column="t",
+        pattern=r"^門市：(\S+) (\d+/\d+/\d+)$",
+        names=["門市", "日期"],
+        keep_source=False,
+    )
+    out, _, _ = run(step, df)
+    assert data_of(out) == {"門市": ["北區", None, None], "日期": ["115/01/05", None, None]}
+    for pattern, names, message in [
+        ("門市", ["x"], "沒有括號群組"),
+        ("(a)(b)", ["x"], "有 2 個群組，但列了 1 個新欄名"),
+        ("(a", ["x"], "正規表示式有誤"),
+    ]:
+        with pytest.raises(ValidationError, match=message):
+            make("extract_regex", column="t", pattern=pattern, names=names)
+    assert make("extract_regex", column="t", pattern="(?:a)(b)", names=["x"])  # (?:) 不算群組
+    with pytest.raises(RunError, match="欄位「nope」不存在"):
+        run(make("extract_regex", column="nope", pattern="(a)", names=["x"]), df)
+
+
+def test_split_fixed_width_counts_wide_characters():
+    from pydantic import ValidationError
+
+    lines = ["中文AB 12", "ab  CD 3", "短", None]
+    step = make("split_fixed_width", starts=[1, 6, 8], names=["a", "b", "c"])
+    out, _, _ = run(step, frame({"line": lines}))
+    # 「中文」佔 4 格，「A」在第 5 格：第二欄從第 6 格開始，「12」從第 8 格開始
+    assert data_of(out) == {
+        "a": ["中文A", "ab  C", "短", None],
+        "b": ["B", "D", "", None],
+        "c": ["12", "3", "", None],
+    }
+    raw, _, _ = run(
+        make("split_fixed_width", starts=[1, 3], names=["a", "b"], trim=False, keep_source=True),
+        frame({"line": ["中文字"]}),
+    )
+    assert data_of(raw) == {"line": ["中文字"], "a": ["中"], "b": ["文字"]}
+    # 寬字被切在中間：整個字歸到前一欄
+    half, _, _ = run(
+        make("split_fixed_width", starts=[1, 2], names=["a", "b"]), frame({"line": ["中a"]})
+    )
+    assert data_of(half) == {"a": ["中"], "b": ["a"]}
+    for starts, names, message in [
+        ([0, 3], ["a", "b"], "從 1 起算"),
+        ([5, 3], ["a", "b"], "由小到大"),
+        ([1, 3], ["a"], "有 2 個開始位置，但列了 1 個欄名"),
+    ]:
+        with pytest.raises(ValidationError, match=message):
+            make("split_fixed_width", starts=starts, names=names)
+
+
+def test_split_fixed_width_suggests_starts_from_aligned_blanks():
+    from tablade.steps.report import SplitFixedWidth
+
+    lines = ["115/01/05  A001  原子筆        10", "115/01/06  D300  無線耳機     1,290"]
+    suggested = SplitFixedWidth.suggest(frame({"line": lines}), {})
+    assert suggested["starts"] == [1, 10, 16, 26] and len(suggested["names"]) == 4
+    step = make(
+        "split_fixed_width", starts=suggested["starts"], names=["日期", "品號", "品名", "金額"]
+    )
+    out, _, _ = run(step, frame({"line": lines}))
+    assert out["品名"].to_list() == ["原子筆", "無線耳機"] and out["金額"].to_list() == [
+        "10",
+        "1,290",
+    ]
 
 
 # ── 轉型別 ─────────────────────────────────────────────────────

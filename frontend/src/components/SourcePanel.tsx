@@ -8,7 +8,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch'
 import type { ViewState } from '../bridge'
 
-const READERS = { text_lines: '逐行讀取（爛格式檔案）', csv: '乾淨的 CSV' }
+const READERS = { text_lines: '逐行讀取（爛格式檔案）', csv: '乾淨的 CSV', excel: 'Excel 工作表' }
+/** Radix 的選項不能是空字串：「第一個工作表」用這個值代表 sheet = '' */
+const FIRST_SHEET = '__first__'
 const ENCODINGS = {
   auto: '自動偵測（UTF-8 → cp950）',
   'utf-8': 'UTF-8',
@@ -123,21 +125,41 @@ export function InputPanel({ state, busy, onLoad, onAddFiles, onAddEntry, onRemo
             </SelectContent>
           </Select>
         </div>
-        <div className="space-y-1.5">
-          <div className="text-xs text-muted-foreground">編碼</div>
-          <Select value={input.encoding} onValueChange={(encoding) => onInput({ encoding })}>
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {Object.entries(ENCODINGS).map(([k, v]) => (
-                <SelectItem key={k} value={k}>
-                  {v}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+        {input.reader === 'excel' ? (
+          <div className="space-y-1.5">
+            <div className="text-xs text-muted-foreground">工作表</div>
+            <Select value={input.sheet || FIRST_SHEET} onValueChange={(sheet) => onInput({ sheet: sheet === FIRST_SHEET ? '' : sheet })}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={FIRST_SHEET}>第一個工作表</SelectItem>
+                {[...new Set([...input.sheets, ...(input.sheet ? [input.sheet] : [])])].map((name) => (
+                  <SelectItem key={name} value={name}>
+                    {input.sheets.includes(name) ? name : `${name}（找不到）`}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">欄名是 A、B、C…，行號是 Excel 的列號；每一格都讀成文字。</p>
+          </div>
+        ) : (
+          <div className="space-y-1.5">
+            <div className="text-xs text-muted-foreground">編碼</div>
+            <Select value={input.encoding} onValueChange={(encoding) => onInput({ encoding })}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(ENCODINGS).map(([k, v]) => (
+                  <SelectItem key={k} value={k}>
+                    {v}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
       </div>
       {input.error ? <p className="rounded-md bg-destructive/10 p-2 text-sm text-destructive">{input.error}</p> : null}
       {/* 載入後隱藏；檔案清單、讀取方式、編碼變了才再出現 */}

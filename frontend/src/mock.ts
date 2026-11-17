@@ -72,7 +72,7 @@ export const mockApi: TabladeApi = sample
               ['寫出 Parquet', '可以輸出 Parquet 檔', '4,342 bytes'],
               ['讀回 Parquet 並比對', '寫出的內容完全正確', '內容一致'],
               ['Lazy 查詢', 'Polars 的查詢引擎正常', 'group_by 得到 3 組'],
-              ['Excel 引擎', '讀 Excel 的元件存在、能載入', 'fastexcel（開發用假資料）'],
+              ['讀 Excel', '可以讀 Excel 工作表（列號、日期、數字）', '讀回 24 列，列號、日期、數字正確（fastexcel 0.21.0）'],
               [
                 '多核心轉碼',
                 '大檔可以用多個程序同時轉碼，結果和單核心相同',

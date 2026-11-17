@@ -72,7 +72,8 @@ def apply_effect(columns: list[str] | None, effect: dict[str, Any]) -> list[str]
     if kind == "keep":
         return columns
     if kind == "add":
-        names = list(effect["names"])
+        names = effect["names"]
+        names = [names] if isinstance(names, str) else list(names)  # 新增一欄時可以只寫一個名稱
         if columns is None:
             return None
         _check_new_names(names, columns)

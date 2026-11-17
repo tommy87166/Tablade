@@ -32,6 +32,7 @@ from typing import Any
 
 import polars as pl
 
+from . import excel
 from .encoding import AUTO_ORDER, SUPPORTED, DecodeError
 from .transcode import CHUNK, decode_range, segment_bounds, transcode_segment
 
@@ -512,16 +513,39 @@ def scan_parts(
     encoding: str,
     base_dir: Path,
     progress: Progress = None,
+    sheet: str = "",
 ) -> tuple[list[Part], list[SourceFile]]:
-    """每個來源檔一個 LazyFrame（依檔案清單的順序），欄位對齊成同一組。"""
+    """每個來源檔一個 LazyFrame（依檔案清單的順序），欄位對齊成同一組。
+
+    ``sheet`` 只有 ``reader="excel"`` 時用：工作表名稱，空白代表第一個工作表。
+    """
     parts, files = [], []
     for path in resolve(entries, base_dir):
         name = display_name(path, base_dir)
+        if reader == "excel":
+            parts.append((name, _scan_excel(path, sheet, name, progress)))
+            files.append(_excel_info(path, name, parts[-1][1]))
+            continue
+        if excel.is_excel(path):
+            raise InputError(f"「{name}」是 Excel 檔：讀取方式請選「Excel 工作表」")
         prepared = prepare(path, encoding, progress)
         lf, rows = _scan_one(prepared, reader, name)
         parts.append((name, lf))
         files.append(SourceFile(name, prepared.bytes, prepared.sha256, prepared.encoding, rows))
     return _align(parts), files
+
+
+def _scan_excel(path: Path, sheet: str, name: str, progress: Progress) -> pl.LazyFrame:
+    _report(progress, "讀取 Excel", name, 0, 0)
+    try:
+        return excel.read_sheet(path, sheet, name).lazy()
+    except excel.ExcelError as err:
+        raise InputError(str(err)) from None
+
+
+def _excel_info(path: Path, name: str, lf: pl.LazyFrame) -> SourceFile:
+    rows = lf.select(pl.len()).collect().item()  # 已經在記憶體裡，很快
+    return SourceFile(name, path.stat().st_size, excel.sha256(path), "excel", rows)
 
 
 def _schema_text(schema: pl.Schema) -> str:
@@ -585,12 +609,17 @@ def sample(
 
 
 def peek_columns(
-    entries: str | list[str], reader: str, encoding: str, base_dir: Path
+    entries: str | list[str], reader: str, encoding: str, base_dir: Path, sheet: str = ""
 ) -> list[str] | None:
     """不讀整個檔案，只取得 input 的資料欄位（給驗證器檢查欄位引用）。"""
     first = resolve(entries, base_dir)[0]  # 找不到檔案時丟出 InputError
     if reader == "text_lines":
         return ["line"]
+    if reader == "excel":
+        try:
+            return excel.peek_columns(first, sheet)
+        except excel.ExcelError as err:
+            raise InputError(str(err)) from None
     head = first.read_bytes()[: 1 << 16].split(b"\n", 1)[0].rstrip(b"\r")
     text = _lenient(head) if encoding == "auto" else head.decode(encoding, errors="replace")
     text = text.removeprefix("﻿")

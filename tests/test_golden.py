@@ -93,3 +93,76 @@ def test_schema_command(tmp_path):
     spec = json.loads(target.read_text(encoding="utf-8"))
     assert spec["recipe_version"] == RECIPE_VERSION
     assert "split_column" in spec["steps"]
+
+
+# ── 分段報表範例（M4 的完成標準）──────────────────────────────────
+
+REPORT = ROOT / "examples" / "sales_report.recipe.json"
+
+
+def report_number(value: str) -> int:
+    """報表上的數字：千分位、括號是負數。"""
+    if value.startswith("("):
+        return -int(value.strip("()").replace(",", ""))
+    return int(value.replace(",", ""))
+
+
+def expected_report_rows() -> list[dict]:
+    """假報表的明細，轉成範例 Recipe 輸出的型別（數字是整數、民國日期轉成日期）。"""
+    from datetime import date
+
+    from tablade.fixtures import sectioned_report
+
+    _, rows = sectioned_report(0, entries=20)
+    out = []
+    for r in rows:
+        y, m, d = (int(x) for x in r["日期"].split("/"))
+        out.append(
+            {
+                "門市": r["門市"],
+                "日期": date(y + 1911, m, d),
+                "品號": r["品號"],
+                "品名": r["品名"],
+                "數量": int(r["數量"]),
+                "單價": report_number(r["單價"]),
+                "金額": report_number(r["金額"]),
+            }
+        )
+    return out
+
+
+@pytest.fixture
+def reportdir(tmp_path: Path) -> Path:
+    shutil.copy(REPORT, tmp_path / REPORT.name)
+    write_all(tmp_path / "data")
+    return tmp_path
+
+
+@pytest.mark.parametrize("mode", ["eager", "stream"])
+def test_sectioned_report_example_flattens_completely(reportdir, mode):
+    """分段、跨頁、小計、總計的列印格式報表 → 每一列明細（跨頁的明細也補上門市）。"""
+    from tablade.engine.run import execute
+    from tablade.recipe.schema import load_json, parse_recipe
+
+    recipe = parse_recipe(load_json(reportdir / REPORT.name))
+    out_path = reportdir / f"{mode}.parquet"
+    _, report = execute(recipe, reportdir, output=out_path, mode=mode)
+    out = pl.read_parquet(out_path)
+    assert report.warning_count == 0 and out.height == 60
+    assert out.drop("__source_file", "__line_no").to_dicts() == expected_report_rows()
+    assert out.schema["日期"] == pl.Date and out.schema["金額"] == pl.Int64
+    # 每一列的行號都指回報表裡那一行明細
+    lines = (reportdir / "data" / "銷售報表.txt").read_bytes().decode("cp950").split("\r\n")
+    for row in out.iter_rows(named=True):
+        line = lines[row["__line_no"] - 1]
+        assert row["品號"] in line and row["品名"] in line
+
+
+def test_sectioned_report_spans_pages_and_sections():
+    from tablade.fixtures import sectioned_report
+
+    lines, rows = sectioned_report(0, entries=20)
+    assert sum("頁次：" in line for line in lines) >= 2  # 有換頁
+    assert sum(line.startswith("門市：") for line in lines) == 3  # 換頁時不重複段落標題
+    assert sum("小計" in line for line in lines) == 3 and sum("總計" in line for line in lines) == 1
+    assert len(rows) == 60 and any(r["數量"].startswith("-") for r in rows)  # 有退貨
