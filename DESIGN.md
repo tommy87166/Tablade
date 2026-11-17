@@ -206,7 +206,7 @@
 
 彙總類的步驟（`unpivot`、`group_by`、`pivot`，`reshapes = True`）輸出的列不再一對一對應輸入的列：之前步驟的暫存欄位不帶過去，串流執行時引擎在這一步之前先算好之前步驟的警告（見 §8）。
 
-未完成：`join`（合併查詢，`maintain_order="left"`）、`append`（附加查詢）要等「多個輸入」；`sort`、`conditional_column`、`add_index`、`custom_expression`（限定用白名單語法組成，不可任意執行程式）。
+未完成：`join`（合併查詢，`maintain_order="left"`）、`append`（附加查詢）要等「多個輸入」（Recipe 改成多個階段，計畫見 [docs/join-plan.md](docs/join-plan.md)）；`sort`、`conditional_column`、`add_index`、`custom_expression`（限定用白名單語法組成，不可任意執行程式）。
 
 ### 7.2.1 型別
 
@@ -347,6 +347,7 @@
 tablade/
 ├── README.md                # 英文；README.zh-TW.md 為繁體中文
 ├── DESIGN.md                  # 本文件
+├── docs/                      # 進行中的計畫（例如 join-plan.md），完成後整理進本文件
 ├── CLAUDE.md                  # 給 AI coding 的規則（見 §14）
 ├── LICENSE                    # MIT
 ├── pyproject.toml             # 固定版本：polars==2.1.*、pywebview、fastexcel、pydantic
@@ -435,7 +436,7 @@ tablade/
 | M2 UI | 步驟清單（新增、排序、停用、刪除）、預覽表格、參數表單、匯入 recipe（版本檢查、錯誤報告）、下載 AI skill | 不寫 JSON，也能在 UI 完成範例整理流程（✅ 完成） |
 | M3 台灣格式與留痕 | parse_number、parse_date（民國）、trim_clean、replace_values、remove_columns、select_columns、rename_columns、型別分頁、manifest | 輸出附 manifest，警告附行號（✅ 完成） |
 | M4 多檔與 Excel | glob、diagonal concat、excel reader、classify_rows、extract_regex、split_fixed_width | 分段報表的範例可以完整攤平（✅ 完成） |
-| M5 進階步驟 | dedupe、unpivot、group_by、pivot（✅ 完成）；join、附加查詢（要等多個輸入）。不做匯出 Python 腳本 | — |
+| M5 進階步驟 | dedupe、unpivot、group_by、pivot（✅ 完成）；join、附加查詢（多階段 Recipe，計畫見 [docs/join-plan.md](docs/join-plan.md)）。不做匯出 Python 腳本 | — |
 
 **M0 要最先做**：它決定單一執行檔這條路走不走得通。已在權限受管控的公司電腦上確認 Windows onefile 版可以開啟，所以 Windows 只發布 onefile（§10）。
 
