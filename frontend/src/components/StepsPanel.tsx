@@ -5,14 +5,7 @@ import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from '@/components/ui/context-menu'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import type { CatalogItem, ViewState } from '../bridge'
 import { CollapseButton, PaneHeader, PaneTitle } from './Pane'
 import { StepScope } from './StepScope'
@@ -33,9 +26,18 @@ function rowsText(rows: number | null) {
   return rows === null ? null : `${rows.toLocaleString()} 列`
 }
 
+/** 新增步驟選單裡，每一欄最多幾個步驟；多的往右邊排一欄。 */
+const PER_COLUMN = 5
+
 export function AddStepMenu({ catalog, onAdd, disabled }: { catalog: CatalogItem[]; onAdd: (type: string) => void; disabled?: boolean }) {
   const groups = new Map<string, CatalogItem[]>()
   for (const item of catalog) groups.set(item.category, [...(groups.get(item.category) ?? []), item])
+  const categories = [...groups.keys()]
+  // 記得上次看的分類（選單關掉再打開還是同一個分頁）
+  const [tab, setTab] = useState(categories[0] ?? '')
+  const current = groups.has(tab) ? tab : (categories[0] ?? '')
+  const items = groups.get(current) ?? []
+  const columns = Math.max(1, Math.ceil(items.length / PER_COLUMN))
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -43,26 +45,55 @@ export function AddStepMenu({ catalog, onAdd, disabled }: { catalog: CatalogItem
           <Plus /> 新增步驟
         </Button>
       </DropdownMenuTrigger>
-      {/* 每個分類一欄：列、欄並排 */}
-      <DropdownMenuContent className="grid w-[36rem] max-w-[calc(100vw-2rem)] grid-cols-2 gap-x-3" align="start">
-        {[...groups.entries()].map(([category, items]) => (
-          <DropdownMenuGroup key={category}>
-            <DropdownMenuLabel>{category}</DropdownMenuLabel>
-            {items.map((item) => (
-              <DropdownMenuItem
-                key={item.type}
-                onSelect={() => onAdd(item.type)}
-                className="my-1 rounded-l-none border-l-2 border-muted-foreground/50 pl-2.5 focus:border-primary"
-              >
-                <div>
-                  <div>{item.label}</div>
-                  <StepScope scope={item.scope} />
-                  <div className="text-xs text-muted-foreground">{item.description}</div>
-                </div>
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuGroup>
-        ))}
+      {/* 寬度依欄數決定（內容可以左右捲動時，瀏覽器不會照內容撐開選單）；太寬時左右捲動 */}
+      <DropdownMenuContent
+        className="max-w-[calc(100vw-2rem)] p-0"
+        style={{ width: `calc(${columns} * 16rem + ${columns - 1} * 0.75rem + 0.75rem)` }}
+        align="start"
+      >
+        {/* 分類用分頁切換 */}
+        <div role="tablist" aria-label="步驟分類" className="flex gap-1 border-b p-1.5">
+          {categories.map((category) => (
+            <button
+              key={category}
+              type="button"
+              role="tab"
+              aria-selected={category === current}
+              onClick={() => setTab(category)}
+              className={`rounded-md px-3 py-1 text-sm font-medium ${
+                category === current ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+              }`}
+            >
+              {category}
+              <span className={`ml-1.5 text-xs ${category === current ? 'opacity-80' : 'text-muted-foreground/70'}`}>
+                {groups.get(category)?.length}
+              </span>
+            </button>
+          ))}
+        </div>
+        {/* 由上往下排，每一欄最多 PER_COLUMN 個，多的往右邊排；同一列等高，內容靠上 */}
+        <div
+          role="tabpanel"
+          className="grid grid-flow-col gap-x-3 overflow-x-auto p-1.5"
+          style={{
+            gridTemplateRows: `repeat(${Math.min(PER_COLUMN, Math.max(items.length, 1))}, auto)`,
+            gridTemplateColumns: `repeat(${columns}, 16rem)`,
+          }}
+        >
+          {items.map((item) => (
+            <DropdownMenuItem
+              key={item.type}
+              onSelect={() => onAdd(item.type)}
+              className="my-1 items-start rounded-l-none border-l-2 border-muted-foreground/50 pl-2.5 focus:border-primary"
+            >
+              <div>
+                <div>{item.label}</div>
+                <StepScope scope={item.scope} />
+                <div className="text-xs text-muted-foreground">{item.description}</div>
+              </div>
+            </DropdownMenuItem>
+          ))}
+        </div>
       </DropdownMenuContent>
     </DropdownMenu>
   )
