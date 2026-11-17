@@ -56,6 +56,7 @@ uv run python scripts/check_no_data.py --all
 uv run python scripts/check_code_policy.py
 uv run tablade run examples/sales_detail.recipe.json      # 先 uv run python scripts/gen_fixtures.py examples/data
 uv run tablade run examples/sales_report.recipe.json      # 分段報表範例（同樣的假資料）
+uv run tablade run examples/sales_excel.recipe.json       # Excel 範例（同樣的假資料）
 uv run tablade validate recipe.json --run                 # 驗證＋用真實資料試跑
 uv run python scripts/update_schema_lock.py              # 升 RECIPE_VERSION 後
 uv run ruff check . && uv run ruff format --check .

@@ -62,14 +62,17 @@ class Input(_Model):
     sheet: str = Field(
         default="",
         title="工作表",
-        description="Excel 用：工作表名稱，空白代表第一個工作表。欄名是 A、B、C…，行號是 Excel 的列號",
+        description=(
+            "Excel 用：工作表名稱，空白代表第一個工作表，* 代表全部工作表"
+            "（每個工作表各自處理，系統欄位 __sheet 記工作表名稱）。欄名是 A、B、C…，行號是 Excel 的列號"
+        ),
     )
 
 
 class Output(_Model):
     format: Literal["parquet"] = Field(default="parquet", title="格式")
     keep_system_columns: bool = Field(
-        default=True, title="保留系統欄位（__source_file、__line_no）"
+        default=True, title="保留系統欄位（__source_file、__line_no 等）"
     )
     manifest: bool = Field(
         default=True,

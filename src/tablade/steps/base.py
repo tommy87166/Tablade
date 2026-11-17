@@ -37,6 +37,8 @@ from tablade.recipe.validator import apply_effect, resolve_effect
 
 SOURCE_FILE = "__source_file"
 LINE_NO = "__line_no"
+SHEET = "__sheet"
+"""讀 Excel 全部工作表時才有：這一列來自哪個工作表（每個工作表各自是一個來源）。"""
 ORDER = (SOURCE_FILE, LINE_NO)
 SYSTEM_PREFIX = "__"
 TEMP_PREFIX = "__w_"
@@ -146,6 +148,14 @@ def system_columns(names: list[str]) -> list[str]:
         for c in names
         if c.startswith(SYSTEM_PREFIX) and not c.startswith(TEMP_PREFIX) and c != ROW_INDEX
     ]
+
+
+def source_name(columns: list[str]) -> pl.Expr:
+    """每一列屬於哪個來源：檔名；讀 Excel 全部工作表時是「檔名［工作表］」（和讀檔時的 part 名稱相同）。"""
+    if SHEET not in columns:
+        return pl.col(SOURCE_FILE)
+    labeled = pl.concat_str([pl.col(SOURCE_FILE), pl.lit("［"), pl.col(SHEET), pl.lit("］")])
+    return pl.when(pl.col(SHEET).is_null()).then(pl.col(SOURCE_FILE)).otherwise(labeled)
 
 
 def data_columns(lf: pl.LazyFrame) -> list[str]:

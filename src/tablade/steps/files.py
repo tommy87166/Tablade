@@ -9,7 +9,7 @@ from pydantic import Field
 
 from tablade.ingest.sources import Part, concat
 
-from .base import LINE_NO, ROW_INDEX, SOURCE_FILE, Example, NonEmpty, Step
+from .base import LINE_NO, ROW_INDEX, SHEET, SOURCE_FILE, Example, NonEmpty, Step
 from .registry import register
 
 
@@ -58,10 +58,13 @@ class MergeFiles(Step):
         # 照指定的順序把每個檔接起來：每個檔只讀一次，不排序
         lf = concat([(f, frames[f]) for f in order])
         schema = lf.collect_schema()
+        # 讀 Excel 全部工作表時：合併後就不再分工作表（__sheet 改成空值，之後整份當成一個來源）
+        sheet = [pl.lit(None, dtype=pl.String).alias(SHEET)] if SHEET in schema else []
         merged = (
             lf.with_row_index(ROW_INDEX, offset=1)
             .with_columns(
                 pl.lit(self.name, dtype=schema[SOURCE_FILE]).alias(SOURCE_FILE),
+                *sheet,
                 pl.col(ROW_INDEX).cast(schema[LINE_NO]).alias(LINE_NO),
             )
             .drop(ROW_INDEX)

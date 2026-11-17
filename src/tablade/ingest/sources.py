@@ -36,8 +36,17 @@ from . import excel
 from .encoding import AUTO_ORDER, SUPPORTED, DecodeError
 from .transcode import CHUNK, decode_range, segment_bounds, transcode_segment
 
-SOURCE_FILE, LINE_NO = "__source_file", "__line_no"
+SOURCE_FILE, LINE_NO, SHEET = "__source_file", "__line_no", "__sheet"
 ORDER = (SOURCE_FILE, LINE_NO)
+SYSTEM = (SOURCE_FILE, SHEET, LINE_NO)
+"""讀檔產生的系統欄位（依這個順序）；__sheet 只有讀 Excel 全部工作表時才有。"""
+
+
+def part_name(file: str, sheet: str | None = None) -> str:
+    """一個來源的名稱：檔名；讀 Excel 全部工作表時每個工作表各自是一個來源，名稱是「檔名［工作表］」。"""
+    return file if sheet is None else f"{file}［{sheet}］"
+
+
 Progress = Callable[[dict[str, Any]], None] | None
 Part = tuple[str, pl.LazyFrame]
 """一個來源檔（或合併後的一份資料）：（名稱, LazyFrame）。"""
@@ -59,6 +68,13 @@ class SourceFile:
     sha256: str
     encoding: str
     rows: int
+    sheet: str | None = None
+    """讀 Excel 全部工作表時，這一個來源是哪個工作表。"""
+
+    @property
+    def name(self) -> str:
+        """這個來源的名稱（和 part 的名稱相同）。"""
+        return part_name(self.path, self.sheet)
 
 
 @dataclass(frozen=True)
@@ -484,19 +500,22 @@ def _scan_one(prepared: Prepared, reader: str, name: str) -> tuple[pl.LazyFrame,
 
 
 def _align(parts: list[Part]) -> list[Part]:
-    """csv 各檔欄位可能不同：補成同一組欄位（依第一次出現的順序），缺的欄是 null。"""
+    """csv、Excel 各檔欄位可能不同：補成同一組欄位（依第一次出現的順序），缺的欄是 null。"""
     names = [lf.collect_schema().names() for _, lf in parts]
+    system = [c for c in SYSTEM if any(c in found for found in names)]
     columns: list[str] = []
     for found in names:
-        columns += [c for c in found if c not in ORDER and c not in columns]
-    if all(found == [*ORDER, *columns] for found in names):
+        columns += [c for c in found if c not in SYSTEM and c not in columns]
+    if all(found == [*system, *columns] for found in names):
         return parts
     return [
         (
             name,
             lf.select(
-                pl.col(SOURCE_FILE),
-                pl.col(LINE_NO),
+                *[
+                    pl.col(c) if c in found else pl.lit(None, dtype=pl.String).alias(c)
+                    for c in system
+                ],
                 *[
                     pl.col(c) if c in found else pl.lit(None, dtype=pl.String).alias(c)
                     for c in columns
@@ -523,8 +542,9 @@ def scan_parts(
     for path in resolve(entries, base_dir):
         name = display_name(path, base_dir)
         if reader == "excel":
-            parts.append((name, _scan_excel(path, sheet, name, progress)))
-            files.append(_excel_info(path, name, parts[-1][1]))
+            for part, info in _scan_excel(path, sheet, name, progress):
+                parts.append(part)
+                files.append(info)
             continue
         if excel.is_excel(path):
             raise InputError(f"「{name}」是 Excel 檔：讀取方式請選「Excel 工作表」")
@@ -535,17 +555,24 @@ def scan_parts(
     return _align(parts), files
 
 
-def _scan_excel(path: Path, sheet: str, name: str, progress: Progress) -> pl.LazyFrame:
+def _scan_excel(
+    path: Path, sheet: str, name: str, progress: Progress
+) -> list[tuple[Part, SourceFile]]:
+    """一個 Excel 檔：一個工作表一個來源；工作表是 ``*`` 時讀全部工作表，多一個 __sheet 欄。"""
     _report(progress, "讀取 Excel", name, 0, 0)
+    size, digest = path.stat().st_size, excel.sha256(path)
     try:
-        return excel.read_sheet(path, sheet, name).lazy()
+        if sheet != excel.ALL_SHEETS:
+            frame = excel.read_sheet(path, sheet, name)
+            return [((name, frame.lazy()), SourceFile(name, size, digest, "excel", frame.height))]
+        out = []
+        for one in excel.sheet_names(path):
+            frame = excel.read_sheet(path, one, name, with_sheet=True)
+            info = SourceFile(name, size, digest, "excel", frame.height, sheet=one)
+            out.append(((info.name, frame.lazy()), info))
+        return out
     except excel.ExcelError as err:
         raise InputError(str(err)) from None
-
-
-def _excel_info(path: Path, name: str, lf: pl.LazyFrame) -> SourceFile:
-    rows = lf.select(pl.len()).collect().item()  # 已經在記憶體裡，很快
-    return SourceFile(name, path.stat().st_size, excel.sha256(path), "excel", rows)
 
 
 def _schema_text(schema: pl.Schema) -> str:
@@ -598,7 +625,7 @@ def sample(
 ) -> pl.DataFrame:
     """每個來源檔的前 ``head`` 行與最後 ``tail`` 行（預覽大檔用；每個檔串流掃描一次）。"""
     first = 2 if reader == "csv" else 1
-    rows = {f.path: f.rows for f in files}
+    rows = {f.name: f.rows for f in files}
     kept = []
     for name, lf in parts:
         last = first + rows.get(name, 0) - 1

@@ -1,5 +1,6 @@
 """讀 Excel：每一列都是資料、欄名 A、B、C…、行號是 Excel 的列號、每一格都是文字。"""
 
+import json
 import shutil
 from datetime import date
 from pathlib import Path
@@ -127,3 +128,109 @@ def test_example_data_includes_an_excel_file(tmp_path):
     paths = write_all(tmp_path)
     assert any(p.suffix == ".xlsx" for p in paths)
     shutil.rmtree(tmp_path)
+
+
+# ── 全部工作表 ──────────────────────────────────────────────────
+
+
+def monthly(tmp_path: Path) -> list[Path]:
+    """兩個檔：甲有「一月」「二月」，乙只有「一月」。每張表上面都有一列標題，再一列欄名。"""
+
+    def sheet(title: str, rows: list[list]) -> list:
+        return [[title], ["品號", "金額"], *rows]
+
+    a = write_xlsx(
+        tmp_path / "甲.xlsx",
+        {
+            "一月": sheet("甲一月", [["A001", 10], ["A002", "x"]]),
+            "二月": sheet("甲二月", [["B001", 30]]),
+        },
+    )
+    b = write_xlsx(tmp_path / "乙.xlsx", {"一月": sheet("乙一月", [["C001", 50]])})
+    return [a, b]
+
+
+def all_sheets_recipe(*extra: dict, keep_system: bool = True) -> dict:
+    return {
+        "tablade_recipe": "1.0",
+        "inputs": [{"id": "src", "files": ["甲.xlsx", "乙.xlsx"], "reader": "excel", "sheet": "*"}],
+        "steps": [
+            {"id": "s1", "type": "remove_top_rows", "n": 1},
+            {"id": "s2", "type": "promote_headers", "names": ["品號", "金額"]},
+            *extra,
+        ],
+        "output": {"format": "parquet", "keep_system_columns": keep_system},
+    }
+
+
+@pytest.mark.parametrize("mode", ["eager", "stream"])
+def test_all_sheets_are_separate_sources_with_a_sheet_column(tmp_path, mode):
+    monthly(tmp_path)
+    out = tmp_path / "out.parquet"
+    number = {"id": "n", "type": "parse_number", "columns": ["金額"], "kind": "integer"}
+    _, report = execute(parse_recipe(all_sheets_recipe(number)), tmp_path, output=out, mode=mode)
+    result = pl.read_parquet(out)
+    assert result.columns == ["__source_file", "__sheet", "__line_no", "品號", "金額"]
+    # 每個工作表各自移除標題列、提升欄名（每張表都有自己的標題）
+    assert result.select("__source_file", "__sheet", "__line_no", "品號").rows() == [
+        ("甲.xlsx", "一月", 3, "A001"),
+        ("甲.xlsx", "一月", 4, "A002"),
+        ("甲.xlsx", "二月", 3, "B001"),
+        ("乙.xlsx", "一月", 3, "C001"),
+    ]
+    assert result["金額"].to_list() == [10, None, 30, 50]
+    # 讀檔資訊與警告都帶工作表
+    assert [(f.path, f.sheet, f.rows) for f in report.inputs] == [
+        ("甲.xlsx", "一月", 4),
+        ("甲.xlsx", "二月", 3),
+        ("乙.xlsx", "一月", 3),
+    ]
+    warning = next(w for s in report.steps for w in s.warnings)
+    assert (warning.source_file, warning.sheet, warning.line_no) == ("甲.xlsx", "一月", 4)
+    manifest = json.loads(Path(report.manifest).read_text(encoding="utf-8"))
+    assert [i.get("sheet") for i in manifest["inputs"]] == ["一月", "二月", "一月"]
+    assert manifest["warnings"]["items"][0]["sheet"] == "一月"
+
+
+def test_merge_files_after_all_sheets_and_system_columns_off(tmp_path):
+    monthly(tmp_path)
+    out = tmp_path / "m.parquet"
+    merge = {"id": "m", "type": "merge_files", "order": ["乙.xlsx［一月］"]}
+    execute(parse_recipe(all_sheets_recipe(merge)), tmp_path, output=out, mode="eager")
+    merged = pl.read_parquet(out)
+    # 照指定的順序接起來（乙的一月排前面）；合併後不再分工作表、行號從 1 重編
+    assert merged["品號"].to_list() == ["C001", "A001", "A002", "B001"]
+    assert merged["__sheet"].to_list() == [None] * 4
+    assert merged["__line_no"].to_list() == [1, 2, 3, 4]
+    off = tmp_path / "off.parquet"
+    execute(parse_recipe(all_sheets_recipe(keep_system=False)), tmp_path, output=off)
+    assert pl.read_parquet(off).columns == ["品號", "金額"]
+
+
+def test_all_sheets_in_the_session(tmp_path):
+    monthly(tmp_path)
+    s = Session()
+    s.new(tmp_path / "x.recipe.json")
+    s.add_files([tmp_path / "甲.xlsx", tmp_path / "乙.xlsx"])
+    s.set_input({"reader": "excel", "sheet": "*"})
+    s.load_data()
+    state = s.state()
+    assert [(f["path"], f["sheet"]) for f in state["input"]["sources"]] == [
+        ("甲.xlsx", "一月"),
+        ("甲.xlsx", "二月"),
+        ("乙.xlsx", "一月"),
+    ]
+    s.add_step("merge_files", index=0)
+    # 合併來源檔的順序清單：每個工作表各自是一個來源
+    assert s.state()["steps"][0]["input_files"] == [
+        "甲.xlsx［一月］",
+        "甲.xlsx［二月］",
+        "乙.xlsx［一月］",
+    ]
+    s.delete_step(0)
+    frame = s.frame_at(-1)
+    assert frame.columns[:3] == ["__source_file", "__sheet", "__line_no"]
+    # 點警告跳到那一列：同一個檔、同一個行號，在不同工作表要分得出來
+    assert s.find_row(-1, "甲.xlsx", 1, "二月") == 4
+    assert s.find_row(-1, "甲.xlsx", 1) == 0
+    assert peek_columns(["*.xlsx"], "excel", "auto", tmp_path, "*") == ["A", "B"]

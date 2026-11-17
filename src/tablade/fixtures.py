@@ -420,7 +420,8 @@ def write_big_messy_export(
 def write_all(directory: str | Path, seed: int = 0) -> list[Path]:
     """產生所有範例假資料到指定資料夾。
 
-    examples/sales_detail.recipe.json 讀 明細_*.csv；examples/sales_report.recipe.json 讀 銷售報表.txt。
+    examples/sales_detail.recipe.json 讀 明細_*.csv；examples/sales_report.recipe.json 讀 銷售報表.txt；
+    examples/sales_excel.recipe.json 讀 明細.xlsx。
     """
     out = Path(directory)
     return [

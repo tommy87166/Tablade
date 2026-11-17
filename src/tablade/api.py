@@ -166,8 +166,13 @@ class Api:
         return self._session.column_info(int(step))
 
     @_wrap
-    def find_row(self, step: int, source_file: str, line_no: int) -> dict[str, Any]:
-        return {"row": self._session.find_row(int(step), str(source_file), int(line_no))}
+    def find_row(
+        self, step: int, source_file: str, line_no: int, sheet: str | None = None
+    ) -> dict[str, Any]:
+        found = self._session.find_row(
+            int(step), str(source_file), int(line_no), str(sheet) if sheet else None
+        )
+        return {"row": found}
 
     # ── recipe 檔 ──────────────────────────────────────────────
 

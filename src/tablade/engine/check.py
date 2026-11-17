@@ -98,7 +98,7 @@ def format_issues(issues: list[dict[str, Any]]) -> str:
 def format_report(report: RunReport, max_warnings: int = 10) -> str:
     lines = ["輸入："]
     for f in report.inputs:
-        lines.append(f"  {f.path}（{f.encoding}，{f.bytes:,} bytes，{f.rows:,} 行）")
+        lines.append(f"  {f.name}（{f.encoding}，{f.bytes:,} bytes，{f.rows:,} 行）")
     previous = report.input_rows
     if report.mode == "sample":
         previous = report.sample_rows or 0
@@ -129,7 +129,8 @@ def format_report(report: RunReport, max_warnings: int = 10) -> str:
             f"警告（共 {report.warning_count:,} 則，列出前 {min(len(warnings), max_warnings)} 則）："
         )
         for w in warnings[:max_warnings]:
-            lines.append(f"  {w.step} {w.source_file}:{w.line_no}  {w.message}")
+            where = f"{w.source_file}［{w.sheet}］" if w.sheet else w.source_file
+            lines.append(f"  {w.step} {where}:{w.line_no}  {w.message}")
     lines.append(
         f"結果：{report.rows:,} 列 × {len(report.columns)} 欄（{'、'.join(report.columns)}）"
     )

@@ -101,12 +101,13 @@
 |---|---|---|
 | `text_lines` | 爛格式 CSV / TXT 報表：每一個實體行原封不動讀進來 | `__source_file`, `__line_no`, `line` |
 | `csv` | 乾淨的 CSV，交給 Polars 解析 | `__source_file`, `__line_no`, 各欄 |
-| `excel` | xlsx / xlsm / xlsb / xls / ods，指定工作表（`sheet`，空白是第一個工作表） | `__source_file`, `__line_no`, `A`, `B`, `C`… |
+| `excel` | xlsx / xlsm / xlsb / xls / ods，指定工作表（`sheet`，空白是第一個工作表，`*` 是全部工作表） | `__source_file`, `__line_no`, `A`, `B`, `C`…（全部工作表時多一個 `__sheet`） |
 
 - `text_lines` 是爛檔的預設模式。**不要讓解析器自動略過空行或猜測格式**，否則行號會跟原始檔對不起來。
 - `__line_no` 從 1 起算，對應原始檔的實體行號（Excel 則對應工作表列號）。
-- `excel`（`ingest/excel.py`，用 fastexcel）：**不把第一列當標題**，每一列都是資料，欄名是 Excel 的欄名 A、B、C…；上面的標題、說明列跟文字檔一樣用「移除前 N 列」「提升標題列」處理。每一格都讀成文字（數字是 Excel 顯示的樣子，例如 `1234.5`、`3`；沒有時間的日期寫成 `2026-01-05`）。空白的列也保留（含最上面的，`skip_rows=0`），所以行號就是 Excel 的列號。Excel 檔不能串流讀：整張工作表會讀進記憶體（Excel 本身最多約 104 萬列）。不需要 pyarrow（`ExcelSheet.to_polars()`）。
+- `excel`（`ingest/excel.py`，用 fastexcel）：**不把第一列當標題**，每一列都是資料，欄名是 Excel 的欄名 A、B、C…；上面的標題、說明列跟文字檔一樣用「移除前 N 列」「提升標題列」處理。每一格都讀成文字（數字是儲存格裡的值，不套用顯示格式：顯示成 `1,234.50` 的格子讀成 `1234.5`、`12%` 讀成 `0.12`；沒有時間的日期寫成 `2026-01-05`）。空白的列也保留（含最上面的，`skip_rows=0`），所以行號就是 Excel 的列號。Excel 檔不能串流讀：整張工作表會讀進記憶體（Excel 本身最多約 104 萬列）。不需要 pyarrow（`ExcelSheet.to_polars()`）。
 - Excel 檔用文字的讀取方式會直接報錯，提示改選「Excel 工作表」。
+- **全部工作表**：工作表寫 `*`（Excel 的工作表名稱不能有 `*`，不會撞名）就讀每個檔的每一個工作表。每個工作表各自是一個來源（part 名稱是「檔名［工作表］」）：「移除前 N 列」「提升標題列」「向下填滿」這類分檔的步驟對每個工作表各自套用，「合併來源檔」的順序清單也列出每個工作表。多一個系統欄位 `__sheet`（排在 `__source_file` 後面）記工作表名稱；`__source_file` 仍是檔名。警告、點警告跳到那一列、manifest 的輸入檔與警告都帶工作表。「合併來源檔」之後不再分工作表（`__sheet` 改成空值）。
 - 以 `__` 開頭的欄位是系統欄位，UI 預設隱藏但可顯示，匯出時可選擇是否保留。
 
 ### 5.2 編碼
@@ -376,7 +377,8 @@ tablade/
 │   └── icon.svg               # 圖示原始檔（置中表格＋🔪）；icon.ico / icon.icns / icon.png 由 make_icons.py 產生
 ├── examples/
 │   ├── sales_detail.recipe.json  # M1：凌亂的匯出檔（用到 8 種步驟）
-│   └── sales_report.recipe.json  # M4：分段報表
+│   ├── sales_report.recipe.json  # M4：分段報表
+│   └── sales_excel.recipe.json   # M4：Excel 工作表
 ├── scripts/
 │   ├── gen_fixtures.py
 │   ├── check_no_data.py

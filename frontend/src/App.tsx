@@ -661,13 +661,14 @@ export default function App() {
                             className="flex w-full gap-2 px-3 py-1 text-left hover:bg-muted"
                             onClick={async () => {
                               if (w.source_file === null || w.line_no === null) return
-                              const res = await api.find_row(state.preview.step, w.source_file, w.line_no)
+                              const res = await api.find_row(state.preview.step, w.source_file, w.line_no, w.sheet)
                               if (res.ok && res.row !== null) grid.current?.scrollToRow(res.row)
                             }}
                           >
                             <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-600" />
                             <span className="shrink-0 font-mono text-xs text-muted-foreground">
-                              {w.source_file}:{w.line_no}
+                              {w.source_file}
+                              {w.sheet ? `［${w.sheet}］` : ''}:{w.line_no}
                             </span>
                             <span>{w.message}</span>
                           </button>

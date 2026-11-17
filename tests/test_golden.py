@@ -166,3 +166,34 @@ def test_sectioned_report_spans_pages_and_sections():
     assert sum(line.startswith("門市：") for line in lines) == 3  # 換頁時不重複段落標題
     assert sum("小計" in line for line in lines) == 3 and sum("總計" in line for line in lines) == 1
     assert len(rows) == 60 and any(r["數量"].startswith("-") for r in rows)  # 有退貨
+
+
+# ── Excel 範例 ──────────────────────────────────────────────────
+
+EXCEL = ROOT / "examples" / "sales_excel.recipe.json"
+
+
+@pytest.mark.parametrize("mode", ["eager", "stream"])
+def test_excel_example_reads_the_sheet_and_converts_types(tmp_path, mode):
+    """Excel 工作表：去掉標題、匯出時間、空白列，提升標題列，日期與數字轉型。"""
+    from datetime import date
+
+    from tablade.engine.run import execute
+    from tablade.fixtures import excel_export
+    from tablade.recipe.schema import load_json, parse_recipe
+
+    shutil.copy(EXCEL, tmp_path / EXCEL.name)
+    write_all(tmp_path / "data")
+    out_path = tmp_path / "out.parquet"
+    _, report = execute(
+        parse_recipe(load_json(tmp_path / EXCEL.name)), tmp_path, output=out_path, mode=mode
+    )
+    out = pl.read_parquet(out_path)
+    expected = [
+        {**r, "日期": date.fromisoformat(r["日期"]), "數量": int(r["數量"]), "金額": int(r["金額"])}
+        for r in excel_export(20, seed=4)[1]  # write_all 用 seed + 4 產生 明細.xlsx
+    ]
+    assert report.warning_count == 0
+    assert out.drop("__source_file", "__line_no").to_dicts() == expected
+    assert out["__line_no"].to_list() == list(range(5, 25))  # Excel 的第 5～24 列
+    assert out.schema["日期"] == pl.Date and out.schema["金額"] == pl.Int64

@@ -110,6 +110,8 @@ export interface RowWarning {
   message: string
   source_file: string | null
   line_no: number | null
+  /** 讀 Excel 全部工作表時，這一列在哪個工作表 */
+  sheet?: string | null
 }
 
 export interface SourceFile {
@@ -118,6 +120,8 @@ export interface SourceFile {
   sha256: string
   encoding: string
   rows: number
+  /** 讀 Excel 全部工作表時，這一個來源是哪個工作表 */
+  sheet?: string | null
 }
 
 export interface ViewState {
@@ -145,7 +149,7 @@ export interface ViewState {
     stale: boolean
     reader: 'text_lines' | 'csv' | 'excel'
     encoding: string
-    /** Excel 的工作表名稱；空白代表第一個工作表 */
+    /** Excel 的工作表名稱；空白代表第一個工作表，* 代表全部工作表 */
     sheet: string
     /** 讀取方式是 Excel 時，第一個 Excel 檔有哪些工作表 */
     sheets: string[]
@@ -243,7 +247,7 @@ export interface TabladeApi {
   state(): Promise<WithState>
   rows(step: number, offset: number, limit: number): Promise<Result<RowsPage>>
   column_info(step: number): Promise<Result<ColumnsInfo>>
-  find_row(step: number, source_file: string, line_no: number): Promise<Result<{ row: number | null }>>
+  find_row(step: number, source_file: string, line_no: number, sheet?: string | null): Promise<Result<{ row: number | null }>>
   new_recipe(): Promise<Dialog<{ path: string }>>
   open_recipe(): Promise<Dialog<{ issues: Issue[] }>>
   save_recipe(): Promise<Dialog<{ path: string }>>

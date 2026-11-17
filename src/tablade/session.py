@@ -49,7 +49,7 @@ from .ingest.sources import (
 )
 from .recipe.schema import RECIPE_VERSION, RecipeError, load_json, parse_recipe, pydantic_issues
 from .steps import all_steps, get
-from .steps.base import SOURCE_FILE, SYSTEM_PREFIX, Step
+from .steps.base import SHEET, SOURCE_FILE, SYSTEM_PREFIX, Step, source_name
 
 MAX_UNDO = 100
 DEFAULT_INPUT = {"id": "src", "files": [], "reader": "text_lines", "encoding": "auto", "sheet": ""}
@@ -92,14 +92,18 @@ def _data_columns(frame: pl.DataFrame) -> list[str]:
 
 
 def _files(frame: pl.DataFrame) -> list[str]:
-    """目前的來源檔（依出現順序）。"""
+    """目前的來源（依出現順序）：檔名；讀 Excel 全部工作表時是「檔名［工作表］」。"""
     if SOURCE_FILE not in frame.columns:
         return []
-    return frame.get_column(SOURCE_FILE).unique(maintain_order=True).to_list()
+    return (
+        frame.select(source_name(frame.columns)).to_series().unique(maintain_order=True).to_list()
+    )
 
 
 def _file_count(frame: pl.DataFrame) -> int:
-    return frame.get_column(SOURCE_FILE).n_unique() if SOURCE_FILE in frame.columns else 0
+    if SOURCE_FILE not in frame.columns:
+        return 0
+    return frame.select(source_name(frame.columns)).to_series().n_unique()
 
 
 def _jsonable(value: Any) -> Any:
@@ -754,17 +758,18 @@ class Session:
                 "columns": column_summary(frame),
             }
 
-    def find_row(self, index: int, source_file: str, line_no: int) -> int | None:
-        """在第 index 步的結果裡找某個來源檔某一行的位置（點警告時跳到那一列）。"""
+    def find_row(
+        self, index: int, source_file: str, line_no: int, sheet: str | None = None
+    ) -> int | None:
+        """在第 index 步的結果裡找某個來源檔（工作表）某一行的位置（點警告時跳到那一列）。"""
         with self._lock:
             frame = self.frame_at(index)
             if frame is None or "__line_no" not in frame.columns:
                 return None
-            hits = (
-                frame.with_row_index("__pos")
-                .filter((pl.col("__source_file") == source_file) & (pl.col("__line_no") == line_no))
-                .get_column("__pos")
-            )
+            match = (pl.col("__source_file") == source_file) & (pl.col("__line_no") == line_no)
+            if sheet and SHEET in frame.columns:
+                match &= pl.col(SHEET) == sheet
+            hits = frame.with_row_index("__pos").filter(match).get_column("__pos")
             return int(hits[0]) if hits.len() else None
 
     # ── 匯出與報告 ────────────────────────────────────────────

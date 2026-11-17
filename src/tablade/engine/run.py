@@ -36,7 +36,16 @@ from tablade.ingest.sources import (
 )
 from tablade.recipe.schema import Recipe
 from tablade.recipe.validator import EffectError
-from tablade.steps.base import LINE_NO, SOURCE_FILE, SYSTEM_PREFIX, TEMP_PREFIX, Step, StepError
+from tablade.steps.base import (
+    LINE_NO,
+    SHEET,
+    SOURCE_FILE,
+    SYSTEM_PREFIX,
+    TEMP_PREFIX,
+    Step,
+    StepError,
+    source_name,
+)
 
 MAX_WARNINGS_PER_CHECK = 100
 SAMPLE_THRESHOLD = 200_000
@@ -53,6 +62,8 @@ class RowWarning:
     message: str
     source_file: str | None
     line_no: int | None
+    sheet: str | None = None
+    """讀 Excel 全部工作表時，這一列在哪個工作表。"""
 
 
 @dataclass
@@ -109,11 +120,15 @@ def _apply(step: Step, lf: pl.LazyFrame, source: str = "") -> pl.LazyFrame:
 
 
 def split_parts(frame: pl.DataFrame) -> list[Part]:
-    """把讀進記憶體的資料依 ``__source_file`` 切成 parts（每段連續的同一個來源檔；不複製資料）。"""
+    """把讀進記憶體的資料依來源切成 parts（每段連續的同一個來源；不複製資料）。
+
+    來源通常是 ``__source_file``；讀 Excel 全部工作表時每個工作表各自是一個來源。
+    """
     if frame.height == 0 or SOURCE_FILE not in frame.columns:
         return [("", frame.lazy())]
     parts, offset = [], 0
-    for length, name in frame.get_column(SOURCE_FILE).rle().struct.unnest().iter_rows():
+    names = frame.select(source_name(frame.columns)).to_series()
+    for length, name in names.rle().struct.unnest().iter_rows():
         parts.append((name, frame.slice(offset, length).lazy()))
         offset += length
     return parts
@@ -169,13 +184,14 @@ def _warnings(
                 pl.col(SOURCE_FILE) if SOURCE_FILE in names else pl.lit(None).alias(SOURCE_FILE),
                 pl.col(LINE_NO) if LINE_NO in names else pl.lit(None).alias(LINE_NO),
                 detail.alias("__detail"),
+                pl.col(SHEET) if SHEET in names else pl.lit(None, dtype=pl.String).alias(SHEET),
             )
             .head(limit)
             .collect(engine="streaming")
         )
-        for source_file, line_no, value in rows.iter_rows():
+        for source_file, line_no, value, sheet in rows.iter_rows():
             message = check.message.format(value) if "{}" in check.message else check.message
-            found.append(RowWarning(step.id, message, source_file, line_no))
+            found.append(RowWarning(step.id, message, source_file, line_no, sheet))
     return total, found
 
 

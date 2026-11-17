@@ -11,6 +11,8 @@ import type { ViewState } from '../bridge'
 const READERS = { text_lines: '逐行讀取（爛格式檔案）', csv: '乾淨的 CSV', excel: 'Excel 工作表' }
 /** Radix 的選項不能是空字串：「第一個工作表」用這個值代表 sheet = '' */
 const FIRST_SHEET = '__first__'
+/** 全部工作表（Excel 的工作表名稱不能有 *，不會撞名） */
+const ALL_SHEETS = '*'
 const ENCODINGS = {
   auto: '自動偵測（UTF-8 → cp950）',
   'utf-8': 'UTF-8',
@@ -134,14 +136,18 @@ export function InputPanel({ state, busy, onLoad, onAddFiles, onAddEntry, onRemo
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value={FIRST_SHEET}>第一個工作表</SelectItem>
-                {[...new Set([...input.sheets, ...(input.sheet ? [input.sheet] : [])])].map((name) => (
+                <SelectItem value={ALL_SHEETS}>全部工作表（每個檔的每個工作表）</SelectItem>
+                {[...new Set([...input.sheets, ...(input.sheet && input.sheet !== ALL_SHEETS ? [input.sheet] : [])])].map((name) => (
                   <SelectItem key={name} value={name}>
                     {input.sheets.includes(name) ? name : `${name}（找不到）`}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">欄名是 A、B、C…，行號是 Excel 的列號；每一格都讀成文字。</p>
+            <p className="text-xs text-muted-foreground">
+              欄名是 A、B、C…，行號是 Excel 的列號；每一格都讀成文字。
+              {input.sheet === ALL_SHEETS ? '每個工作表各自處理，系統欄位 __sheet 記工作表名稱。' : ''}
+            </p>
           </div>
         ) : (
           <div className="space-y-1.5">
@@ -175,9 +181,10 @@ export function InputPanel({ state, busy, onLoad, onAddFiles, onAddEntry, onRemo
           <div className="text-xs text-muted-foreground">已載入的檔案</div>
           <ul className="divide-y rounded-md border text-xs">
             {input.sources.map((f) => (
-              <li key={f.path} className="flex items-center justify-between gap-2 px-2 py-1.5">
-                <span className="min-w-0 truncate" title={f.path}>
+              <li key={`${f.path}／${f.sheet ?? ''}`} className="flex items-center justify-between gap-2 px-2 py-1.5">
+                <span className="min-w-0 truncate" title={f.sheet ? `${f.path}［${f.sheet}］` : f.path}>
                   {f.path}
+                  {f.sheet ? <span className="text-muted-foreground">［{f.sheet}］</span> : null}
                 </span>
                 <span className="shrink-0 text-muted-foreground tabular-nums">
                   {f.encoding}・{f.rows.toLocaleString()} 列・{formatBytes(f.bytes)}
@@ -203,7 +210,7 @@ export function OutputPanel({ state, onOutput }: OutputProps) {
       <div className="text-sm font-medium">輸出資料</div>
       <p className="text-xs text-muted-foreground">按工具列的「處理並匯出資料」處理全部資料。</p>
       <label className="flex items-center justify-between gap-3 text-sm">
-        保留系統欄位（__source_file、__line_no）
+        保留系統欄位（__source_file、__line_no 等）
         <Switch checked={output.keep_system_columns} onCheckedChange={(keep_system_columns) => onOutput({ keep_system_columns })} />
       </label>
       <label className="flex items-start justify-between gap-3 text-sm">

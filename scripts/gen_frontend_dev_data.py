@@ -58,8 +58,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--recipe",
         default="sales_detail",
-        choices=["sales_detail", "sales_report"],
-        help="用哪一個範例 Recipe（sales_report 是分段報表，看得到替列分類等步驟的表單）",
+        choices=["sales_detail", "sales_report", "sales_excel"],
+        help="用哪一個範例 Recipe（sales_report 是分段報表、sales_excel 讀 Excel）",
     )
     args = parser.parse_args(argv)
     api = Api()

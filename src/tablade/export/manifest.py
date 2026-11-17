@@ -53,7 +53,13 @@ def recipe_sha256(content: dict[str, Any]) -> str:
 def build_manifest(recipe: Recipe, report: RunReport, output: Path) -> dict[str, Any]:
     content = recipe_content(recipe)
     warnings = [
-        {"step": w.step, "source_file": w.source_file, "line_no": w.line_no, "message": w.message}
+        {
+            "step": w.step,
+            "source_file": w.source_file,
+            **({"sheet": w.sheet} if w.sheet else {}),
+            "line_no": w.line_no,
+            "message": w.message,
+        }
         for s in report.steps
         for w in s.warnings
     ]
@@ -70,6 +76,7 @@ def build_manifest(recipe: Recipe, report: RunReport, output: Path) -> dict[str,
         "inputs": [
             {
                 "file": f.path,
+                **({"sheet": f.sheet} if f.sheet else {}),
                 "bytes": f.bytes,
                 "sha256": f.sha256,
                 "encoding": f.encoding,

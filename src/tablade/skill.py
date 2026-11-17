@@ -224,7 +224,9 @@ Tablade 是本機執行的資料清洗工具。使用者描述要怎麼整理資
    - 分隔符號、有沒有引號包住的欄位（例如 `"1,280"`）
    - 有沒有只在群組第一列才寫值的欄位（要向下填滿）、要再拆開的欄位、要排除的列
 2. **選讀取方式。** 凌亂的檔案用 `"reader": "text_lines"`（每一行原封不動讀成 `line` 欄）；
-   只有乾淨、第一行就是標題的 CSV 才用 `"csv"`。
+   只有乾淨、第一行就是標題的 CSV 才用 `"csv"`。Excel 用 `"reader": "excel"`：每一列都是資料（不當標題），
+   欄名是 A、B、C…，`"sheet"` 寫工作表名稱（空白是第一個工作表，`"*"` 是每個檔的全部工作表：
+   每個工作表各自處理，系統欄位 `__sheet` 記工作表名稱）。
 3. **依序寫步驟。** 只能用下面列出的步驟類型，參數細節見 `references/steps.md`。
    決定欄位結構的步驟要把欄名寫死：`split_delimited` 的 `columns`、`promote_headers` 的 `names`。
 4. **驗證。** 執行 `python scripts/validate_recipe.py <recipe 檔> --json`

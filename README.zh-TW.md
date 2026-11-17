@@ -88,7 +88,7 @@
 |---|---|---|---|
 | `csv` | 乾淨的 CSV | 所有欄位（一律文字） | ✅ M0（系統欄位在 M1） |
 | `text_lines` | 爛格式 CSV / TXT 報表：每個實體行原封不動 | `__source_file`、`__line_no`、`line` | M1 |
-| `excel` | XLSX / XLSM / XLS / ODS，指定工作表：每一列都是資料（不當標題）、每一格都讀成文字 | `__source_file`、`__line_no`（Excel 的列號）、`A`、`B`、`C`… | ✅ M4 |
+| `excel` | XLSX / XLSM / XLS / ODS，指定工作表，或 `*` 讀每個檔的全部工作表：每一列都是資料（不當標題）、每一格都讀成文字 | `__source_file`、`__line_no`（Excel 的列號）、`A`、`B`、`C`…；`*` 時多一個 `__sheet`（每個工作表各自處理） | ✅ M4 |
 
 - `__` 開頭的是系統欄位：UI 預設隱藏，匯出時可選擇是否保留。
 - Recipe 記一份**檔案清單**：Recipe 資料夾裡的檔存相對路徑，其他存絕對路徑，也可以手動輸入含 `*` 的路徑。清單裡的檔都找得到時，按「載入資料」才讀檔。
@@ -244,6 +244,7 @@ tablade version
 uv run python scripts/gen_fixtures.py examples/data
 uv run tablade run examples/sales_detail.recipe.json
 uv run tablade run examples/sales_report.recipe.json   # 分段的列印格式報表 → 每一列明細
+uv run tablade run examples/sales_excel.recipe.json    # Excel 工作表：去掉上面的標題列，轉成日期與數字
 ```
 
 若有不能出現在 repo 的字詞（人名、公司名稱、專案代號等），寫進 repo 根目錄的 `.tablade-denylist`

@@ -97,7 +97,7 @@ Five needs drove this tool:
 |---|---|---|---|
 | `csv` | Clean CSV | all columns as text | ✅ M0 (system columns in M1) |
 | `text_lines` | Messy CSV / TXT reports — every physical line kept verbatim | `__source_file`, `__line_no`, `line` | M1 |
-| `excel` | XLSX / XLSM / XLS / ODS, one sheet — every row is data (no header row), every cell read as text | `__source_file`, `__line_no` (the Excel row number), `A`, `B`, `C`… | ✅ M4 |
+| `excel` | XLSX / XLSM / XLS / ODS, one sheet or `*` for every sheet of every file — every row is data (no header row), every cell read as text | `__source_file`, `__line_no` (the Excel row number), `A`, `B`, `C`…; with `*` also `__sheet` (each sheet is processed as its own source) | ✅ M4 |
 
 - Columns starting with `__` are system columns: hidden in the UI by default, optional on export.
 - A recipe keeps a **file list**: files inside the recipe's folder are stored as relative paths,
@@ -266,6 +266,7 @@ Try the example:
 uv run python scripts/gen_fixtures.py examples/data
 uv run tablade run examples/sales_detail.recipe.json
 uv run tablade run examples/sales_report.recipe.json   # sectioned print-format report → one row per detail line
+uv run tablade run examples/sales_excel.recipe.json    # Excel sheet: drop the title rows, convert dates and numbers
 ```
 
 ---
