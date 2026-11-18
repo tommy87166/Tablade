@@ -428,7 +428,7 @@ export interface TabladeApi {
 
 declare global {
   interface Window {
-    pywebview?: { api: TabladeApi; state?: EventTarget & { progress?: Progress | null; run?: RunState | null } }
+    pywebview?: { api: TabladeApi; state?: EventTarget & { progress?: Progress | null; run?: RunState | null; usage?: Usage | null } }
   }
 }
 
@@ -439,6 +439,28 @@ export function onRun(listener: (run: RunState | null) => void): () => void {
   const handler = (event: Event) => {
     const detail = (event as CustomEvent<{ key: string; value: unknown }>).detail
     if (detail?.key === 'run') listener((detail.value as RunState | null) ?? null)
+  }
+  state.addEventListener('change', handler)
+  return () => state.removeEventListener('change', handler)
+}
+
+/** Python 每 2 秒推送的用量（bytes）：主程序（Python＋Polars）與平行轉碼的工作程序各用了多少記憶體
+ *  （目前、這次開啟後最高），暫存資料夾多大。記憶體讀不到（不支援的作業系統）時是 null；不含網頁畫面。 */
+export interface Usage {
+  memory: number | null
+  peak: number | null
+  workers: number | null
+  workers_peak: number | null
+  staging: number
+}
+
+/** 訂閱 Python 推送的用量；回傳取消訂閱的函式。 */
+export function onUsage(listener: (usage: Usage | null) => void): () => void {
+  const state = window.pywebview?.state
+  if (!state) return () => {}
+  const handler = (event: Event) => {
+    const detail = (event as CustomEvent<{ key: string; value: unknown }>).detail
+    if (detail?.key === 'usage') listener((detail.value as Usage | null) ?? null)
   }
   state.addEventListener('change', handler)
   return () => state.removeEventListener('change', handler)

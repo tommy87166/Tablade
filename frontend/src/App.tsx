@@ -36,6 +36,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import {
   onProgress,
   onRun,
+  onUsage,
   type RunState,
   type SampledStep,
   waitForApi,
@@ -46,6 +47,7 @@ import {
   type SelftestResult,
   type TabladeApi,
   type UpdateInfo,
+  type Usage,
   type ViewState,
 } from './bridge'
 import { StepForm } from './components/form/StepForm'
@@ -60,6 +62,7 @@ import { StagesBar } from './components/StagesBar'
 import { StepsPanel } from './components/StepsPanel'
 import { TypesPane } from './components/TypesPane'
 import { UpdateNotice } from './components/UpdateNotice'
+import { UsageStatus } from './components/UsageStatus'
 
 type Status = { text: string; error?: boolean }
 
@@ -123,6 +126,8 @@ export default function App() {
   const [report, setReport] = useState<{ open: boolean; issues: Issue[]; text: string }>({ open: false, issues: [], text: '' })
   const [selftest, setSelftest] = useState<SelftestResult | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
+  /** Python 每 2 秒推送的記憶體與暫存資料夾用量（狀態列、進度視窗） */
+  const [usage, setUsage] = useState<Usage | null>(null)
   /** 進度視窗的狀態：每個階段與「準備檔案」「試跑」（Python 推送） */
   const [runState, setRunState] = useState<RunState | null>(null)
   const runStateRef = useRef<RunState | null>(null)
@@ -204,6 +209,7 @@ export default function App() {
       setApi(target)
       setInfo(ready)
       onProgress(setProgress)
+      onUsage(setUsage)
       onRun((value) => {
         runStateRef.current = value
         setRunState(value)
@@ -399,6 +405,7 @@ export default function App() {
       <span role="status" className={`min-w-0 flex-1 truncate ${status.error ? 'text-destructive' : 'text-muted-foreground'}`}>
         {status.text}
       </span>
+      {usage ? <UsageStatus usage={usage} /> : null}
       <span className="shrink-0 text-muted-foreground">
         Tablade {info.version}・Recipe {info.recipe_version}
       </span>
@@ -418,6 +425,7 @@ export default function App() {
           title={run.title}
           run={runState}
           progress={progress}
+          usage={usage}
           busy={busy}
           result={run.result}
           failed={run.failed}

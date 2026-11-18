@@ -54,6 +54,7 @@ from .ingest.sources import (
     check_entries,
     concat,
     expand,
+    release_workers,
     resolve,
     sample,
     scan_parts,
@@ -893,6 +894,8 @@ class Session:
             except BaseException:
                 tracker.fail()
                 raise
+            finally:
+                release_workers()  # 平行轉碼的工作程序：跑完就關掉，不用時不佔記憶體
 
     def _load_stage(
         self, stage: dict[str, Any], base: Path, multi: bool, tracker: StageTracker
@@ -1107,6 +1110,7 @@ class Session:
                 self._full[self.stages[index]["name"]] = (key, pl.read_parquet(target))
             finally:
                 target.unlink(missing_ok=True)
+                release_workers()
 
     # ── 給前端的畫面狀態 ─────────────────────────────────────────
 
@@ -1638,6 +1642,8 @@ class Session:
                 )
             except (InputError, DecodeError) as err:
                 raise SessionError(str(err)) from None
+            finally:
+                release_workers()  # 平行轉碼的工作程序：跑完就關掉，不用時不佔記憶體
             self.last_export = Path(report.output) if report.output else None
             when = datetime.now()
             for out in report.outputs:

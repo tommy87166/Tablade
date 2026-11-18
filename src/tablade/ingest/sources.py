@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import atexit
 import codecs
+import contextlib
 import glob
 import hashlib
 import io
@@ -33,6 +34,7 @@ from typing import Any
 import polars as pl
 
 from tablade.dtypes import type_label
+from tablade.usage import worker_memory
 
 from . import excel
 from .encoding import AUTO_ORDER, SUPPORTED, DecodeError
@@ -164,8 +166,23 @@ def staging_dir() -> Path:
 def staging_info() -> tuple[Path, int]:
     """這次開著的暫存資料夾（轉碼後的檔、處理中的暫存檔）與裡面的檔加起來多大（bytes）。"""
     folder = staging_dir()
-    size = sum(p.stat().st_size for p in folder.rglob("*") if p.is_file())
-    return folder, size
+    return folder, _folder_size(folder)
+
+
+def staging_size() -> int:
+    """暫存資料夾目前多大（bytes，畫面右下角定時顯示）；還沒建立時是 0，不會為了算大小去建資料夾。"""
+    folder = _staging
+    return _folder_size(folder) if folder is not None else 0
+
+
+def _folder_size(folder: Path) -> int:
+    """資料夾裡的檔加起來多大；處理中的暫存檔可能邊算邊被刪掉，找不到的就跳過。"""
+    total = 0
+    for root, _, names in os.walk(folder):
+        for name in names:
+            with contextlib.suppress(OSError):
+                total += os.stat(os.path.join(root, name)).st_size
+    return total
 
 
 def clear_staging() -> None:
@@ -300,18 +317,33 @@ def new_pool(workers: int) -> ProcessPoolExecutor:
 
 
 def _get_pool() -> ProcessPoolExecutor:
-    global _pool
+    """平行轉碼的工作程序：第一次要用時才開，載入、匯出跑完就關掉（``release_workers``）。"""
+    global _pool, _atexit_registered
     if _pool is None:
         _pool = new_pool(_workers())
-        atexit.register(_shutdown_pool)
+        if not _atexit_registered:
+            atexit.register(_shutdown_pool)
+            _atexit_registered = True
     return _pool
 
 
-def _shutdown_pool() -> None:
+_atexit_registered = False
+
+
+def _shutdown_pool(wait: bool = False) -> None:
     global _pool
     if _pool is not None:
-        _pool.shutdown(wait=False, cancel_futures=True)
+        _pool.shutdown(wait=wait, cancel_futures=True)
         _pool = None
+
+
+def release_workers() -> None:
+    """關掉平行轉碼的工作程序（「載入資料及預覽」「處理並匯出資料」跑完時）：不用時不佔記憶體
+    （8 個工作程序合計約 260 MB），下次要轉碼再開。關掉之前先讀一次它們用到多少（狀態列的「最高」）。"""
+    if _pool is None:
+        return
+    worker_memory()
+    _shutdown_pool(wait=True)
 
 
 def _line_of(path: Path, offset: int) -> int:

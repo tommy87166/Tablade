@@ -24,10 +24,11 @@ import polars as pl
 
 from . import __version__
 from .desktop import open_folder
-from .ingest.sources import staging_info
+from .ingest.sources import staging_info, staging_size
 from .recipe.schema import RECIPE_VERSION, RecipeError
 from .selftest import run_selftest
 from .session import Session, TrialError, catalog
+from .usage import process_memory, worker_memory
 
 DATA_TYPES = (
     "資料檔 (*.csv;*.txt;*.tsv;*.prn;*.dat;*.xlsx;*.xlsm;*.xls;*.parquet)",
@@ -36,6 +37,8 @@ DATA_TYPES = (
     "所有檔案 (*.*)",
 )
 RECIPE_TYPES = ("Tablade Recipe (*.json)", "所有檔案 (*.*)")
+USAGE_INTERVAL = 2.0
+"""每隔幾秒把記憶體與暫存資料夾的用量推給畫面（右下角、進度視窗）。"""
 
 
 def _wrap(fn: Callable[..., dict[str, Any]]) -> Callable[..., dict[str, Any]]:
@@ -72,9 +75,30 @@ class Api:
         self._progress_at = 0.0
         self._progress_stage: str | None = None
         self._session.progress = self._push_progress
+        self._closed = threading.Event()
 
     def _attach(self, window: Any) -> None:
         self._window = window
+        window.events.closed += self._closed.set
+        threading.Thread(target=self._usage_loop, daemon=True).start()
+
+    def _usage_loop(self) -> None:
+        """視窗開著的期間，每 USAGE_INTERVAL 秒推一次用量（處理中也會更新：不用等 Session 的鎖）。"""
+        while not self._closed.wait(USAGE_INTERVAL):
+            self._push_usage()
+
+    def _push_usage(self) -> None:
+        """主程序（Python＋Polars）、平行轉碼的工作程序各用了多少記憶體（目前、最高），暫存資料夾多大。"""
+        main, workers = process_memory(), worker_memory()
+        usage = {
+            "memory": main.current if main else None,
+            "peak": main.peak if main else None,
+            "workers": workers.current if workers else None,
+            "workers_peak": workers.peak if workers else None,
+            "staging": staging_size(),
+        }
+        with contextlib.suppress(Exception):  # 視窗還沒載入或關閉中
+            self._window.state.usage = usage
 
     def _push_progress(self, progress: dict[str, Any] | None) -> None:
         """讀檔、轉碼、匯出的進度推給前端（pywebview 的 window.state；最多每 0.2 秒一次）。"""

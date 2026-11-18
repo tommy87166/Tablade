@@ -6,7 +6,7 @@
  * 用假資料跑過範例 recipe 的真實畫面狀態，鍵是「階段:步驟」。切換階段、選取步驟會切換畫面；其他修改只回傳目前的狀態。
  * 看多個階段：`uv run python scripts/gen_frontend_dev_data.py --recipe sales_combined`。
  */
-import type { Cell, ColumnsInfo, Progress, ReadyInfo, RowsPage, RunState, TabladeApi, ViewState } from './bridge'
+import type { Cell, ColumnsInfo, Progress, ReadyInfo, RowsPage, RunState, TabladeApi, Usage, ViewState } from './bridge'
 
 interface Sample {
   ready: { ok: true } & ReadyInfo
@@ -78,6 +78,20 @@ const pushProgress = (value: Progress | null) =>
   progressState.dispatchEvent(new CustomEvent('change', { detail: { key: 'progress', value } }))
 const pushRun = (value: RunState | null) => progressState.dispatchEvent(new CustomEvent('change', { detail: { key: 'run', value } }))
 
+/** 假的用量（跟 Python 一樣每 2 秒推一次）：處理中主程序變大、轉碼的工作程序開著；處理完工作程序關掉，最高值留著。 */
+const MB = 1024 * 1024
+let busyRun = false
+let peak = 0
+let workersPeak = 0
+function pushUsage() {
+  const memory = (busyRun ? 1400 + Math.random() * 900 : 380 + Math.random() * 30) * MB
+  const workers = busyRun ? (230 + Math.random() * 30) * MB : 0
+  peak = Math.max(peak, memory)
+  workersPeak = Math.max(workersPeak, workers)
+  const usage: Usage = { memory, peak, workers, workers_peak: workersPeak, staging: (busyRun ? 310 : 300) * MB }
+  progressState.dispatchEvent(new CustomEvent('change', { detail: { key: 'usage', value: usage } }))
+}
+
 /** 假的進度視窗：先跑 phases（例如匯出的「準備檔案」「試跑」），再讓每個階段依序轉圈、打勾（列數用預覽的列數）。 */
 async function fakeStages(perStage: (index: number, run: RunState) => Promise<void>, phases: string[] = []) {
   const stages = current().stages
@@ -114,12 +128,14 @@ async function fakeStages(perStage: (index: number, run: RunState) => Promise<vo
 /** 重播錄下來的進度：時間拉長到看得清楚（每則至少 150 毫秒、最多 600 毫秒）。 */
 async function replay(run: RecordedRun) {
   let last = 0
+  busyRun = true
   for (const [t, event] of run.events) {
     await delay(null, Math.min(Math.max((t - last) * 1000, 150), 600))
     last = t
     if (event.stages) pushRun({ stages: event.stages, phases: event.phases ?? [] })
     else pushProgress(event)
   }
+  busyRun = false
   pushProgress(null)
 }
 
@@ -280,4 +296,8 @@ export const mockApi: TabladeApi = sample
   : (new Proxy({}, { get: (_, name) => (name === 'ready' ? fail : fail) }) as TabladeApi)
 
 // App 從 window.pywebview.state 收進度（bridge.ts 的 onProgress）
-if (sample) window.pywebview = { api: mockApi, state: progressState }
+if (sample) {
+  window.pywebview = { api: mockApi, state: progressState }
+  window.setTimeout(pushUsage, 700) // App 訂閱之後
+  window.setInterval(pushUsage, 2000)
+}

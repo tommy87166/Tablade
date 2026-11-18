@@ -8,15 +8,18 @@
  *   完成打勾、失敗紅叉；處理中那一列的下面寫細節（已處理幾個檔、試跑到第幾個階段）。
  * - 匯出跑完後留著當結果摘要，按「關閉」才收起來；試跑出錯時可以「前往這一步」。
  *
- * 狀態由 Python 推送（bridge.ts 的 onRun、onProgress）。背景不模糊（還是不能點：Python 正在忙）。
+ * - 左下角是記憶體與暫存資料夾的用量（跟狀態列一樣，滑鼠移上去看最高用到多少）。
+ *
+ * 狀態由 Python 推送（bridge.ts 的 onRun、onProgress、onUsage）。背景不模糊（還是不能點：Python 正在忙）。
  */
 import { Check, Loader2, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import type { Progress, RunState, StageRun } from '../bridge'
+import type { Progress, RunState, StageRun, Usage } from '../bridge'
 import { formatAmount, formatElapsed } from '../lib/format'
+import { UsageStatus } from './UsageStatus'
 
 export function StageRunIcon({ status, className = 'size-3.5' }: { status: StageRun['status']; className?: string }) {
   if (status === 'running') return <Loader2 className={`${className} shrink-0 animate-spin text-primary`} aria-label="處理中" />
@@ -33,6 +36,8 @@ interface Props {
   title: string
   run: RunState
   progress: Progress | null
+  /** 記憶體與暫存資料夾的用量（還沒收到時是 null） */
+  usage: Usage | null
   busy: boolean
   /** 跑完後的摘要（例如匯出到哪裡、幾列） */
   result?: string
@@ -62,7 +67,7 @@ function statusText(row: Row) {
   return '完成'
 }
 
-export function RunDialog({ title, run, progress, busy, result, failed, error, onClose }: Props) {
+export function RunDialog({ title, run, progress, usage, busy, result, failed, error, onClose }: Props) {
   const [start] = useState(() => Date.now())
   const [elapsed, setElapsed] = useState(0)
   useEffect(() => {
@@ -143,6 +148,7 @@ export function RunDialog({ title, run, progress, busy, result, failed, error, o
         ) : null}
         {result ? <p className="text-sm break-all">{result}</p> : null}
         <DialogFooter>
+          {usage ? <UsageStatus usage={usage} className="mr-auto self-center text-xs" /> : null}
           <Button onClick={onClose} disabled={busy}>
             {busy ? '處理中…' : '關閉'}
           </Button>

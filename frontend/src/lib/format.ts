@@ -1,4 +1,4 @@
-/** 進度的數字格式（進度視窗用）。 */
+/** 進度與用量的數字格式（進度視窗、右下角）。 */
 import type { Progress } from '../bridge'
 
 export function formatBytes(n: number) {
@@ -22,4 +22,9 @@ export function formatElapsed(seconds: number) {
   return m >= 60
     ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}:${String(s).padStart(2, '0')}`
     : `${m}:${String(s).padStart(2, '0')}`
+}
+
+/** 用量的大小：0 寫成「0 MB」，其他同 formatBytes。 */
+export function formatSize(n: number) {
+  return n === 0 ? '0 MB' : formatBytes(n)
 }
