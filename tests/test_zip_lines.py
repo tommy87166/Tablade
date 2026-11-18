@@ -158,8 +158,8 @@ def test_scan_problems_block_loading(tmp_path, monkeypatch):
     )
 
 
-def test_deflate64_without_the_package_is_reported(tmp_path, monkeypatch):
-    """Deflate64 的檔：沒裝套件時掃描就標出來（不會讀到一半才失敗）。"""
+def test_deflate64_method_without_the_module(tmp_path, monkeypatch):
+    """標成 Deflate64 的檔：沒有 Rust 模組時掃描就標出來（不會讀到一半才失敗）。"""
     monkeypatch.setattr(zip_lines, "deflate64_available", lambda: False)
     path = make_zip(tmp_path / "big.zip", {"a/HEADER.TXT": b"x\r\n"}, zipfile.ZIP_STORED)
     patch_method(path, zip_lines.DEFLATE64)
@@ -369,25 +369,76 @@ def test_members_are_validated():
     )
 
 
-def test_deflate64_is_read_when_the_package_is_installed(tmp_path):
-    """Deflate64 的檔：從目錄記的位置讀出壓縮過的原始位元組交給 inflate64，讀出來和原本一樣、核對 CRC。"""
-    inflate64 = pytest.importorskip("inflate64")
-    import zlib
+needs_native = pytest.mark.skipif(
+    not zip_lines.deflate64_available(),
+    reason="沒有 Rust 模組（uv sync --group native）",
+)
 
-    raw = ("\r\n".join(report_lines(seed=7, sections=2, entries=200)) + "\r\n").encode("cp950")
-    deflater = inflate64.Deflater()
-    packed = deflater.deflate(raw) + deflater.flush()
-    path = make_zip(tmp_path / "d64.zip", {"a/HEADER.TXT": packed}, zipfile.ZIP_STORED)
-    data = bytearray(path.read_bytes())
-    for signature, method_at, crc_at in ((b"PK\x03\x04", 8, 14), (b"PK\x01\x02", 10, 16)):
-        i = data.find(signature)
-        data[i + method_at : i + method_at + 2] = zip_lines.DEFLATE64.to_bytes(2, "little")
-        data[i + crc_at : i + crc_at + 4] = zlib.crc32(raw).to_bytes(4, "little")
-        data[i + crc_at + 8 : i + crc_at + 12] = len(raw).to_bytes(4, "little")  # 解開後大小
-    path.write_bytes(bytes(data))
-    member = zip_lines.matching(path, "a/*")[0]
+
+@needs_native
+def test_deflate64_zip_reads_the_same_as_the_original(tmp_path, monkeypatch):
+    """Deflate64 的 zip（Rust 模組解）：讀出來的行、行號、行數和原檔一樣；切成很多段也一樣。"""
+    from tablade.fixtures import DEFLATE64_MEMBER, deflate64_lines, write_deflate64_zip
+
+    monkeypatch.setattr(sources, "ZIP_SEGMENT", 4096)
+    path = write_deflate64_zip(tmp_path / "d64.zip")
+    member = zip_lines.matching(path, DEFLATE64_MEMBER)[0]
     assert member.method == zip_lines.DEFLATE64 and member.problem() is None
-    with zip_lines.open_member(member) as stream:
-        assert stream.read() == raw
-    got, found = read(tmp_path, ["d64.zip"], "a/*")
-    assert found[0].encoding == "cp950" and got.height == raw.count(b"\n")
+    assert zip_lines.method_name(member.method) == "Deflate64"
+    got, found = read(tmp_path, ["d64.zip"], "**/*.TXT")
+    assert got["line"].to_list() == deflate64_lines()
+    assert got["__line_no"].to_list() == list(range(1, len(deflate64_lines()) + 1))
+    assert found[0].encoding == "cp950" and found[0].bytes == member.size
+
+
+@needs_native
+def test_deflate64_in_parallel_matches_single_core(tmp_path):
+    from tablade.fixtures import DEFLATE64_MEMBER, write_deflate64_zip
+
+    path = write_deflate64_zip(tmp_path / "d64.zip", entries=1500)
+    member = zip_lines.matching(path, DEFLATE64_MEMBER)[0]
+    single = sources._stage_member(member, "d64", "cp950", tmp_path / "s", None, segment=8192)
+    pool = sources.new_pool(2)
+    try:
+        parallel = sources._stage_member(
+            member, "d64", "cp950", tmp_path / "p", None, pool=pool, segment=8192
+        )
+    finally:
+        pool.shutdown(wait=True)
+    as_lines = lambda files: pl.scan_parquet(list(files)).collect()["line"]  # noqa: E731
+    assert len(parallel[1]) > 1 and as_lines(parallel[1]).equals(as_lines(single[1]))
+    assert parallel[0] == single[0] and parallel[2] == single[2]
+
+
+@needs_native
+def test_damaged_deflate64_is_reported(tmp_path):
+    """Deflate64 的內容壞了、或 CRC 不符：都是「zip 可能壞了」。"""
+    from tablade.fixtures import write_deflate64_zip
+
+    path = write_deflate64_zip(tmp_path / "d64.zip")
+    data = bytearray(path.read_bytes())
+    start = data.find(b"PK\x03\x04") + 30 + len("202601/HEADER_001.TXT")
+    data[start : start + 4] = b"\xff\xff\xff\xff"  # 第一個區塊的標頭（BTYPE=11 是保留值）
+    path.write_bytes(bytes(data))
+    with pytest.raises(InputError, match="zip 可能壞了"):
+        read(tmp_path, ["d64.zip"], "**/*.TXT", encoding="cp950")
+    ok = write_deflate64_zip(tmp_path / "crc.zip")
+    data = bytearray(ok.read_bytes())
+    for signature, at in ((b"PK\x03\x04", 14), (b"PK\x01\x02", 16)):
+        i = data.find(signature)
+        data[i + at : i + at + 4] = b"\x00\x00\x00\x00"
+    ok.write_bytes(bytes(data))
+    with pytest.raises(InputError, match="zip 可能壞了"):
+        read(tmp_path, ["crc.zip"], "**/*.TXT", encoding="cp950")
+
+
+def test_deflate64_without_the_module_is_reported(tmp_path, monkeypatch):
+    """沒有 Rust 模組時（開發環境沒有編）：掃描就標出來，不能載入。"""
+    from tablade.fixtures import write_deflate64_zip
+
+    monkeypatch.setattr(zip_lines, "native_module", lambda: None)
+    write_deflate64_zip(tmp_path / "d64.zip")
+    problems = scan_zips(["d64.zip"], "**/*.TXT", tmp_path).problems("**/*.TXT")
+    assert len(problems) == 1 and "沒有 Deflate64 的模組" in problems[0]
+    with pytest.raises(InputError, match="沒有 Deflate64 的模組"):
+        read(tmp_path, ["d64.zip"], "**/*.TXT")

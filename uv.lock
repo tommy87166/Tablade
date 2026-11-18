@@ -2,6 +2,12 @@ version = 1
 revision = 3
 requires-python = ">=3.12"
 
+[manifest]
+members = [
+    "tablade",
+    "tablade-native",
+]
+
 [[package]]
 name = "altgraph"
 version = "0.17.5"
@@ -860,6 +866,9 @@ icons = [
     { name = "pillow" },
     { name = "resvg-py" },
 ]
+native = [
+    { name = "tablade-native" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -880,6 +889,12 @@ icons = [
     { name = "pillow", specifier = "==13.0.*" },
     { name = "resvg-py", specifier = "==0.5.*" },
 ]
+native = [{ name = "tablade-native", editable = "native" }]
+
+[[package]]
+name = "tablade-native"
+version = "0.1.0"
+source = { editable = "native" }
 
 [[package]]
 name = "typing-extensions"

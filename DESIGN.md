@@ -54,7 +54,7 @@
 | 打包 | PyInstaller 6.x（`--onefile`，備案 `--onedir`） | 跨平台、成熟 |
 | 套件管理 | uv（`uv.lock` 鎖定所有版本） | 開發、CI、打包用同一份鎖定檔 |
 | CI | GitHub Actions（Windows / macOS matrix） | 自動產出可下載的執行檔 |
-| 授權 | MIT | 依賴套件：Polars MIT、pywebview BSD、fastexcel MIT、PyInstaller GPL + bootloader exception（散布打包後的程式沒有問題） |
+| 授權 | MIT | 依賴套件：Polars MIT、pywebview BSD、fastexcel MIT、PyInstaller GPL + bootloader exception（散布打包後的程式沒有問題）；Rust 模組用的 deflate64 MIT、PyO3 MIT（授權條文在 native/LICENSES/，也放進 App） |
 
 **為什麼不選 Tauri / Electron**：Python 本身就要整包打包進去，Tauri 外殼小的優勢沒有意義，還要另外處理兩支程式之間的溝通；Electron 會多出 100MB 以上的 Chromium。
 
@@ -198,13 +198,13 @@ CSV 不改成 Parquet：Polars 讀 CSV 一定要一整份檔，不管轉碼怎�
 
 1. 掃描（載入之前，畫面上馬上列出；12 個 zip 也是幾毫秒）：用 `files` 找出 zip，只讀每個 zip 尾端的目錄（不解壓），整理 zip 裡的路徑（`\` 換成 `/`、拿掉 `./`、資料夾項目不算；沒標 UTF-8 的檔名依序試 UTF-8 → cp950 → cp437），用 `members` 比對完整路徑（不分大小寫，`*` 不跨 `/`，`**` 是任何層數的資料夾）。每個符合的檔記大小、壓縮方式、有沒有密碼，並估計暫存空間（寫好的 Parquet 用「解開後大小 ÷ 5」估，加上轉碼途中的文字段：最多「工作程序數 × 2」段在路上，加上等著合寫成一個 Parquet 的 8 段），跟暫存資料夾所在磁碟剩下的空間比。
 2. 先擋下（不能載入、匯出，原因寫在按鈕的提示與讀取資料的面板）：有密碼、不支援的壓縮方式、所有 zip 都沒有符合的檔、暫存空間不夠。**某個 zip 沒有符合的檔只是略過**，掃描清單標黃色，處理紀錄的 `archives_without_matches` 記下來。
-3. 每個檔用哪種方式解壓，看 zip 目錄裡那個檔自己記的壓縮方式：不壓縮、Deflate、bzip2、LZMA 用 `zipfile`；Deflate64 從目錄記的位置讀出壓縮過的原始位元組，交給 `inflate64` 套件（沒有裝時掃描就標成不支援）。同一個 zip 裡可能混著用。
+3. 每個檔用哪種方式解壓，看 zip 目錄裡那個檔自己記的壓縮方式：不壓縮、Deflate、bzip2、LZMA 用 `zipfile`；Deflate64 從目錄記的位置讀出壓縮過的原始位元組，交給專案自己的 Rust 模組 `tablade_native`（`native/`，包 deflate64 crate；開發環境沒有編時掃描就標成不支援，發布的 App 一定有）。解壓在另一條執行緒先做（Rust 解壓時放開全域鎖），主程序同時切段、寫暫存。同一個 zip 裡可能混著用。不用 Python 的套件：inflate64 的記憶體會隨讀過的壓縮資料一路變大，stream-inflate 太慢（native/README.md）。
 4. 解壓與轉碼（`_stream_segments`）：主程序依序解壓（同一個檔只能從頭依序解），約每 4 MB 在換行後面切段（`\n`，或後面不是 `\n` 的 `\r`），把那一段的位元組交給工作程序轉成 UTF-8 文字小檔（`transcode.transcode_bytes`），主程序照順序每 8 段合寫成一個 Parquet 並刪掉那些文字段（`_write_lines`，8 × 4 MB 約等於一般檔的一段）。同時在路上的段最多「工作程序數 × 2」個；比較小的檔或開不了工作程序時主程序自己依序轉。段比一般檔的 32 MB 小：段是用位元組在程序之間傳的，實測每段 16 MB、8 MB 時工作程序合計最高約 2.6 GB（大塊記憶體釋放後 macOS 的配置器留著不還），4 MB 時約 550 MB，速度一樣。
 5. 編碼：`auto` 時先當 UTF-8 一邊解壓一邊寫暫存，**UTF-8 的檔只解壓一遍**；遇到不合 UTF-8 的位元組就丟掉已寫的暫存，用 cp950 從頭再解壓一遍。指定了編碼就只解壓一遍。每段記著它之前有幾個換行，轉不了時直接算出第幾行。
 6. 同時算解開後內容的 SHA-256；讀到結尾時核對 CRC（不符是「zip 可能壞了」）。zip 本身的 SHA-256 另開一條執行緒跟著讀，同一個 zip 只算一次。
 7. 來源的名稱是「zip 的路徑/zip 裡的路徑」（例如 `data/2026-01.zip/202601/HEADER_001.TXT`），依 zip 清單的順序、同一個 zip 裡依路徑排。處理紀錄的 `inputs[]` 多 `archive`（zip 本身的路徑、大小、SHA-256），`bytes`、`sha256` 是解開後的內容。
 8. 快取的 key：zip 的路徑＋大小＋修改時間、zip 裡的路徑＋CRC＋壓縮後大小、編碼。
-9. 實測：2 個 zip，各有一個約 1 GB 的 cp950 分段報表（共 3,696 萬行），準備檔案 3.8 秒、暫存最高 0.34 GB、轉完 0.16 GB，工作程序合計約 550 MB；串流匯出 24 秒，和讀解開後的檔一樣（improve.md 第 11 項）。
+9. 實測：2 個 zip，各有一個約 1 GB 的 cp950 分段報表（共 3,696 萬行），準備檔案 3.8 秒、暫存最高 0.34 GB、轉完 0.16 GB，工作程序合計約 550 MB；串流匯出 24 秒，和讀解開後的檔一樣。Deflate64 的 1 GB 檔準備 3.1 秒（improve.md 第 11 項）。
 
 **快取與清理**
 
@@ -442,6 +442,7 @@ CSV 不改成 Parquet：Polars 讀 CSV 一定要一整份檔，不管轉碼怎�
   - 單一執行檔每次啟動會先解壓縮到暫存資料夾（Windows 的 `%TEMP%\_MEI…`），可能比較慢、可能被防毒軟體誤判，也可能被 AppLocker 擋。
   - 實測參考：Linux 上 Python 3.13 + Polars 2.1 的最小 onefile 約 64MB，啟動約 0.9 秒。加上 pywebview、fastexcel 和前端後，預估 70 到 100MB。
 - 前端 build 好的 `frontend/dist/index.html` 以 `datas` 打包；程式內用 `sys._MEIPASS` 取得路徑。
+- **Rust 模組**（`native/`，解 zip 裡的 Deflate64）：uv 的 workspace 成員、dependency group `native`，用 maturin 編成 abi3 的擴充模組。開發時可以不裝 Rust（`uv sync` 預設不編）；發布的 App 一定要有：`scripts/build.py` 先確認 `import tablade_native` 成功，`tablade.spec` 明寫 `hiddenimports`，用到的 crate 的授權條文（`native/LICENSES/`）放進 App 的 `licenses/`。CI 的 test、build 都先用 rustup 裝固定版本的 Rust，再 `uv sync --frozen --group native`。
 - `examples/*.recipe.json` 全部打包（`tablade.spec` 用 glob 找，`gui --smoke` 與 AI skill 的 `references/examples/` 用；`scripts/build.py` 檢查 skill 裡每個範例都在），`recipe/validator.py` 原始碼另外打包（§17.7）。
 - Windows：pywebview 使用 Edge WebView2（Win10/11 通常已內建）。
 - macOS：未簽章，第一次開啟要按右鍵 →「打開」，或執行 `xattr -dr com.apple.quarantine`。PyInstaller 不支援 macOS 的 onefile `.app`，所以 macOS 只發布 `Tablade.app`（onedir 包成 App）。
@@ -512,6 +513,7 @@ CSV 不改成 Parquet：Polars 讀 CSV 一定要一整份檔，不管轉碼怎�
    - 禁止 `eval` / `exec` / `compile` / `__import__` / `importlib.import_module`（呼叫、取別名、從 `builtins` 取都算）。
    - 呼叫外部程式（`subprocess`、`os.system`、`os.startfile` 等）只有 `src/tablade/desktop.py` 可以（用系統的程式開啟本機資料夾）。
    - Polars 的 `read_*` / `scan_*` 不能讀網址（字串裡有 `://`）或雲端（`storage_options`）。
+   - Rust 模組（`native/`）：依賴只能是 `pyo3`、`deflate64`，版本固定（`=x.y.z`），不能從 git 或本機路徑來；不能有 `build.rs`、`build-dependencies`、`dev-dependencies`；`.rs` 不能用 `std::net`、`std::process`、`unsafe`，`lib.rs` 要有 `#![forbid(unsafe_code)]`；`Cargo.lock` 要進版控。
    - 這是把關的工具、不是沙箱：刻意繞過（例如拼字串再 `getattr`）擋不住，也不檢查第三方套件。
 5. README 明確寫出：「本 repo 不含、也不得含任何真實資料」。
 6. issue、PR、commit 訊息同樣不得貼上真實資料或真實檔名；回報問題時用 `gen_fixtures.py` 產生的假資料重現。

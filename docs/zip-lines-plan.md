@@ -1,6 +1,6 @@
 # 讀 zip 裡的文字檔（逐行讀取）
 
-- 狀態：**已實作**（2026-11-18），Deflate64 的套件還沒加（程式已經支援，裝了就能讀；加依賴要先確認）。現在的做法以 DESIGN.md §5.4 第 4 項為準。
+- 狀態：**已實作**（2026-11-18）。Deflate64 改用專案自己的 Rust 模組（docs/native-deflate64-plan.md、native/README.md），2026-11-19 完成。現在的做法以 DESIGN.md §5.4 第 4 項為準。
 - 相關：轉碼後的暫存改存 Parquet（docs/parquet-staging-plan.md、DESIGN.md §5.4），這次直接沿用那條流程。
 
 ## 背景

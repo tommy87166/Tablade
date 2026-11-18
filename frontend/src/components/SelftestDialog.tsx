@@ -19,6 +19,7 @@ function versions(): Record<string, [string, string]> {
     polars: ['Polars', tr('資料處理引擎', 'Data processing engine')],
     fastexcel: ['fastexcel', tr('讀 Excel 的引擎', 'Excel reader')],
     pydantic: ['pydantic', tr('檢查步驟參數', 'Validates step parameters')],
+    tablade_native: [tr('Rust 模組', 'Rust module'), tr('解 zip 裡的 Deflate64', 'Reads Deflate64 in zips')],
     platform: [tr('作業系統', 'OS'), ''],
     frozen: [tr('執行方式', 'Running as'), ''],
   }

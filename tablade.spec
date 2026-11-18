@@ -31,8 +31,11 @@ a = Analysis(
         ("frontend/dist/index.html", "frontend/dist"),
         *[(path, "examples") for path in EXAMPLES],
         ("src/tablade/recipe/validator.py", "skill"),
+        # Rust 模組用到的 crate 的授權條文（native/LICENSES/）
+        ("native/LICENSES/*", "licenses"),
     ],
-    hiddenimports=[],
+    # Rust 模組（解 zip 裡的 Deflate64）：zip_lines 在函式裡才 import，明寫才不會漏掉
+    hiddenimports=["tablade_native"],
     excludes=["tkinter", "unittest", "pydoc", "pytest"],
     noarchive=False,
 )

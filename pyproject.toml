@@ -30,11 +30,20 @@ dev = [
     "pre-commit==4.7.*",
     "pyinstaller==6.22.*",
 ]
+# Rust 模組（解 zip 裡的 Deflate64，native/）：要裝 Rust 才編得出來，所以不是預設的 group。
+# 發布的 App 一定要有（scripts/build.py 會檢查）：uv sync --group native
+native = ["tablade-native"]
 # 只有修改 assets/icon.svg 後重新產生圖示時需要：uv run --group icons python scripts/make_icons.py
 icons = [
     "resvg-py==0.5.*",
     "pillow==13.0.*",
 ]
+
+[tool.uv.workspace]
+members = ["native"]
+
+[tool.uv.sources]
+tablade-native = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

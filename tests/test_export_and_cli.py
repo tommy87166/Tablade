@@ -47,7 +47,7 @@ def test_cli_selftest_writes_json(tmp_path, capsys):
 def test_selftest_reports_each_check():
     result = run_selftest()
     assert result["ok"], result
-    assert len(result["checks"]) == 8
+    assert len(result["checks"]) == 9
     assert all(c["purpose"] and c["ran"] for c in result["checks"])
     assert (
         result["checks"][-1]["detail"] == "2 個 cp950 檔 → 合併成 70 列，與預期一致；處理紀錄正確"
@@ -93,7 +93,7 @@ def test_selftest_marks_checks_after_a_failure_as_not_run(monkeypatch):
 
     monkeypatch.setattr(selftest, "write_simple_csv", broken)
     result = run_selftest()
-    assert not result["ok"] and len(result["checks"]) == 8
+    assert not result["ok"] and len(result["checks"]) == 9
     assert result["checks"][0]["ran"] and not result["checks"][0]["ok"]
     assert not any(c["ran"] for c in result["checks"][1:])
 
@@ -114,3 +114,30 @@ def test_report_has_sections():
     assert sum(line.startswith("門市：") for line in lines) == 2
     assert sum("小計" in line for line in lines) == 2
     assert "" in lines  # 空行要保留，行號才會對得上
+
+
+def deflate64_check(result: dict) -> dict:
+    return next(c for c in result["checks"] if c["name"] == "解 Deflate64（Rust 模組）")
+
+
+def test_selftest_extracts_deflate64_with_the_rust_module():
+    pytest.importorskip("tablade_native", reason="沒有 Rust 模組（uv sync --group native）")
+    result = run_selftest()
+    check = deflate64_check(result)
+    assert check["ok"] and "tablade_native" in check["detail"] and "deflate64" in check["detail"]
+    assert result["versions"]["tablade_native"].startswith("0.")
+
+
+def test_selftest_without_the_rust_module(monkeypatch):
+    """原始碼執行沒有模組時是「略過」（通過）；打包好的 App 沒有模組時失敗。"""
+    import sys
+
+    from tablade.ingest import zip_lines
+
+    monkeypatch.setattr(zip_lines, "native_module", lambda: None)
+    result = run_selftest()
+    assert deflate64_check(result)["ok"] and "略過" in deflate64_check(result)["detail"]
+    assert result["versions"]["tablade_native"] == "沒有"
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    result = run_selftest()
+    assert not result["ok"] and "沒有 Deflate64 的模組" in deflate64_check(result)["detail"]

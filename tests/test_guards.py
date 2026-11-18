@@ -175,3 +175,38 @@ def test_only_update_module_may_use_urllib(check_code_policy):
 
 def test_src_follows_code_policy(check_code_policy):
     assert check_code_policy.main(["src"]) == 0
+
+
+def test_native_module_follows_code_policy(check_code_policy):
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    assert check_code_policy.check_native(root / "native") == []
+
+
+def test_native_policy_rejects(check_code_policy, tmp_path):
+    """Rust 模組：不能加別的依賴、版本要固定、不能有 build.rs、不能用網路／外部程式／unsafe。"""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "Cargo.toml").write_text(
+        '[package]\nname = "x"\n[dependencies]\npyo3 = "0.30"\nreqwest = "=1.0.0"\n'
+        '[build-dependencies]\ncc = "=1.0.0"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "build.rs").write_text("fn main() {}", encoding="utf-8")
+    (tmp_path / "src" / "lib.rs").write_text(
+        "use std::net::TcpStream;\nfn f() { unsafe { } }\nfn g() { std::process::exit(0) }\n",
+        encoding="utf-8",
+    )
+    problems = "\n".join(check_code_policy.check_native(tmp_path))
+    for expected in (
+        "reqwest",
+        "版本要固定",
+        "build-dependencies",
+        "build.rs",
+        "Cargo.lock",
+        "std::net",
+        "unsafe",
+        "std::process",
+        "forbid(unsafe_code)",
+    ):
+        assert expected in problems, expected

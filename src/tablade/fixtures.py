@@ -11,6 +11,7 @@ import io
 import random
 import unicodedata
 import zipfile
+import zlib
 from datetime import date
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -494,6 +495,44 @@ def write_zip_months(directory: str | Path, seed: int = 0) -> list[Path]:
             z.writestr(_zip_entry("readme.pdf"), b"%PDF-1.4 fake")
         written.append(target)
     return written
+
+
+DEFLATE64_MEMBER = "202601/HEADER_001.TXT"
+"""``write_deflate64_zip`` 寫的那個檔在 zip 裡的路徑。"""
+
+
+def deflate64_lines(seed: int = 0, entries: int = 400) -> list[str]:
+    """``write_deflate64_zip`` 裡那個檔的各行（分段報表，和 ``銷售報表.txt`` 同一種格式）。"""
+    return sectioned_report(seed, sections=3, entries=entries)[0]
+
+
+def write_deflate64_zip(path: str | Path, seed: int = 0, entries: int = 400) -> Path:
+    """一個 Deflate64 壓縮的 zip（Windows 檔案總管壓縮大檔時可能用這種），裡面是 cp950 的分段報表。
+
+    標準函式庫寫不出 Deflate64：用 zlib 的「只用 Huffman、不做重複比對」（``Z_HUFFMAN_ONLY``）壓縮，
+    這樣的資料同時也是合法的 Deflate64（Deflate64 只改了長度 258 的寫法與更遠的距離，不比對就用不到）。
+    先寫成不壓縮的項目，再把本機標頭與中央目錄的壓縮方式改成 9、CRC 與解開後大小改成原文的。
+    """
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    raw = _crlf(deflate64_lines(seed, entries), "cp950")
+    packer = zlib.compressobj(6, zlib.DEFLATED, -15, 9, zlib.Z_HUFFMAN_ONLY)
+    packed = packer.compress(raw) + packer.flush()
+    info = zipfile.ZipInfo(DEFLATE64_MEMBER, date_time=XLSX_TIME)
+    info.compress_type = zipfile.ZIP_STORED
+    with zipfile.ZipFile(target, "w") as z:
+        z.writestr(info, packed)
+    data = bytearray(target.read_bytes())
+    for signature, method_at, crc_at, size_at in (
+        (b"PK\x03\x04", 8, 14, 22),
+        (b"PK\x01\x02", 10, 16, 24),
+    ):
+        i = data.find(signature)
+        data[i + method_at : i + method_at + 2] = (9).to_bytes(2, "little")
+        data[i + crc_at : i + crc_at + 4] = zlib.crc32(raw).to_bytes(4, "little")
+        data[i + size_at : i + size_at + 4] = len(raw).to_bytes(4, "little")
+    target.write_bytes(bytes(data))
+    return target
 
 
 def _crlf(lines: list[str], encoding: str) -> bytes:

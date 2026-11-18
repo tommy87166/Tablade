@@ -214,10 +214,11 @@ Windows（CI）：onefile 壓縮後 68.7 MB。已在權限受管控的公司電�
 
 ## 🛠️ 開發
 
-需要 [uv](https://docs.astral.sh/uv/) 與 Node.js 24 以上。
+需要 [uv](https://docs.astral.sh/uv/) 與 Node.js 24 以上。要讀 zip 裡 Deflate64 壓縮的檔、或打包要發布的版本，另外需要 [Rust](https://rustup.rs/)（`uv sync --group native` 編出 `native/` 的模組，見 [native/README.md](native/README.md)；用到的 crate 都是 MIT 授權，條文在 `native/LICENSES/`，也放進 App）；只開發其他功能時可以不裝。
 
 ```bash
 uv sync                                              # 依 uv.lock 建立虛擬環境
+uv sync --group native                               # 另外編 Rust 模組（解 zip 裡的 Deflate64；要裝 Rust）
 npm --prefix frontend ci                             # 安裝前端依賴
 npm --prefix frontend run build                      # build 出 frontend/dist/index.html（開視窗前必做）
 uv run pre-commit install                            # 安裝資料防護 hook（必做）
@@ -321,7 +322,7 @@ tablade.spec          PyInstaller 設定（以 TABLADE_BUILD 切換 onefile / on
   資料 pane 會標「抽樣模式」，前面有移除重複、群組彙總、樞紐這類要看整個檔的步驟時另外標紅色的「警告：預覽結果可能不正確」（滑鼠移上去列出是哪幾步）；匯出時會串流處理全部資料，進度視窗顯示處理到第幾行與百分比，匯出後「輸出資料」改成讀匯出檔，標「完整模式」。串流匯出只回報最後的列數，警告也只算最後還留著的列。群組彙總、樞紐的預覽也是用樣本算的（樞紐要變成欄的值從預覽的資料讀出，匯出時資料裡多出來的值會產生警告）。
 - **非 UTF-8 的檔案會先轉碼成暫存檔**（cp950 單核心約每秒 230 MB；64 MB 以上的檔用多個程序同時轉，最多 8 個，結果和單核心相同）。逐行讀取（`text_lines`）的暫存是壓縮過的 Parquet，大約只要原檔的 1/10 的暫存空間；`csv` 的暫存是一整份 UTF-8 文字，需要約原檔 1.5 倍（大檔請盡量用逐行讀取）。暫存在關閉視窗時刪除；當掉或被強制結束時留下的副本，下次啟動 Tablade 時清掉。
 - **`csv` 模式的行號假設沒有跨行欄位**；有跨行欄位的檔案請用 `text_lines`。
-- **zip 只支援裡面的文字檔（`zip_lines`，逐行讀取）**：不用先解壓縮，`members` 寫 zip 裡要讀的檔（例如 `2026*/HEADER*.TXT`）。CSV、Excel 要先解壓縮；有密碼的 zip、zip 裡的 zip、7z、rar 不支援；Deflate64 壓縮的檔需要另外的套件。
+- **zip 只支援裡面的文字檔（`zip_lines`，逐行讀取）**：不用先解壓縮，`members` 寫 zip 裡要讀的檔（例如 `2026*/HEADER*.TXT`）。CSV、Excel 要先解壓縮；有密碼的 zip、zip 裡的 zip、7z、rar 不支援。Deflate64（Windows 檔案總管壓縮大檔時可能用）由內建的 Rust 模組解開。
 - **onefile 啟動較慢**：每次啟動都要先解壓縮；部分防毒軟體或 AppLocker 會擋暫存資料夾裡的程式。Windows 只發布 onefile，遇到這種情況請用 `uv run python scripts/build.py onedir` 另外打包 onedir 版。
 - **執行檔未簽章**：macOS 會出現 Gatekeeper、Windows 會出現 SmartScreen 提示。
 - **macOS 版只支援 Apple Silicon（arm64）。**

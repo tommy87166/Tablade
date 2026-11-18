@@ -33,7 +33,7 @@ Tablade：本機執行、Power Query 式的資料清洗工具（Python + Polars 
 - 不使用 `eval` / `exec`；不加入任何網路連線程式碼；不呼叫外部程式；Polars 的 `read_*` / `scan_*` 不讀網址或雲端（`storage_options`）。`scripts/check_code_policy.py` 會檢查 `src/`；它是把關的工具、不是沙箱，刻意繞過擋不住，所以不要找繞過的寫法。
   - 網路的唯一例外是 `src/tablade/update.py`：啟動時向 GitHub 查最新版號，只讀版號，不送出資料、不下載、不自動更新（`TABLADE_NO_UPDATE_CHECK=1` 可關閉）。
   - 外部程式的唯一例外是 `src/tablade/desktop.py`：用系統的程式（檔案總管／Finder）開啟本機資料夾。
-- 依賴版本固定在 `pyproject.toml` 與 `uv.lock`，不要擅自升級。
+- 依賴版本固定在 `pyproject.toml` 與 `uv.lock`，不要擅自升級。Rust 模組（`native/`，解 zip 裡的 Deflate64）的依賴固定在 `native/Cargo.toml`（`=x.y.z`）與 `native/Cargo.lock`，同樣不要擅自升級；它只做解壓，不讀寫檔、不連網路、不呼叫外部程式（`check_code_policy.py` 會檢查，見 native/README.md）。
 - `api.py`（JS bridge）只做參數轉換與錯誤包裝，邏輯放在引擎。
 - pywebview 視窗不開 HTTP server：前端 build 成單一 HTML（`frontend/dist/index.html`），以字串載入（見 `app.py`）。不要改成用網址或相對路徑載入；整份 HTML 必須小於 2 MB。
 
@@ -55,6 +55,8 @@ Tablade：本機執行、Power Query 式的資料清洗工具（Python + Polars 
 
 ```bash
 uv sync
+uv sync --group native   # 另外編 Rust 模組（解 zip 裡的 Deflate64；要裝 Rust）。打包要發布的版本一定要有
+cargo test --manifest-path native/Cargo.toml --locked   # Rust 模組自己的測試
 npm --prefix frontend ci && npm --prefix frontend run build   # 開視窗、跑 test_app.py 前要先 build
 npm --prefix frontend run lint
 npm --prefix frontend run dev   # 瀏覽器開 http://localhost:5173（假 API）

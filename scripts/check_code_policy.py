@@ -9,6 +9,9 @@
 - 呼叫外部程式（subprocess、os.system、os.popen、os.exec*、os.spawn*、os.startfile）只有
   ``src/tablade/desktop.py`` 可以（用系統的程式開啟資料夾）
 - Polars 的 ``read_*`` / ``scan_*`` 不能讀網址（字串裡有 ``://``）或雲端（``storage_options``）
+- Rust 模組（``native/``）：依賴只能是 ``NATIVE_DEPENDENCIES`` 列的、版本固定（``=x.y.z``），不能有
+  ``build-dependencies``、``dev-dependencies`` 與 ``build.rs``（建置時會執行任意程式）；``.rs`` 不能用
+  ``std::net``、``std::process``、``unsafe``，``lib.rs`` 要有 ``#![forbid(unsafe_code)]``；``Cargo.lock`` 要進版控
 
 例外清單比對的是完整的相對路徑（相對於 repo 根目錄），別的資料夾裡同名的檔不算。
 用 AST 分析，只用標準函式庫。這是把關的工具、不是沙箱：刻意繞過（例如拼字串再 getattr）擋不住。
@@ -18,7 +21,9 @@ from __future__ import annotations
 
 import argparse
 import ast
+import re
 import sys
+import tomllib
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -163,6 +168,49 @@ def _call_problems(path: str, node: ast.Call) -> list[str]:
     return []
 
 
+NATIVE_DEPENDENCIES = {"pyo3", "deflate64"}
+"""Rust 模組可以用的 crate（native/Cargo.toml 的 [dependencies]）。"""
+NATIVE_FORBIDDEN = re.compile(r"std::net|std::process|\bunsafe\b")
+
+
+def check_native(folder: Path) -> list[str]:
+    """Rust 模組的規則（見最上面的說明）。"""
+    problems: list[str] = []
+    cargo = folder / "Cargo.toml"
+    if not cargo.is_file():
+        return [f"{cargo}: 找不到 Cargo.toml"]
+    data = tomllib.loads(cargo.read_text(encoding="utf-8"))
+    for section in ("build-dependencies", "dev-dependencies"):
+        if data.get(section):
+            problems.append(f"{cargo}: 不能有 [{section}]")
+    for name, spec in (data.get("dependencies") or {}).items():
+        version = spec.get("version", "") if isinstance(spec, dict) else spec
+        if name not in NATIVE_DEPENDENCIES:
+            problems.append(
+                f"{cargo}: 不能用的依賴「{name}」（只能用 {', '.join(sorted(NATIVE_DEPENDENCIES))}）"
+            )
+        elif not (isinstance(version, str) and version.startswith("=")):
+            problems.append(f"{cargo}: 依賴「{name}」的版本要固定（=x.y.z）")
+        if isinstance(spec, dict) and ({"git", "path"} & spec.keys()):
+            problems.append(f"{cargo}: 依賴「{name}」只能從 crates.io 來（不能用 git、path）")
+    if (folder / "build.rs").exists():
+        problems.append(f"{folder / 'build.rs'}: 不能有 build.rs")
+    if not (folder / "Cargo.lock").is_file():
+        problems.append(f"{folder}: Cargo.lock 要進版控")
+    for rs in sorted(folder.glob("src/**/*.rs")):
+        text = rs.read_text(encoding="utf-8")
+        for number, line in enumerate(text.splitlines(), start=1):
+            code = line.split("//", 1)[0]
+            if "forbid(unsafe_code)" in code:
+                continue
+            if found := NATIVE_FORBIDDEN.search(code):
+                problems.append(f"{rs}:{number}: 不能用 {found.group(0)}")
+    lib = folder / "src" / "lib.rs"
+    if lib.is_file() and "#![forbid(unsafe_code)]" not in lib.read_text(encoding="utf-8"):
+        problems.append(f"{lib}: 要有 #![forbid(unsafe_code)]")
+    return problems
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("paths", nargs="*", default=["src"], help="要檢查的目錄或檔案")
@@ -174,6 +222,8 @@ def main(argv: list[str] | None = None) -> int:
         files = sorted(base.rglob("*.py")) if base.is_dir() else [base]
         for file in files:
             problems.extend(check_source(file.as_posix(), file.read_text(encoding="utf-8")))
+    if (ROOT / "native").is_dir():
+        problems.extend(check_native(ROOT / "native"))
 
     if problems:
         print("check_code_policy：違反程式規則。", file=sys.stderr)

@@ -4,8 +4,9 @@
 - **zip 裡的路徑**：``\\`` 換成 ``/``、拿掉開頭的 ``./``，資料夾項目不算。檔名有 UTF-8 標記的照用；
   沒有的，用 zip 原本的位元組依序試 UTF-8 → cp950，都不行才用 cp437（zip 的預設）。
 - **要讀的檔**（``members``）：比對整理過的完整路徑、不分大小寫；``*`` 不跨過 ``/``，``**`` 是任何層數的資料夾。
-- **每個檔各自記壓縮方式**：不壓縮、Deflate、bzip2、LZMA 用標準函式庫的 ``zipfile``；Deflate64 用 ``inflate64``
-  套件（沒有裝時那種檔標成不支援）。有加密旗標的檔一律不支援（程式不碰密碼）。
+- **每個檔各自記壓縮方式**：不壓縮、Deflate、bzip2、LZMA 用標準函式庫的 ``zipfile``；Deflate64 用專案自己的
+  Rust 模組 ``tablade_native``（native/，包 deflate64 crate；開發環境沒有編時那種檔標成不支援，發布的 App 一定有）。
+  有加密旗標的檔一律不支援（程式不碰密碼）。
 
 只讀 zip、不寫檔：解出來的內容交給 ``sources`` 一段一段轉成暫存 Parquet。暫存一律用雜湊命名，
 不用 zip 裡的路徑當檔名（zip 裡的 ``../`` 不會寫到別的地方）。
@@ -15,15 +16,17 @@ from __future__ import annotations
 
 import contextlib
 import io
+import queue
 import re
 import struct
+import threading
 import unicodedata
 import zipfile
 import zlib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 from ..i18n import t
 
@@ -47,13 +50,18 @@ class ZipError(ValueError):
     """zip 讀不了（不是 zip、壞了、不支援的壓縮方式…），訊息已經是畫面上的文字。"""
 
 
-def deflate64_available() -> bool:
-    """裝了解 Deflate64 的套件（``inflate64``）沒有。"""
+def native_module() -> Any:
+    """解 Deflate64 的 Rust 模組（``tablade_native``）；開發環境沒有編（uv sync --group native）時是 None。"""
     try:
-        import inflate64  # noqa: F401
+        import tablade_native
     except ImportError:
-        return False
-    return True
+        return None
+    return tablade_native
+
+
+def deflate64_available() -> bool:
+    """有解 Deflate64 的 Rust 模組沒有。"""
+    return native_module() is not None
 
 
 def method_name(method: int) -> str:
@@ -85,8 +93,8 @@ class Member:
             )
         if self.method == DEFLATE64 and not deflate64_available():
             return t(
-                "Deflate64 壓縮：需要 Deflate64 的套件（或用 7-Zip 重新壓成一般的 zip）",
-                "Deflate64-compressed: needs the Deflate64 package "
+                "Deflate64 壓縮：這個版本沒有 Deflate64 的模組（或用 7-Zip 重新壓成一般的 zip）",
+                "Deflate64-compressed: this build has no Deflate64 module "
                 "(or recompress it as a regular zip with 7-Zip)",
             )
         if self.method not in ZIPFILE_METHODS | {DEFLATE64}:
@@ -217,49 +225,87 @@ def _damaged(member: Member, err: object) -> ZipError:
 
 
 class _Deflate64Reader(io.RawIOBase):
-    """Deflate64 的檔：從目錄記的位置讀出壓縮過的原始位元組，交給 ``inflate64`` 一邊解一邊讀；讀完核對 CRC。"""
+    """Deflate64 的檔：從目錄記的位置讀出壓縮過的原始位元組，交給 Rust 模組一邊解一邊讀；讀完核對 CRC。
+
+    解壓在另一條執行緒先做（Rust 模組解壓時放開 Python 的全域鎖），主程序同時切段、算雜湊、寫暫存；
+    兩邊之間最多 ``AHEAD`` 塊解好的資料，記憶體固定。
+    """
+
+    AHEAD = 4
 
     def __init__(self, member: Member) -> None:
-        import inflate64
-
+        native = native_module()
+        if native is None:
+            raise ZipError(member.problem() or "")
         self._member = member
         self._file = member.archive.open("rb")
         self._file.seek(member.info.header_offset)
         header = self._file.read(30)
         if len(header) < 30 or header[:4] != b"PK\x03\x04":
+            self._file.close()
             raise _damaged(member, t("找不到檔案的標頭", "local file header not found"))
         name_length, extra_length = struct.unpack("<HH", header[26:30])
         self._file.seek(member.info.header_offset + 30 + name_length + extra_length)
-        self._left = member.compressed
-        self._inflater = inflate64.Inflater()
+        self._inflater = native.Inflater()
         self._buffer = bytearray()
-        self._crc = 0
-        self._size = 0
+        self._done = False
+        self._queue: queue.Queue[bytes | BaseException | None] = queue.Queue(self.AHEAD)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._produce, daemon=True)
+        self._thread.start()
+
+    def _put(self, item: bytes | BaseException | None) -> bool:
+        while not self._stop.is_set():
+            try:
+                self._queue.put(item, timeout=0.1)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def _produce(self) -> None:
+        """另一條執行緒：讀壓縮過的位元組、解開，一塊一塊交給 ``read``；讀完核對 CRC 與大小。"""
+        left, crc, size = self._member.compressed, 0, 0
+        try:
+            while left > 0 and not self._stop.is_set():
+                chunk = self._file.read(min(CHUNK, left))
+                if not chunk:
+                    raise _damaged(self._member, t("檔案提早結束", "unexpected end of file"))
+                left -= len(chunk)
+                try:
+                    data = self._inflater.inflate(chunk)
+                except ValueError as err:  # 壓縮的內容壞了
+                    raise _damaged(self._member, err) from None
+                crc, size = zlib.crc32(data, crc), size + len(data)
+                if data and not self._put(data):
+                    return
+            if crc != self._member.crc or size != self._member.size:
+                raise _damaged(self._member, t("CRC 不符", "CRC mismatch"))
+            self._put(None)
+        except BaseException as err:  # 交給 read 丟出
+            self._put(err)
 
     def readable(self) -> bool:
         return True
 
     def read(self, size: int = -1) -> bytes:
-        while (size < 0 or len(self._buffer) < size) and self._left > 0:
-            chunk = self._file.read(min(CHUNK, self._left))
-            if not chunk:
-                raise _damaged(self._member, t("檔案提早結束", "unexpected end of file"))
-            self._left -= len(chunk)
-            self._buffer += self._inflater.inflate(chunk)
+        while not self._done and (size < 0 or len(self._buffer) < size):
+            item = self._queue.get()
+            if item is None:
+                self._done = True
+            elif isinstance(item, BaseException):
+                self._done = True
+                raise item
+            else:
+                self._buffer += item
         take = len(self._buffer) if size < 0 else min(size, len(self._buffer))
         data = bytes(self._buffer[:take])
         del self._buffer[:take]
-        self._crc = zlib.crc32(data, self._crc)
-        self._size += len(data)
-        if (
-            not data
-            and self._left == 0
-            and (self._crc != self._member.crc or self._size != self._member.size)
-        ):
-            raise _damaged(self._member, t("CRC 不符", "CRC mismatch"))
         return data
 
     def close(self) -> None:
+        self._stop.set()
+        self._thread.join()
         self._file.close()
         super().close()
 

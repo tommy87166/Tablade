@@ -1,0 +1,21 @@
+[package]
+name = "tablade_native"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Tablade 的 Rust 模組：解 zip 裡的 Deflate64（只做這一件事）"
+license = "MIT"
+publish = false
+
+[lib]
+name = "tablade_native"
+crate-type = ["cdylib"]
+
+# 依賴一律固定精確版本，Cargo.lock 進版控、建置用 --locked（scripts/check_code_policy.py 會檢查）
+[dependencies]
+deflate64 = "=0.1.12"
+pyo3 = { version = "=0.30.1", features = ["abi3-py312"] }  # extension-module 由 maturin 加（pyproject.toml），cargo test 才連得到 Python
+
+[profile.release]
+lto = true
+codegen-units = 1

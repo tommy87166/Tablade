@@ -29,7 +29,15 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - run: uv sync --frozen
+      - name: Rust（解 zip 裡的 Deflate64 的模組，native/）
+        run: rustup toolchain install 1.100.0 --profile minimal && rustup default 1.100.0
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            native/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('native/Cargo.lock') }}
+      - run: uv sync --frozen --group native
       - name: 前端（lint、型別檢查、build）
         working-directory: frontend
         run: |

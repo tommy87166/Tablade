@@ -245,10 +245,11 @@ Windows (CI): onefile 68.7 MB zipped. The onefile build is confirmed to open on 
 
 ## 🛠️ Development
 
-Requires [uv](https://docs.astral.sh/uv/) and Node.js 24+.
+Requires [uv](https://docs.astral.sh/uv/) and Node.js 24+. To read Deflate64-compressed files in zips, or to build a release, you also need [Rust](https://rustup.rs/) (`uv sync --group native` builds the module in `native/`; see [native/README.md](native/README.md); the crates it uses are MIT-licensed, with the license texts in `native/LICENSES/`, also shipped in the app); it's optional for working on anything else.
 
 ```bash
 uv sync                                              # create the venv from uv.lock
+uv sync --group native                               # also build the Rust module (Deflate64 in zips; needs Rust)
 npm --prefix frontend ci                             # install front-end dependencies
 npm --prefix frontend run build                      # build frontend/dist/index.html (needed before running the app)
 uv run pre-commit install                            # install the data-protection hook (required)
@@ -370,8 +371,8 @@ tablade.spec          PyInstaller config (onefile / onedir via TABLADE_BUILD)
 - **`csv` reader line numbers assume no multi-line fields**; use `text_lines` for such files.
 - **Zip support is for text files only (`zip_lines`, line by line)**: no need to extract first; `members`
   names the files inside the zip (for example `2026*/HEADER*.TXT`). Extract CSV and Excel files first;
-  password-protected zips, zips inside zips, 7z and rar aren't supported; Deflate64-compressed files need an
-  extra package.
+  password-protected zips, zips inside zips, 7z and rar aren't supported. Deflate64 (which Windows Explorer
+  may use for large files) is handled by the bundled Rust module.
 - **onefile starts slowly** because it unpacks itself on every launch, and some antivirus or
   AppLocker setups block programs running from the temp folder. Only onefile is released for Windows;
   build an onedir folder with `uv run python scripts/build.py onedir` if that happens.

@@ -10,7 +10,8 @@
   遇到防毒軟體或 AppLocker 擋暫存資料夾裡的程式時，可以用 ``build.py onedir`` 另外打包。
 - macOS：只有 Tablade.app。.app 就是 onedir 包成 App（PyInstaller 不支援 onefile 的 .app）。
 
-需要 Node.js 24 以上（先 build 前端成單一 HTML，再交給 PyInstaller）。
+需要 Node.js 24 以上（先 build 前端成單一 HTML，再交給 PyInstaller），以及 Rust 模組
+（解 zip 裡的 Deflate64，native/）：先執行 ``uv sync --group native``（要裝 Rust）。
 
 輸出：
     frontend/dist/index.html         前端產物（必須小於 2 MB）
@@ -64,6 +65,21 @@ def executable(mode: str) -> Path:
     if IS_MAC:
         return DIST / "onedir" / "Tablade.app" / "Contents" / "MacOS" / exe
     return DIST / "onedir" / "tablade" / exe
+
+
+def check_native() -> None:
+    """發布的 App 一定要有 Rust 模組（解 zip 裡的 Deflate64）。"""
+    try:
+        import tablade_native
+    except ImportError:
+        raise SystemExit(
+            "找不到 Rust 模組 tablade_native：先執行 uv sync --group native（要裝 Rust，見 native/README.md）"
+        ) from None
+    print(
+        f"== Rust 模組 tablade_native {tablade_native.__version__}"
+        f"（deflate64 {tablade_native.DEFLATE64_VERSION}）",
+        flush=True,
+    )
 
 
 def build_frontend() -> None:
@@ -206,6 +222,8 @@ def main(argv: list[str] | None = None) -> int:
     if unknown := set(args.modes) - set(MODES):
         parser.error(f"不認得的 mode：{', '.join(sorted(unknown))}")
 
+    if not args.skip_build:
+        check_native()
     if not (args.skip_build or args.skip_frontend):
         build_frontend()
 

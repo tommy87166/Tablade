@@ -116,6 +116,7 @@ def test_selftest_is_in_english(monkeypatch):
         "Lazy query",
         "Read Excel",
         "Multi-core transcoding",
+        "Deflate64 (Rust module)",
         "Run the sample Recipe in full",
     ]
     for c in result["checks"]:

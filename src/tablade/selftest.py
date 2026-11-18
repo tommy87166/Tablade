@@ -37,6 +37,19 @@ class Check:
     """False：前面的檢查失敗，這一項沒有執行。"""
 
 
+def native_version() -> str:
+    """Rust 模組（解 zip 裡的 Deflate64）的版本；沒有時寫「沒有」。"""
+    from .ingest.zip_lines import native_module
+
+    native = native_module()
+    if native is None:
+        return t("沒有", "none")
+    return t(
+        f"{native.__version__}（deflate64 {native.DEFLATE64_VERSION}）",
+        f"{native.__version__} (deflate64 {native.DEFLATE64_VERSION})",
+    )
+
+
 def versions() -> dict[str, str]:
     import fastexcel
     import pydantic
@@ -47,6 +60,7 @@ def versions() -> dict[str, str]:
         "polars": pl.__version__,
         "fastexcel": getattr(fastexcel, "__version__", "?"),
         "pydantic": pydantic.VERSION,
+        "tablade_native": native_version(),
         "platform": platform.platform(),
         "frozen": str(getattr(sys, "frozen", False)),
     }
@@ -198,6 +212,47 @@ def run_selftest() -> dict[str, Any]:
                 f"Transcoded with {workers} in parallel, same result as single-core; {normally}",
             )
 
+        def deflate64() -> str:
+            # Windows 檔案總管壓縮大檔時可能用 Deflate64：用 Rust 模組實際解一次（切成很多段，和讀 zip 時同一條路）
+            from .fixtures import DEFLATE64_MEMBER, deflate64_lines, write_deflate64_zip
+            from .ingest import sources, zip_lines
+
+            native = zip_lines.native_module()
+            if native is None:
+                if getattr(sys, "frozen", False):
+                    raise RuntimeError(
+                        t(
+                            "這個版本沒有 Deflate64 的模組，Deflate64 壓縮的 zip 讀不了",
+                            "This build has no Deflate64 module; Deflate64-compressed zips can't be read",
+                        )
+                    )
+                return t(
+                    "開發環境沒有編 Rust 模組（uv sync --group native），略過；打包好的 App 一定有",
+                    "The Rust module isn't built in this development environment "
+                    "(uv sync --group native); skipped. Packaged apps always include it",
+                )
+            path = write_deflate64_zip(Path(tmp) / "deflate64.zip")
+            member = zip_lines.matching(path, DEFLATE64_MEMBER)[0]
+            assert member.method == zip_lines.DEFLATE64, t(
+                "測試檔不是 Deflate64", "The test file isn't Deflate64"
+            )
+            _, files, lines, _ = sources._stage_member(
+                member, member.path, "cp950", Path(tmp) / "deflate64", None, segment=16_384
+            )
+            got = pl.scan_parquet(list(files)).collect()["line"].to_list()
+            want = deflate64_lines()
+            assert got == want and lines == len(want), t(
+                "解開的 Deflate64 內容和原檔不同",
+                "The extracted Deflate64 content differs from the original",
+            )
+            return t(
+                f"用 Rust 模組（tablade_native {native.__version__}、deflate64 "
+                f"{native.DEFLATE64_VERSION}）解開 Deflate64 的 zip，{lines:,} 行與原檔一致",
+                f"Extracted a Deflate64 zip with the Rust module (tablade_native "
+                f"{native.__version__}, deflate64 {native.DEFLATE64_VERSION}); "
+                f"{plural(lines, 'line matches', 'lines match')} the original",
+            )
+
         def full_recipe() -> str:
             # 跟按「處理並匯出資料」同一條路：轉碼成暫存檔、各檔分開處理、8 個步驟、串流匯出；
             # 最後再臨時加上「合併來源檔」（02 排前面），連合併也一起檢查（範例 recipe 本身不動）
@@ -302,6 +357,15 @@ def run_selftest() -> dict[str, Any]:
                     "with the same result as single-core; line-by-line staging can be written as Parquet",
                 ),
                 parallel_transcode,
+            ),
+            (
+                t("解 Deflate64（Rust 模組）", "Deflate64 (Rust module)"),
+                t(
+                    "Windows 檔案總管壓縮大檔時用的 Deflate64 格式，zip 裡的這種檔讀得出來",
+                    "Files in a zip compressed with Deflate64 (which Windows Explorer uses for large "
+                    "files) can be read",
+                ),
+                deflate64,
             ),
             (
                 t("完整執行範例 Recipe", "Run the sample Recipe in full"),

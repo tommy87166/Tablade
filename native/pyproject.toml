@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin==1.9.6"]
+build-backend = "maturin"
+
+[project]
+name = "tablade-native"
+version = "0.1.0"
+description = "Tablade 的 Rust 模組：解 zip 裡的 Deflate64"
+license = "MIT"
+requires-python = ">=3.12"
+
+[tool.maturin]
+module-name = "tablade_native"
+features = ["pyo3/extension-module"]

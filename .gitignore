@@ -73,3 +73,6 @@ frontend/src/dev/
 
 # 本機的預覽設定
 .claude/launch.json
+
+# Rust 模組的建置產物
+native/target/
