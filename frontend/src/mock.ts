@@ -39,7 +39,14 @@ const current = () => {
   if (!loaded) {
     state.input = { ...state.input, loaded: false, sources: [], rows: null, total_rows: null, columns: null }
     // 跟 session.py 一樣：沒有資料時哪一步都算不出來（step 是 -1）
-    state.preview = { ...state.preview, step: -1, rows: null, columns: [], warnings: [] }
+    state.preview = {
+      ...state.preview,
+      step: -1,
+      rows: null,
+      columns: [],
+      warnings: [],
+      blocked: state.preview.requested >= 0 ? { unloaded: true, step: null, stage: null } : null,
+    }
     state.steps = state.steps.map((s) => ({ ...s, status: 'waiting', rows: null, files: null }))
     // 跟 session.py 一樣：還沒載入也可以匯出（匯出前先試跑）
     state.actions = { load: { ok: true, reason: null }, export: { ok: true, reason: null } }

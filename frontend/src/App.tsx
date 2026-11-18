@@ -494,7 +494,32 @@ export default function App() {
   const stage = state.stages[state.current]
   const outputLabel = stage && !stage.last ? '階段結果' : '輸出資料'
   const stagePrefix = state.stages.length > 1 && stage ? `${stage.name}・` : ''
-  const previewLabel = stagePrefix + (state.selected < 0 ? '讀取資料' : outputSelected ? outputLabel : `步驟 ${state.selected + 1}`)
+  const blocked = state.preview.blocked
+  /** 標題寫實際顯示的那一步（選的那一步算不出來時，是它之前最後一個算得出來的） */
+  const previewLabel =
+    stagePrefix +
+    (blocked && !blocked.unloaded
+      ? state.preview.step < 0
+        ? '讀取的資料'
+        : `第 ${state.preview.step + 1} 步的結果`
+      : state.selected < 0
+        ? '讀取資料'
+        : outputSelected
+          ? outputLabel
+          : `步驟 ${state.selected + 1}`)
+  const blockedText = (() => {
+    if (!blocked || blocked.unloaded) return null
+    const which = outputSelected ? outputLabel : `第 ${state.preview.requested + 1} 步`
+    const why =
+      blocked.step === state.preview.requested
+        ? '這一步有錯'
+        : blocked.step !== null
+          ? `第 ${blocked.step + 1} 步有錯`
+          : blocked.stage
+            ? `@${blocked.stage} 還沒有結果`
+            : '前面的步驟算不出來'
+    return `${which}算不出來：${why}`
+  })()
   const earlierStages = state.stages
     .slice(0, state.current)
     .map((s) => ({ index: s.index, name: s.name, columns: s.columns, sampled: s.sampled, full: s.full }))
@@ -661,12 +686,12 @@ export default function App() {
                         </TooltipContent>
                       </Tooltip>
                     ) : null}
-                    {state.preview.step !== state.preview.requested ? (
-                      <Badge variant="destructive">
-                        {outputSelected ? '最後一步' : '這一步'}
-                        還算不出來，下面是
-                        {state.preview.step < 0 ? '讀取的資料' : `第 ${state.preview.step + 1} 步的結果`}
+                    {!input.loaded ? (
+                      <Badge variant="outline" className="text-muted-foreground">
+                        還沒載入資料
                       </Badge>
+                    ) : blockedText ? (
+                      <Badge variant="destructive">{blockedText}</Badge>
                     ) : null}
                   </PaneHeader>
                   <div className="min-h-0 flex-1">

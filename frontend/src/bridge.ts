@@ -120,6 +120,10 @@ export interface StepState {
   warning_count: number
   errors: Issue[]
   run_error: string | null
+  /** 算不出來（pending）時：前面第一個出錯的步驟（index） */
+  blocked_by: number | null
+  /** 算不出來（pending）時：還沒有結果的前面階段（結合的另一張表） */
+  blocked_stage: string | null
   params: StepParams
 }
 
@@ -246,6 +250,8 @@ export interface ViewState {
     rows: number | null
     columns: { name: string; dtype: string; system: boolean }[]
     warnings: RowWarning[]
+    /** 選的那一步算不出來的原因（算得出來時是 null）：還沒載入、哪一步有錯、哪個前面的階段還沒有結果 */
+    blocked: { unloaded: boolean; step: number | null; stage: string | null } | null
   }
   can_undo: boolean
   can_redo: boolean

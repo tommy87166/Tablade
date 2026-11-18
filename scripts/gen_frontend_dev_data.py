@@ -203,6 +203,11 @@ def main(argv: list[str] | None = None) -> int:
             "sales_combined 有 4 個階段：附加與結合、all_steps 每一種步驟都用到一次）"
         ),
     )
+    parser.add_argument(
+        "--broken",
+        action="store_true",
+        help="sales_detail 的「刪除欄」改成刪除不存在的欄：看「這一步算不出來」的畫面",
+    )
     args = parser.parse_args(argv)
     api = Api()
     work = Path(tempfile.mkdtemp(prefix="tablade-dev-"))
@@ -241,6 +246,11 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
         if args.recipe == "sales_detail":
             add_demo_steps(session)
+            if args.broken:
+                index = next(
+                    i for i, s in enumerate(session.steps) if s["type"] == "remove_columns"
+                )
+                session.update_step(index, {"columns": ["不存在的欄"]})
         ready = api.ready()
         # 每個階段的每一步各存一份畫面狀態，鍵是「階段:步驟」（-1 是讀取資料，步驟數是輸出資料）
         states, rows, columns_info = {}, {}, {}

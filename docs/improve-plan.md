@@ -156,6 +156,8 @@
 
 ## 第 4 批：「這一步還算不出來」的顯示
 
+狀態：已完成（dev 資料：`uv run python scripts/gen_frontend_dev_data.py --broken`）。
+
 - `session.state()`：
   - 每一步新增 `blocked_by`：狀態是 `pending` 的步驟，記前面第一個出錯的步驟（index）；是因為引用的階段還沒有結果時記那個階段名稱（`blocked_stage`）。
   - `preview` 新增 `blocked_by`（選的那一步算不出來的原因，同上）。

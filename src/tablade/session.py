@@ -1131,6 +1131,9 @@ class Session:
             computed, source, _, sampled = self._compute(self.current)
             input_error = self._stage_input(self.current)[3]
             steps, previous = [], source
+            # 算不出來的步驟是被誰擋住：前面第一個出錯的步驟，或還沒有結果的前面階段
+            first_error: int | None = None
+            waiting_stage: str | None = None
             for i, (raw, item) in enumerate(zip(self.steps, computed, strict=True)):
                 cls = _safe_get(raw.get("type"))
                 enabled = raw.get("enabled", True) is not False
@@ -1147,6 +1150,10 @@ class Session:
                         )
                     )
                 )
+                if status == "error" and first_error is None:
+                    first_error = i
+                if status == "pending" and first_error is None and waiting_stage is None:
+                    waiting_stage = self._waiting_ref(raw)
                 describe = None
                 if not item.errors and cls is not None:
                     try:
@@ -1175,6 +1182,10 @@ class Session:
                         "warning_count": item.warning_count,
                         "errors": self._value_errors(i, raw, item.errors),
                         "run_error": item.run_error,
+                        "blocked_by": first_error if status == "pending" else None,
+                        "blocked_stage": waiting_stage
+                        if status == "pending" and first_error is None
+                        else None,
                         "params": raw,
                     }
                 )
@@ -1188,6 +1199,14 @@ class Session:
             while shown_index >= 0 and computed[shown_index].frame is None:
                 shown_index -= 1
             shown = source if shown_index < 0 else computed[shown_index].frame
+            blocked = None
+            if shown_index != requested:
+                if source is None:
+                    blocked = {"unloaded": True, "step": None, "stage": None}
+                else:
+                    item = steps[requested]
+                    step = requested if item["status"] == "error" else item["blocked_by"]
+                    blocked = {"unloaded": False, "step": step, "stage": item["blocked_stage"]}
             preview_warnings = (
                 []
                 if shown_index < 0
@@ -1245,11 +1264,21 @@ class Session:
                         for n, t in (shown.schema.items() if shown is not None else [])
                     ],
                     "warnings": preview_warnings,
+                    "blocked": blocked,
                 },
                 "can_undo": bool(self._undo),
                 "can_redo": bool(self._redo),
                 "issues": self.issues,
             }
+
+    def _waiting_ref(self, raw: dict[str, Any]) -> str | None:
+        """這一步引用的前面階段裡，第一個還沒有結果的（結合的另一張表）。"""
+        for name in ref_fields().get(raw.get("type"), []):
+            ref = raw.get(name)
+            index = self._stage_index(ref, self.current) if isinstance(ref, str) else None
+            if index is not None and self._stage_result(index)[0] is None:
+                return ref
+        return None
 
     def rows(self, index: int, offset: int, limit: int) -> dict[str, Any]:
         with self._lock:

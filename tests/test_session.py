@@ -536,6 +536,31 @@ def test_trial_run_stops_before_the_full_run(data, monkeypatch):
     assert not (data.parent / "output").exists()
 
 
+def test_steps_after_an_error_say_what_blocks_them(data):
+    """算不出來的步驟記是被哪一步擋住；預覽記選的那一步為什麼算不出來（還沒載入時另外標）。"""
+    s = opened(data)
+    s.add_step("remove_top_rows", index=0)
+    s.add_step("parse_number", index=1)
+    s.update_step(1, {"columns": ["不存在"]})
+    s.add_step("remove_bottom_rows", index=2)
+    steps = s.state()["steps"]
+    assert [x["status"] for x in steps] == ["ok", "error", "pending"]
+    assert (steps[2]["blocked_by"], steps[2]["blocked_stage"]) == (1, None)
+    assert steps[0]["blocked_by"] is None and steps[1]["blocked_by"] is None
+    s.select(2)
+    preview = s.state()["preview"]
+    assert (preview["step"], preview["requested"]) == (0, 2)  # 顯示第 1 步的結果
+    assert preview["blocked"] == {"unloaded": False, "step": 1, "stage": None}
+    s.select(1)
+    assert s.state()["preview"]["blocked"]["step"] == 1  # 這一步自己有錯
+    s.select(0)
+    assert s.state()["preview"]["blocked"] is None
+    fresh = Session()
+    fresh.load_recipe(s.save_recipe(data.parent / "blocked.recipe.json"))
+    fresh.select(0)
+    assert fresh.state()["preview"]["blocked"] == {"unloaded": True, "step": None, "stage": None}
+
+
 # ── 型別分頁 ────────────────────────────────────────────────────
 
 

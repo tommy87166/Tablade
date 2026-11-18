@@ -24,7 +24,7 @@ import { Button } from '@/components/ui/button'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import type { CatalogItem, ViewState } from '../bridge'
+import type { CatalogItem, StepState, ViewState } from '../bridge'
 import { CollapseButton, PaneHeader, PaneTitle } from './Pane'
 import { StepScope } from './StepScope'
 
@@ -115,6 +115,14 @@ export function AddStepMenu({ catalog, onAdd, disabled }: { catalog: CatalogItem
       </DropdownMenuContent>
     </DropdownMenu>
   )
+}
+
+/** 算不出來（pending）的步驟為什麼算不出來：前面哪一步有錯，或哪個前面的階段還沒有結果。 */
+function blockedHint(step: StepState) {
+  if (step.status !== 'pending') return null
+  if (step.blocked_by !== null) return `前面第 ${step.blocked_by + 1} 步有錯，這一步算不出來`
+  if (step.blocked_stage) return `@${step.blocked_stage} 還沒有結果，這一步算不出來`
+  return '前面的步驟算不出來，這一步也算不出來'
 }
 
 export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onToggle, onDelete, onCollapse }: Props) {
@@ -229,13 +237,14 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
                   <div
                     role="button"
                     tabIndex={0}
+                    title={blockedHint(step) ?? undefined}
                     onClick={() => onSelect(step.index)}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') onSelect(step.index)
                       if (e.altKey && e.key === 'ArrowUp' && step.index > 0) onMove(step.index, step.index - 1)
                       if (e.altKey && e.key === 'ArrowDown' && step.index < last) onMove(step.index, step.index + 1)
                     }}
-                    className={`flex cursor-pointer items-start gap-1.5 rounded-md px-1.5 py-1.5 text-sm hover:bg-muted ${selected ? 'bg-primary/10 ring-1 ring-primary/40' : ''} ${step.enabled ? '' : 'opacity-50'}`}
+                    className={`flex cursor-pointer items-start gap-1.5 rounded-md px-1.5 py-1.5 text-sm hover:bg-muted ${selected ? 'bg-primary/10 ring-1 ring-primary/40' : ''} ${step.enabled ? (step.status === 'pending' ? 'opacity-60' : '') : 'opacity-50'}`}
                   >
                     <GripVertical className="mt-0.5 size-4 shrink-0 cursor-grab text-muted-foreground/50" />
                     <span className="mt-0.5 w-5 shrink-0 text-right text-xs text-muted-foreground tabular-nums">{step.index + 1}</span>
@@ -276,7 +285,7 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
                             </Badge>
                           ) : null}
                           {step.status === 'pending' ? (
-                            <span className="text-xs text-muted-foreground">（前面的步驟有錯，尚未計算）</span>
+                            <span className="text-xs text-muted-foreground">（{blockedHint(step)}）</span>
                           ) : null}
                           {step.warning_count ? (
                             <Badge
