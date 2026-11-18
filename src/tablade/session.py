@@ -882,7 +882,7 @@ class Session:
                 ]
                 if missing:
                     where = f"（階段「{stage['name']}」）" if multi else ""
-                    raise SessionError(f"找不到：{'、'.join(missing)}{where}（請先從檔案清單移除）")
+                    raise SessionError(f"找不到：{'、'.join(missing)}{where}，請先從檔案清單移除")
             tracker = StageTracker([st["name"] for st in self.stages], self.progress)
             try:
                 for k, stage in enumerate(self.stages):
@@ -1115,13 +1115,15 @@ class Session:
             frame, _, sampled, full = self._stage_result(i)
             computed = self._computed.get(stage["name"], [])
             error = any(c.errors or c.run_error for c in computed) or bool(self._stage_input(i)[3])
+            status = "error" if error else ("ok" if frame is not None else "waiting")
             out.append(
                 {
                     "index": i,
                     "name": stage["name"],
                     "reader": stage["input"].get("reader"),
                     "last": i == len(self.stages) - 1,
-                    "status": "error" if error else ("ok" if frame is not None else "waiting"),
+                    "status": status,
+                    "status_text": self._stage_status_text(i, status, frame, computed, out),
                     "rows": frame.height if frame is not None else None,
                     "columns": _data_columns(frame) if frame is not None else None,
                     "sampled": sampled,
@@ -1132,6 +1134,30 @@ class Session:
                 }
             )
         return out
+
+    def _stage_status_text(
+        self,
+        index: int,
+        status: str,
+        frame: pl.DataFrame | None,
+        computed: list[Any],
+        earlier: list[dict[str, Any]],
+    ) -> str:
+        """階段面板圓點的說明（滑鼠移上去）：已算出結果、哪一步有錯、為什麼還沒有結果。"""
+        stage = self.stages[index]
+        if status == "ok" and frame is not None:
+            return f"已算出結果：{frame.height:,} 列"
+        if status == "error":
+            first = next((k for k, c in enumerate(computed) if c.errors or c.run_error), None)
+            return f"第 {first + 1} 步有錯" if first is not None else "讀取資料有錯"
+        for ref, _ in stage_refs(stage):
+            j = self._stage_index(ref, index)
+            if j is not None and j < len(earlier) and earlier[j]["status"] != "ok":
+                why = "有錯" if earlier[j]["status"] == "error" else "還沒有結果"
+                return f"讀的「{ref}」{why}，還算不出來"
+        if self._reads_files(stage) and not stage["input"]["files"]:
+            return "還沒有加入資料檔"
+        return "還沒載入資料"
 
     def state(self) -> dict[str, Any]:
         with self._lock:
@@ -1223,9 +1249,11 @@ class Session:
                     item = steps[requested]
                     step = requested if item["status"] == "error" else item["blocked_by"]
                     blocked = {"unloaded": False, "step": step, "stage": item["blocked_stage"]}
+                    # 這一步算不出來：不顯示前面步驟的資料（畫面上改寫原因與「前往」）
+                    shown, shown_index = None, requested
             preview_warnings = (
                 []
-                if shown_index < 0
+                if shown_index < 0 or shown is None
                 else [w.__dict__ for w in computed[shown_index].warnings[:200]]
             )
             total_rows = sum(f.rows for f in files) if files else None
@@ -1241,6 +1269,15 @@ class Session:
                 "blocked": blocked,
                 # 抽樣模式：用樣本算的（列數、加總可能不正確）；完整模式：資料全部讀進來，或讀匯出檔
                 "mode": None if shown is None else ("sample" if sampled else "full"),
+                # 這個階段和它往上讀到的階段，讀進來的檔共有幾行（讀前面階段時也算得出來）
+                "input_rows": sum(
+                    f.rows
+                    for i in self._upstream(self.current)
+                    if self._reads_files(self.stages[i])
+                    for f in self._load_source(self.stages[i])[1]
+                )
+                if shown is not None
+                else None,
                 "full": None,
                 "sampled_step": self._sampled_step(requested) if sampled else None,
             }
@@ -1444,7 +1481,7 @@ class Session:
                 e["path"] for e in check_entries(stage["input"]["files"], base) if not e["found"]
             ]
             if missing:
-                return f"找不到：{'、'.join(missing)}{where}（請先從檔案清單移除）"
+                return f"找不到：{'、'.join(missing)}{where}，請先從檔案清單移除"
         return None
 
     def _load_problem(self) -> str | None:
@@ -1461,7 +1498,7 @@ class Session:
             ]
             if missing:
                 where = f"（階段「{stage['name']}」）" if multi else ""
-                return f"找不到：{'、'.join(missing)}{where}（請先從檔案清單移除）"
+                return f"找不到：{'、'.join(missing)}{where}，請先從檔案清單移除"
         if all(self._load_source(st)[0] is not None for st in with_files):
             return "已載入；檔案清單、讀取方式或編碼變更後可以重新載入"
         return None
@@ -1475,7 +1512,10 @@ class Session:
             return problem
         for stage, planned in zip(self.stages, self._outputs(), strict=True):
             if planned is not None and planned.error:
-                return f"輸出檔名有誤（階段「{stage['name']}」）：{planned.error}"
+                error = planned.error
+                if error.startswith("輸出檔名"):
+                    return f"階段「{stage['name']}」的{error}"
+                return f"階段「{stage['name']}」：{error}"
         for i, stage in enumerate(self.stages):
             self._stage_result(i)
             computed = self._computed.get(stage["name"], [])

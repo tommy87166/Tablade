@@ -604,7 +604,9 @@ def output_issues(recipe: dict[str, Any], default: str | None = None) -> list[Is
             continue
         key = name.casefold()
         if key in seen:
-            issues.append(_issue(path, f"輸出檔名「{name}」和 stages[{seen[key]}] 重複"))
+            other = stages[seen[key]].get("name") if isinstance(stages[seen[key]], dict) else None
+            where = f"階段「{other}」" if isinstance(other, str) else f"stages[{seen[key]}]"
+            issues.append(_issue(path, f"輸出檔名「{name}」和{where}重複"))
         seen.setdefault(key, si)
     return issues
 

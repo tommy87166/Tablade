@@ -27,6 +27,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { CollapseButton, PaneHeader, PaneTitle } from './Pane'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { StageState, ViewState } from '../bridge'
 
 const MAX_NAME = 40
@@ -140,20 +141,30 @@ export function StagesBar({ state, busy, onSelect, onAdd, onRename, onMove, onDe
                       selected ? 'bg-background font-medium shadow-sm ring-1 ring-border' : 'hover:bg-muted'
                     }`}
                   >
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={selected}
-                      title={`${stage.name}${stage.output ? `（寫出 ${stage.output.path}${stage.last ? '' : '，也給後面的階段用'}）` : '（暫存，給後面的階段用）'}`}
-                      className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pl-2 text-left text-sm"
-                      onClick={() => !selected && onSelect(stage.index)}
-                    >
-                      <span className={`size-1.5 shrink-0 rounded-full ${DOT[stage.status]}`} />
-                      <span className="min-w-0 flex-1 truncate">{stage.name}</span>
-                      {stage.output ? (
-                        <FileOutput className="size-3.5 shrink-0 text-muted-foreground" aria-label={`寫出 ${stage.output.path}`} />
-                      ) : null}
-                    </button>
+                    {/* 滑鼠移到這一列：圓點的意思（已算出結果、哪一步有錯…）與這個階段的結果寫到哪裡 */}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-selected={selected}
+                          className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pl-2 text-left text-sm"
+                          onClick={() => !selected && onSelect(stage.index)}
+                        >
+                          <span className={`size-1.5 shrink-0 rounded-full ${DOT[stage.status]}`} aria-label={stage.status_text} />
+                          <span className="min-w-0 flex-1 truncate">{stage.name}</span>
+                          {stage.output ? (
+                            <FileOutput className="size-3.5 shrink-0 text-muted-foreground" aria-label={`寫出 ${stage.output.path}`} />
+                          ) : null}
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="right" className="max-w-72 flex-col items-start gap-0.5">
+                        <div className="font-medium">{stage.status_text}</div>
+                        <div className="opacity-80">
+                          {stage.output ? `寫出 ${stage.output.path}${stage.last ? '' : '，也給後面的階段用'}` : '暫存，給後面的階段用'}
+                        </div>
+                      </TooltipContent>
+                    </Tooltip>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button

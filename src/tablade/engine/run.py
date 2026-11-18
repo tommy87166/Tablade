@@ -329,8 +329,12 @@ def concat_parts(parts: list[Part], step: Step | None = None) -> pl.LazyFrame:
         raise RunError(step, str(err)) from None
 
 
-def apply_parts(step: Step, parts: list[Part], progress: Progress = None) -> list[Part]:
-    """套用一個步驟：合併型步驟接起所有 part，其他步驟每個 part 各自套用。"""
+def apply_parts(step: Step, parts: list[Part]) -> list[Part]:
+    """套用一個步驟：合併型步驟接起所有 part，其他步驟每個 part 各自套用。
+
+    只是把這一步排進每個 part 的處理流程（還沒處理資料），所以不回報進度：
+    真正花時間的是後面「執行（串流）」那一段。
+    """
     if step.combines:
         try:
             return step.combine(parts)
@@ -338,20 +342,7 @@ def apply_parts(step: Step, parts: list[Part], progress: Progress = None) -> lis
             raise RunError(step, str(err)) from None
         except pl.exceptions.PolarsError as err:
             raise RunError(step, f"{type(err).__name__}: {err}") from None
-    out = []
-    for i, (name, lf) in enumerate(parts):
-        if progress is not None and len(parts) > 1:
-            progress(
-                {
-                    "stage": f"準備 {step.id}",
-                    "file": name,
-                    "done": i,
-                    "total": len(parts),
-                    "unit": "files",
-                }
-            )
-        out.append((name, _apply(step, lf, name if len(parts) > 1 else "")))
-    return out
+    return [(name, _apply(step, lf, name if len(parts) > 1 else "")) for name, lf in parts]
 
 
 _WHERE = (SHEET, STAGE, ORIG_SOURCE_FILE, ORIG_LINE_NO, ORIG_SHEET, ORIG_STAGE)
@@ -772,7 +763,6 @@ def _stream_steps(
     tables: dict[str, pl.LazyFrame],
     limit: int,
     progress: Progress,
-    report: Any,
     cut: Cut,
 ) -> tuple[list[Part], Found, list[Step], Step | None]:
     """一個階段的步驟接成串流查詢。回傳（parts、已經先算好的警告、要從結果算警告的步驟、最後一步）。
@@ -791,9 +781,8 @@ def _stream_steps(
             items.append((f"{bound.id}:input", bound, True))
             found.update(collect_warnings(items, staged, limit, progress))
             pending = []
-        report(f"準備 {bound.id}")
         # 每個檔各自一條流水線；暫存欄位（__w_）一路保留到最後，才能取出警告
-        parts = apply_parts(bound, parts, progress)
+        parts = apply_parts(bound, parts)
         pending.append(bound)
         last = bound
     return parts, found, pending, last
@@ -896,9 +885,7 @@ def _execute_stream(
                 )
                 return _split_part(result, parts), result
 
-            parts, early, pending, last = _stream_steps(
-                stage, parts, tables, limit, progress, report, cut
-            )
+            parts, early, pending, last = _stream_steps(stage, parts, tables, limit, progress, cut)
             found.update(early)
             if not final:
                 parts = _with_part(parts)

@@ -104,12 +104,12 @@ export function RunDialog({ title, run, progress, busy, result, failed, error, o
                 {ratio !== null ? `${formatAmount(progress)}（${Math.round(ratio * 100)}%）` : '處理中…'}
               </span>
             </div>
-            <div className="h-1 overflow-hidden rounded bg-primary/15">
-              <div
-                className={`h-full bg-primary transition-[width] ${ratio === null ? 'w-1/3 animate-pulse' : ''}`}
-                style={ratio === null ? undefined : { width: `${ratio * 100}%` }}
-              />
-            </div>
+            {/* 只有知道做到哪裡時才有進度條（寫出 Parquet、讀 Excel 這類不知道的，只寫「處理中…」） */}
+            {ratio !== null ? (
+              <div className="h-1 overflow-hidden rounded bg-primary/15">
+                <div className="h-full bg-primary transition-[width]" style={{ width: `${ratio * 100}%` }} />
+              </div>
+            ) : null}
           </div>
         ) : null}
         <ol className="divide-y rounded-md border text-sm">

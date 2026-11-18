@@ -18,6 +18,17 @@ interface Sample {
 const files = import.meta.glob<Sample>('./dev/sample.json', { eager: true, import: 'default' })
 const sample = Object.values(files)[0]
 
+/** 用真的 Python 錄下來的進度（scratch 的 record_runs.py 產生 src/dev/runs.json，不進版控）：有的話照著重播 */
+interface RecordedRun {
+  events: [number, Progress & { stages?: RunState['stages']; phases?: RunState['phases'] }][]
+  result: Record<string, unknown> | null
+}
+const runFiles = import.meta.glob<Record<'export' | 'load' | 'full_run', RecordedRun>>('./dev/runs.json', {
+  eager: true,
+  import: 'default',
+})
+const recorded = Object.values(runFiles)[0]
+
 const missing = '找不到 src/dev/sample.json：請先執行 uv run python scripts/gen_frontend_dev_data.py'
 const keys = sample ? Object.keys(sample.states).map((k) => k.split(':').map(Number)) : []
 /** 每個階段的最後一格（「輸出資料」）是第幾格 */
@@ -46,7 +57,12 @@ const current = () => {
       columns: [],
       warnings: [],
       blocked: state.preview.requested >= 0 ? { unloaded: true, step: null, stage: null } : null,
+      mode: null,
+      full: null,
+      input_rows: null,
+      sampled_step: null,
     }
+    state.stages = state.stages.map((s) => ({ ...s, status: 'waiting', status_text: '還沒載入資料', rows: null, columns: null }))
     state.steps = state.steps.map((s) => ({ ...s, status: 'waiting', rows: null, files: null }))
     // 跟 session.py 一樣：還沒載入也可以匯出（匯出前先試跑）
     state.actions = { load: { ok: true, reason: null }, export: { ok: true, reason: null } }
@@ -96,7 +112,23 @@ async function fakeStages(perStage: (index: number, run: RunState) => Promise<vo
 }
 
 /** 假的匯出：看得到「執行（串流）」的行數與百分比，再來是沒有百分比的「寫出 Parquet」。 */
+/** 重播錄下來的進度：時間拉長到看得清楚（每則至少 150 毫秒、最多 600 毫秒）。 */
+async function replay(run: RecordedRun) {
+  let last = 0
+  for (const [t, event] of run.events) {
+    await delay(null, Math.min(Math.max((t - last) * 1000, 150), 600))
+    last = t
+    if (event.stages) pushRun({ stages: event.stages, phases: event.phases ?? [] })
+    else pushProgress(event)
+  }
+  pushProgress(null)
+}
+
 async function fakeExport() {
+  if (recorded) {
+    await replay(recorded.export)
+    return { ok: true as const, cancelled: false, ...recorded.export.result }
+  }
   const total = 4_074_302
   await fakeStages(
     async (stage) => {
@@ -200,8 +232,9 @@ export const mockApi: TabladeApi = sample
       add_file_entry: () => withState(),
       remove_file: () => withState(),
       load_data: async () => {
+        if (recorded) await replay(recorded.load)
+        else await fakeStages(() => delay(undefined, 300))
         loaded = true
-        await fakeStages(() => delay(undefined, 300))
         return withState()
       },
       set_input: () => withState(),
@@ -222,7 +255,10 @@ export const mockApi: TabladeApi = sample
         }
         return withState()
       },
-      full_run: () => withState(),
+      full_run: async () => {
+        if (recorded) await replay(recorded.full_run)
+        return withState()
+      },
       add_step: () => withState({ index: selected }),
       update_step: () => withState(),
       refresh_values: () => withState({ values: [] }),

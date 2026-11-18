@@ -386,7 +386,7 @@ def test_output_file_names_are_checked():
     data["stages"][2]["output_file"] = "../上一層"
     issues = {(i["path"], i["error"]) for i in check(data)}
     assert issues == {
-        ("stages[1].output_file", "輸出檔名「品項對照.parquet」和 stages[0] 重複"),
+        ("stages[1].output_file", "輸出檔名「品項對照.parquet」和階段「品項對照」重複"),
         (
             "stages[2].output_file",
             '輸出檔名「../上一層」不能有 / \\ : * ? " < > |，也不能用「.」開頭',

@@ -136,16 +136,16 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
     input.reader === 'stages'
       ? input.stages.length
         ? `讀 ${input.stages.map((n) => `@${n}`).join('、')}${input.error ? '・有錯誤' : input.loaded ? '' : '・還沒有結果'}`
-        : '尚未選擇前面的階段'
+        : '還沒選前面的階段'
       : !input.files.length
-        ? '尚未加入檔案'
+        ? '還沒加入檔案'
         : missing
           ? `有 ${missing} 個找不到的檔`
           : input.loaded
             ? `${input.sources.length} 個檔案・已載入`
             : input.stale
-              ? '設定已變更・請重新載入'
-              : `${input.files.length} 個項目・尚未載入`
+              ? '設定已變更・要重新載入'
+              : `${input.files.length} 個項目・還沒載入`
   const sourceTone =
     missing || (input.reader === 'stages' && input.error)
       ? 'text-destructive'

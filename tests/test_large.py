@@ -504,10 +504,10 @@ def test_stream_reports_progress_in_rows_and_cleans_up(workdir, monkeypatch):
     assert units == {
         "檢查編碼": "bytes",
         "轉碼": "bytes",
-        "準備": "files",
         "執行（串流）": "rows",
         "檢查警告": "checks",  # 範例有 3 項警告條件：第幾項
     }
+    assert not [p for p in seen if p["stage"].startswith("準備")]  # 排進流程很快，不回報進度
     checks = [p["done"] for p in seen if p["stage"] == "檢查警告"]
     assert checks == [0, 1, 2, 3] and all(p["total"] == 3 for p in seen if p["stage"] == "檢查警告")
     assert (

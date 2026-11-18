@@ -105,10 +105,9 @@ def test_invalid_step_stops_the_pipeline_but_stays_in_the_list(data):
     assert [st["status"] for st in state["steps"]] == ["ok", "error", "pending"]
     assert state["steps"][1]["errors"][0]["path"] == "names"
     assert state["steps"][2]["rows"] is None
-    assert (state["preview"]["requested"], state["preview"]["step"]) == (
-        2,
-        0,
-    )  # 顯示最後算得出來的那一步
+    # 選的那一步算不出來：不顯示資料，記被哪一步擋住
+    assert (state["preview"]["requested"], state["preview"]["step"]) == (2, 2)
+    assert state["preview"]["rows"] is None and state["preview"]["blocked"]["step"] == 1
     # 執行時的錯誤（欄位不存在）也一樣
     s.update_step(i, {**s.steps[i], "column": "nope", "names": ["a"]})
     state = s.state()
@@ -550,7 +549,8 @@ def test_steps_after_an_error_say_what_blocks_them(data):
     assert steps[0]["blocked_by"] is None and steps[1]["blocked_by"] is None
     s.select(2)
     preview = s.state()["preview"]
-    assert (preview["step"], preview["requested"]) == (0, 2)  # 顯示第 1 步的結果
+    assert (preview["step"], preview["requested"]) == (2, 2)
+    assert (preview["rows"], preview["columns"], preview["mode"]) == (None, [], None)  # 不顯示資料
     assert preview["blocked"] == {"unloaded": False, "step": 1, "stage": None}
     s.select(1)
     assert s.state()["preview"]["blocked"]["step"] == 1  # 這一步自己有錯
@@ -620,6 +620,32 @@ def test_sample_mode_and_full_mode_after_export(data, monkeypatch):
     s.update_step(n + 1, {"by": ["通路"], "aggregations": [total]})  # 改了步驟：匯出檔對不上了
     preview = s.state()["preview"]
     assert preview["mode"] == "sample" and preview["full"] is None
+
+
+def test_stage_status_text(data):
+    """階段面板圓點的說明：已算出結果、哪一步有錯、讀的前面階段有錯所以還算不出來。"""
+    target = data.parent / "combined.recipe.json"
+    target.write_text(
+        (ROOT / "examples" / "sales_combined.recipe.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    s = Session()
+    s.load_recipe(target)
+    texts = [x["status_text"] for x in s.state()["stages"]]
+    assert texts[0] == "還沒載入資料"
+    assert texts[3] == "讀的「文字明細」還沒有結果，還算不出來"
+    s.load_data()
+    s.select_stage(1)
+    n = len(s.steps)
+    s.add_step("parse_number", index=n)
+    s.update_step(n, {"columns": ["不存在的欄"]})
+    texts = [x["status_text"] for x in s.state()["stages"]]
+    assert texts == [
+        "已算出結果：6 列",
+        f"第 {n + 1} 步有錯",
+        "已算出結果：20 列",
+        "讀的「文字明細」有錯，還算不出來",
+    ]
 
 
 # ── 型別分頁 ────────────────────────────────────────────────────

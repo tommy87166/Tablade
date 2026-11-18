@@ -51,6 +51,8 @@ function StagesInput({ state, onInput }: Pick<InputProps, 'state' | 'onInput'>) 
   const picked = new Set(input.stages)
   const toggle = (name: string, on: boolean) => onInput({ stages: input.earlier.filter((n) => (n === name ? on : picked.has(n))) })
   const missing = input.stages.filter((n) => !input.earlier.includes(n))
+  /** 讀的階段裡第一個有錯的（有錯時要先修正那個階段，不是重新載入） */
+  const broken = state.stages.find((s) => picked.has(s.name) && s.status === 'error')
   return (
     <div className="space-y-3">
       <div className="space-y-1.5">
@@ -72,8 +74,12 @@ function StagesInput({ state, onInput }: Pick<InputProps, 'state' | 'onInput'>) 
       </div>
       {input.error ? <p className="rounded-md bg-destructive/10 p-2 text-sm text-destructive">{input.error}</p> : null}
       {!input.loaded && !input.error ? (
-        <p className="text-xs text-muted-foreground">
-          {input.stages.length ? '前面的階段還沒有結果：按工具列的「載入資料及預覽」，並確認前面的階段沒有錯誤' : '先勾選要讀的階段'}
+        <p className={`text-xs ${broken ? 'text-destructive' : 'text-muted-foreground'}`}>
+          {!input.stages.length
+            ? '先勾選要讀的階段'
+            : broken
+              ? `讀的「${broken.name}」有錯，先修正那個階段`
+              : '前面的階段還沒有結果：按工具列的「載入資料及預覽」'}
         </p>
       ) : input.loaded ? (
         <p className="text-xs text-muted-foreground">
@@ -244,7 +250,8 @@ export function InputPanel({ state, onAddFiles, onAddEntry, onRemove, onInput }:
                   {f.sheet ? <span className="text-muted-foreground">［{f.sheet}］</span> : null}
                 </span>
                 <span className="shrink-0 text-muted-foreground tabular-nums">
-                  {f.encoding}・{f.rows.toLocaleString()} 列・{formatBytes(f.bytes)}
+                  {f.encoding}・{f.rows.toLocaleString()} {f.encoding === 'excel' || f.encoding === 'parquet' ? '列' : '行'}・
+                  {formatBytes(f.bytes)}
                 </span>
               </li>
             ))}
@@ -299,7 +306,7 @@ function OutputFileField({ stage, onChange }: { stage: StageState; onChange: (fi
           {planned.exists ? <span className="text-amber-700 dark:text-amber-400">；已經有這個檔，匯出時會覆蓋</span> : null}
         </p>
       ) : (
-        <p className="text-xs text-muted-foreground">填了才另外存成檔案（存到 Recipe 所在資料夾底下的 output 資料夾）。</p>
+        <p className="text-xs text-muted-foreground">填了才另外存成檔案（存到 output 資料夾）。</p>
       )}
     </div>
   )
@@ -329,7 +336,7 @@ export function OutputPanel({ state, onOutput, onStageOutput }: OutputProps) {
     <section className="space-y-3">
       <div className="text-sm font-medium">輸出資料</div>
       <p className="text-xs text-muted-foreground">
-        按工具列的「處理並匯出資料」處理全部資料，寫到 Recipe 所在資料夾底下的 output 資料夾。
+        按「處理並匯出資料」處理全部資料，存到 output 資料夾。
       </p>
       {field}
       <label className="flex items-center justify-between gap-3 text-sm">
