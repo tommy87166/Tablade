@@ -352,6 +352,10 @@ type Dialog<T = object> = WithState<{ cancelled: boolean } & Partial<T>>
 export interface TabladeApi {
   ready(): Promise<Result<ReadyInfo>>
   selftest(): Promise<Result<{ result: SelftestResult }>>
+  /** 暫存資料夾（轉碼後的檔、處理中的暫存檔）的位置與目前大小 */
+  staging_info(): Promise<Result<{ path: string; bytes: number }>>
+  /** 用檔案總管／Finder 打開暫存資料夾 */
+  open_staging(): Promise<Result<{ path: string; bytes: number }>>
   smoke_done(passed: boolean): Promise<Result<object>>
   check_update(): Promise<Result<{ update: UpdateInfo | null }>>
   smoke_example(): Promise<WithState<{ issues: Issue[] }>>

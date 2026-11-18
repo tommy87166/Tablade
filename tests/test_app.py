@@ -14,6 +14,8 @@ FRONTEND = Path(__file__).resolve().parents[1] / "frontend"
 API_METHODS = {
     "ready",
     "selftest",
+    "staging_info",
+    "open_staging",
     "smoke_done",
     "check_update",
     "smoke_example",
@@ -168,3 +170,22 @@ def test_mutations_return_new_state():
 def test_bridge_does_not_expose_private_state():
     public = {name for name in dir(Api()) if not name.startswith("_")}
     assert public == API_METHODS
+
+
+def test_staging_folder_info_and_open(monkeypatch):
+    """自我診斷畫面的「暫存資料夾」：位置、目前大小；開啟時交給檔案總管／Finder（測試裡不真的開）。"""
+    from tablade import api as api_module
+    from tablade.ingest import sources
+
+    opened = []
+    monkeypatch.setattr(api_module, "open_folder", opened.append)
+    folder = sources.staging_dir()
+    sample = folder / "size-check.bin"
+    sample.write_bytes(b"12345")
+    try:
+        info = Api().staging_info()
+        assert info["ok"] and info["path"] == str(folder) and info["bytes"] >= 5
+        res = Api().open_staging()
+        assert res["ok"] and opened == [folder]
+    finally:
+        sample.unlink()

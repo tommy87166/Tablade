@@ -23,6 +23,8 @@ from typing import Any
 import polars as pl
 
 from . import __version__
+from .desktop import open_folder
+from .ingest.sources import staging_info
 from .recipe.schema import RECIPE_VERSION, RecipeError
 from .selftest import run_selftest
 from .session import Session, TrialError, catalog
@@ -122,6 +124,19 @@ class Api:
     @_wrap
     def selftest(self) -> dict[str, Any]:
         return {"result": run_selftest()}
+
+    @_wrap
+    def staging_info(self) -> dict[str, Any]:
+        """自我診斷畫面的「暫存資料夾」：位置與目前大小。"""
+        folder, size = staging_info()
+        return {"path": str(folder), "bytes": size}
+
+    @_wrap
+    def open_staging(self) -> dict[str, Any]:
+        """用檔案總管／Finder 打開暫存資料夾。"""
+        folder, size = staging_info()
+        open_folder(folder)
+        return {"path": str(folder), "bytes": size}
 
     @_wrap
     def check_update(self) -> dict[str, Any]:

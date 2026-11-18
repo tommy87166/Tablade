@@ -397,7 +397,7 @@ export default function App() {
         issues={report.issues}
         report={report.text}
       />
-      <SelftestDialog result={info.smoke ? null : selftest} onClose={() => setSelftest(null)} />
+      <SelftestDialog result={info.smoke ? null : selftest} api={api} onClose={() => setSelftest(null)} />
       {run && runState ? (
         <RunDialog
           title={run.title}

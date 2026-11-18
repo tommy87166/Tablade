@@ -161,6 +161,13 @@ def staging_dir() -> Path:
         return _staging
 
 
+def staging_info() -> tuple[Path, int]:
+    """這次開著的暫存資料夾（轉碼後的檔、處理中的暫存檔）與裡面的檔加起來多大（bytes）。"""
+    folder = staging_dir()
+    size = sum(p.stat().st_size for p in folder.rglob("*") if p.is_file())
+    return folder, size
+
+
 def clear_staging() -> None:
     """刪除所有暫存檔（暫存檔是原始資料的副本，不要留在電腦上）。關閉視窗與程式結束時都會呼叫。"""
     global _staging, _staging_lock

@@ -1,6 +1,6 @@
 # improve.md 的實作計畫
 
-狀態：計畫（還沒動手）。每一項的「為什麼」與已做的決定見 [../improve.md](../improve.md)，這份只寫怎麼做、順序與怎麼驗證。
+狀態：6 批都已完成。每一項的「為什麼」與已做的決定見 [../improve.md](../improve.md)，這份只寫怎麼做、順序與怎麼驗證。
 
 ## 順序
 
@@ -212,6 +212,8 @@
 ---
 
 ## 第 6 批：自我診斷畫面「開啟暫存資料夾」
+
+狀態：已完成。打開資料夾的程式在 `desktop.py`；API 是 `staging_info()`、`open_staging()`。
 
 - `api.open_staging()`：用 `staging_dir()` 取得位置（還沒建立就建立），macOS 用 `subprocess.run(["open", path])`、Windows 用 `os.startfile(path)` 打開；回傳位置與目前大小。只開本機資料夾，沒有網路（`check_code_policy.py` 沒有禁止 `subprocess`）。
 - `SelftestDialog.tsx`：最下面加「暫存資料夾」一列：位置、目前大小、［開啟暫存資料夾］按鈕；說明「轉碼後的檔與處理中的暫存檔放在這裡，關掉 App 時會刪除；上次沒正常關掉留下的，下次開啟時清掉」。

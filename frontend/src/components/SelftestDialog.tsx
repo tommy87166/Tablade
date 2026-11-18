@@ -1,12 +1,14 @@
 /**
  * 自我檢測的結果：按下「自我檢測」時 Python 用假資料跑一次（在暫存資料夾，做完就刪除）。
- * 分三段：結果、版本及環境、每一項檢查。
+ * 分四段：結果、版本及環境、每一項檢查、暫存資料夾（位置、大小、用檔案總管／Finder 打開）。
  */
-import { CircleCheck, CircleMinus, CircleX } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { CircleCheck, CircleMinus, CircleX, FolderOpen } from 'lucide-react'
+import { useEffect, useState, type ReactNode } from 'react'
 
+import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import type { SelftestResult } from '../bridge'
+import type { SelftestResult, TabladeApi } from '../bridge'
+import { formatBytes } from '../lib/format'
 
 /** 版本資訊的顯示名稱與說明。 */
 const VERSIONS: Record<string, [string, string]> = {
@@ -35,10 +37,50 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 
 interface Props {
   result: SelftestResult | null
+  api: TabladeApi | null
   onClose: () => void
 }
 
-export function SelftestDialog({ result, onClose }: Props) {
+/** 暫存資料夾：位置、目前大小、［開啟暫存資料夾］。 */
+function StagingFolder({ api }: { api: TabladeApi }) {
+  const [info, setInfo] = useState<{ path: string; bytes: number } | null>(null)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let cancelled = false
+    void api.staging_info().then((res) => {
+      if (cancelled) return
+      if (res.ok) setInfo({ path: res.path, bytes: res.bytes })
+      else setError(res.error)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [api])
+  const open = async () => {
+    const res = await api.open_staging()
+    if (res.ok) setInfo({ path: res.path, bytes: res.bytes })
+    else setError(res.error)
+  }
+  return (
+    <Section title="暫存資料夾">
+      <p className="text-xs text-muted-foreground">
+        轉碼後的檔與處理中的暫存檔放在這裡，關掉 App 時會刪除；上次沒正常關掉留下的，下次開啟時清掉。
+      </p>
+      {info ? (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <code className="min-w-0 flex-1 rounded bg-muted px-2 py-1 text-xs break-all">{info.path}</code>
+          <span className="text-xs text-muted-foreground tabular-nums">目前 {formatBytes(info.bytes)}</span>
+          <Button size="sm" variant="outline" onClick={() => void open()}>
+            <FolderOpen /> 開啟暫存資料夾
+          </Button>
+        </div>
+      ) : null}
+      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+    </Section>
+  )
+}
+
+export function SelftestDialog({ result, api, onClose }: Props) {
   const checks = result?.checks ?? []
   const failed = checks.find((c) => !c.ok && c.ran !== false)
   return (
@@ -110,6 +152,8 @@ export function SelftestDialog({ result, onClose }: Props) {
             ))}
           </ol>
         </Section>
+
+        {api && result ? <StagingFolder api={api} /> : null}
       </DialogContent>
     </Dialog>
   )

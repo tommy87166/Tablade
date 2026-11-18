@@ -131,6 +131,8 @@ async function fakeExport() {
 export const mockApi: TabladeApi = sample
   ? {
       ready: () => delay({ ...sample.ready, platform: 'Browser（開發用假資料）' }, 0),
+      staging_info: () => delay({ ok: true as const, path: '/tmp/tablade-stage-xxxx（開發用假資料）', bytes: 12_345_678 }),
+      open_staging: () => delay({ ok: true as const, path: '/tmp/tablade-stage-xxxx（開發用假資料）', bytes: 12_345_678 }),
       selftest: () =>
         delay({
           ok: true,
