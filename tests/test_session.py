@@ -814,6 +814,25 @@ def test_recipe_dict_and_old_format(data, tmp_path):
         Session().load_recipe(old)
 
 
+def test_full_run_only_runs_the_stages_it_needs(data, monkeypatch):
+    """「完整跑一次」只跑那個階段和它用到的階段：前面沒用到的階段（例如很大的文字明細）不跑。"""
+    from tablade import session as session_module
+
+    monkeypatch.setattr(session_module, "SAMPLE_THRESHOLD", 5)
+    monkeypatch.setattr(session_module, "SAMPLE_HEAD", 2)
+    monkeypatch.setattr(session_module, "SAMPLE_TAIL", 1)
+    s = combined(data)
+    assert s.state()["stages"][2]["sampled"]
+    seen: list[dict] = []
+    s.progress = seen.append
+    s.full_run(2)  # Excel明細：只讀自己的檔
+    runs = [[x["name"] for x in p["stages"]] for p in seen if "stages" in p]
+    assert runs and all(r == ["Excel明細"] for r in runs)
+    state = s.state()
+    assert state["stages"][2]["full"] and state["stages"][2]["rows"] == 20
+    assert not state["stages"][1]["full"]  # 文字明細沒有跑
+
+
 def test_full_run_replaces_a_sampled_right_table(data, monkeypatch):
     """右表是樣本時，「完整跑一次」之後預覽用完整的右表。"""
     from tablade import session as session_module

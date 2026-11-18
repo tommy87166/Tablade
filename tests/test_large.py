@@ -737,6 +737,42 @@ def stage_events(seen: list[dict]) -> list[list[tuple]]:
     ]
 
 
+IDLE = {"stage": "", "file": "", "done": 0, "total": 0}
+
+
+def test_tracker_clears_the_activity_when_something_new_starts():
+    """開始新的 phase、檔案或階段時先送一則空白進度：畫面上不會還寫著上一段的進度。"""
+    seen: list[dict] = []
+    t = engine_run.StageTracker(["a", "b"], seen.append, [engine_run.PREPARE])
+    steps = [
+        lambda: t.begin(engine_run.PREPARE),
+        lambda: t.files(0, 2, "x.csv"),
+        lambda: t.end(engine_run.PREPARE),
+        lambda: t.start(0),
+        lambda: t.done(0, 3),
+        lambda: t.start(1),
+    ]
+    for step, clears in zip(steps, [True, True, False, True, False, True], strict=True):
+        seen.clear()
+        step()
+        assert (seen[-1] == IDLE) is clears
+        assert "stages" in seen[0]  # 先送階段的狀態
+
+
+def test_each_stage_starts_with_a_blank_activity(workdir):
+    """串流執行時，每個階段開始的下一則就是空白進度（之後才是這個階段自己的進度）。"""
+    seen: list[dict] = []
+    r = parse_recipe(load_json(COMBINED))
+    execute(r, workdir, output=workdir / "s.parquet", mode="stream", progress=seen.append)
+    starts = [
+        i
+        for i, p in enumerate(seen)
+        if "stages" in p and any(s["status"] == "running" for s in p["stages"])
+    ]
+    assert len(starts) >= 4
+    assert all(seen[i + 1] == IDLE for i in starts)
+
+
 @pytest.mark.parametrize("mode", ["eager", "stream"])
 def test_stage_progress_is_reported_in_order(workdir, mode):
     """每個階段依序回報：處理中 → 完成（列數），回報的事件和一般進度同一個格式。"""

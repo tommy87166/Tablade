@@ -2,6 +2,8 @@
  * 處理中的進度視窗（處理並匯出資料、載入資料及預覽、完整跑一次）：所有進度都只顯示在這裡。
  *
  * - 最上面是目前在做什麼（轉碼哪個檔、處理到第幾行、檢查警告第幾項），有百分比時有進度條。
+ *   剛開始一個階段或一個檔、還沒有進度時寫「處理中…」（Python 會先送一則空白的進度，清掉上一段的）；
+ *   處理中這一塊一直在、高度不變，視窗才不會跳來跳去。
  * - 下面一列一列：匯出時先是「準備檔案」「試跑」，再來是每個階段。等待中是灰點、處理中轉圈、
  *   完成打勾、失敗紅叉；處理中那一列的下面寫細節（已處理幾個檔、試跑到第幾個階段）。
  * - 匯出跑完後留著當結果摘要，按「關閉」才收起來；試跑出錯時可以「前往這一步」。
@@ -95,21 +97,23 @@ export function RunDialog({ title, run, progress, busy, result, failed, error, o
                 : `完成・共 ${formatElapsed(elapsed)}`}
           </DialogDescription>
         </DialogHeader>
-        {busy && progress && progress.stage ? (
+        {busy ? (
           <div className="space-y-1 rounded-md bg-primary/5 px-3 py-2 text-xs">
-            <div className="flex items-center gap-2">
-              <span className="font-medium">{activity(progress.stage)}</span>
-              <span className="min-w-0 flex-1 truncate text-muted-foreground">{progress.file}</span>
-              <span className="shrink-0 text-muted-foreground tabular-nums">
-                {ratio !== null ? `${formatAmount(progress)}（${Math.round(ratio * 100)}%）` : '處理中…'}
-              </span>
-            </div>
-            {/* 只有知道做到哪裡時才有進度條（寫出 Parquet、讀 Excel 這類不知道的，只寫「處理中…」） */}
-            {ratio !== null ? (
-              <div className="h-1 overflow-hidden rounded bg-primary/15">
-                <div className="h-full bg-primary transition-[width]" style={{ width: `${ratio * 100}%` }} />
+            {progress && progress.stage ? (
+              <div className="flex items-center gap-2">
+                <span className="font-medium">{activity(progress.stage)}</span>
+                <span className="min-w-0 flex-1 truncate text-muted-foreground">{progress.file}</span>
+                <span className="shrink-0 text-muted-foreground tabular-nums">
+                  {ratio !== null ? `${formatAmount(progress)}（${Math.round(ratio * 100)}%）` : '處理中…'}
+                </span>
               </div>
-            ) : null}
+            ) : (
+              <div className="text-muted-foreground">處理中…</div>
+            )}
+            {/* 只有知道做到哪裡時才有進度條（寫出 Parquet、讀 Excel 這類不知道的，只寫「處理中…」）；不顯示時也留著位置 */}
+            <div className={`h-1 overflow-hidden rounded bg-primary/15 ${ratio === null ? 'invisible' : ''}`}>
+              <div className="h-full bg-primary transition-[width]" style={{ width: `${(ratio ?? 0) * 100}%` }} />
+            </div>
           </div>
         ) : null}
         <ol className="divide-y rounded-md border text-sm">

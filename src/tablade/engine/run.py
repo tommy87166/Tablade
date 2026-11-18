@@ -169,6 +169,8 @@ class StageTracker:
     事件和一般進度同一個格式，另外多兩個欄：``stages``（``[{"name", "status", "rows", "detail"}]``）、
     ``phases``（階段清單上面的「準備檔案」「試跑」：``[{"name", "status", "detail"}]``）；api.py 另外送到畫面。
     某個 phase 進行中時（例如試跑），各階段的開始與失敗算在那個 phase 上，不改階段的狀態。
+    開始新的階段、phase 或檔案時，另外送一則空白的一般進度（``stage`` 是空字串）：畫面上「目前在做什麼」
+    才不會一直寫著上一個階段或上一個檔的進度。
     """
 
     def __init__(self, names: list[str], progress: Progress, phases: list[str] | None = None):
@@ -197,6 +199,11 @@ class StageTracker:
                 }
             )
 
+    def _idle(self) -> None:
+        """開始新的一段：清掉上一段的進度（還不知道新的一段做到哪裡）。"""
+        if self.progress is not None:
+            self.progress({"stage": "", "file": "", "done": 0, "total": 0})
+
     def _phase(self, name: str) -> dict[str, Any] | None:
         return next((p for p in self.phases if p["name"] == name), None)
 
@@ -211,6 +218,7 @@ class StageTracker:
             phase.update(status="running", detail="")
             self.phase = phase
             self._emit()
+            self._idle()
 
     def end(self, name: str, detail: str | None = None) -> None:
         phase = self._phase(name)
@@ -242,6 +250,7 @@ class StageTracker:
         if target is not None:
             target["detail"] = detail
             self._emit()
+        self._idle()
 
     def reading(self, index: int) -> None:
         """讀這個階段的檔（還沒開始處理）：失敗時算這個階段的。"""
@@ -255,6 +264,7 @@ class StageTracker:
         else:
             self.items[index].update(status="running", detail="")
         self._emit()
+        self._idle()
 
     def done(self, index: int, rows: int | None) -> None:
         self.current = None

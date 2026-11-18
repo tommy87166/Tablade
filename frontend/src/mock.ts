@@ -111,7 +111,6 @@ async function fakeStages(perStage: (index: number, run: RunState) => Promise<vo
   }
 }
 
-/** 假的匯出：看得到「執行（串流）」的行數與百分比，再來是沒有百分比的「寫出 Parquet」。 */
 /** 重播錄下來的進度：時間拉長到看得清楚（每則至少 150 毫秒、最多 600 毫秒）。 */
 async function replay(run: RecordedRun) {
   let last = 0
@@ -124,6 +123,7 @@ async function replay(run: RecordedRun) {
   pushProgress(null)
 }
 
+/** 假的匯出：看得到「執行（串流）」的行數與百分比，再來是沒有百分比的「寫出 Parquet」。 */
 async function fakeExport() {
   if (recorded) {
     await replay(recorded.export)

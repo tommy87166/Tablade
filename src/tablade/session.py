@@ -1086,7 +1086,10 @@ class Session:
             return computed[index].frame if index < len(computed) else None
 
     def full_run(self, index: int) -> None:
-        """「完整跑一次」：用全部資料跑到第 index 個階段，之後的預覽用它完整的結果（結合的右表）。"""
+        """「完整跑一次」：用全部資料算出第 index 個階段，之後的預覽用它完整的結果（結合的右表）。
+
+        只跑這個階段和它往上讀到、結合到的階段（``_upstream``），沒用到的前面階段不跑。
+        """
         with self._lock:
             self._check_stage(index)
             base = self.require_loaded()
@@ -1094,7 +1097,7 @@ class Session:
             if frame is None or not sampled:
                 return
             data = self.recipe_dict()
-            data["stages"] = data["stages"][: index + 1]
+            data["stages"] = [data["stages"][i] for i in self._upstream(index)]
             data["output"] = {**data["output"], "keep_system_columns": True, "manifest": False}
             target = staging_dir() / f"full-{uuid.uuid4().hex}.parquet"
             try:

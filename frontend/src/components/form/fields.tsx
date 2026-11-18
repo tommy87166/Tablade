@@ -29,7 +29,7 @@ export interface FormContext {
   params: Record<string, unknown>
   /** 「前往」：切到那個階段、選它的結果 */
   onGoStage?: (index: number) => void
-  /** 「完整跑一次」：用全部資料跑到那個階段 */
+  /** 「完整跑一次」：用全部資料算出那個階段（只跑它和它用到的階段） */
   onFullRun?: (index: number) => void
   /** 「重新從資料讀取」：這個參數的值從資料重新讀出（參數名稱） */
   onRefresh?: (field: string) => void
