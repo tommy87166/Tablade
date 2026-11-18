@@ -286,6 +286,11 @@ Tablade 是本機執行的資料清洗工具。使用者描述要怎麼整理資
    只有乾淨、第一行就是標題的 CSV 才用 `"csv"`。Excel 用 `"reader": "excel"`：每一列都是資料（不當標題），
    欄名是 A、B、C…，`"sheet"` 寫工作表名稱（空白是第一個工作表，`"*"` 是每個檔的全部工作表：
    每個工作表各自處理，系統欄位 `__sheet` 記工作表名稱）。Parquet 檔用 `"parquet"`（欄位與型別照檔案）。
+   資料放在 zip 裡的文字檔用 `"reader": "zip_lines"`（和 `text_lines` 一樣逐行讀，不用先解壓縮）：
+   `files` 是 zip 的清單（例如 `"data/2026*.zip"`），`"members"` 必填，寫 zip 裡要讀的檔的相對路徑
+   （例如 `"2026*/HEADER*.TXT"`；比對完整路徑、不分大小寫，`*` 不跨過 `/`，`**` 是任何層數的資料夾）。
+   zip 裡每個符合的檔是一個來源，`__source_file` 是「zip 的路徑/zip 裡的路徑」。只支援文字檔，CSV、Excel 要先解壓縮；
+   有密碼的 zip 不支援。zip 裡有好幾種檔時，一種檔一個階段（`members` 各寫各的）。
    好幾份格式不同的資料要各自整理再接起來或對照時，分成好幾個階段（見下面「階段」）。
 3. **依序寫步驟。** 只能用下面列出的步驟類型，參數細節見 `references/steps.md`。
    決定欄位結構的步驟要把欄名寫死：`split_delimited` 的 `columns`、`promote_headers` 的 `names`。

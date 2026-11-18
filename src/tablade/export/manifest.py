@@ -119,10 +119,34 @@ def build_manifest(
                 "sha256": f.sha256,
                 "encoding": f.encoding,
                 "rows": f.rows,
+                # zip 裡的檔：bytes、sha256 是解開後的內容，archive 是 zip 本身
+                **(
+                    {
+                        "archive": {
+                            "file": f.archive,
+                            "bytes": f.archive_bytes,
+                            "sha256": f.archive_sha256,
+                        }
+                    }
+                    if f.archive
+                    else {}
+                ),
             }
             for f in report.inputs
             if f.stage in keep
         ],
+        # 讀取方式 zip_lines：沒有符合的檔、略過的 zip
+        **(
+            {
+                "archives_without_matches": [
+                    {**({"stage": a["stage"]} if multi else {}), "file": a["file"]}
+                    for a in report.skipped_archives
+                    if a["stage"] in keep
+                ]
+            }
+            if any(a["stage"] in keep for a in report.skipped_archives)
+            else {}
+        ),
         "steps": [
             {
                 **({"stage": s.stage} if multi else {}),

@@ -201,6 +201,38 @@ export interface SourceFile {
   sheet?: string | null
   /** 這個檔是哪個階段讀的（處理紀錄用） */
   stage?: string | null
+  /** zip 裡的檔：zip 檔的路徑（bytes、sha256 是解開後的） */
+  archive?: string | null
+  archive_bytes?: number | null
+  archive_sha256?: string | null
+}
+
+/** zip 裡一個符合的檔 */
+export interface ZipMember {
+  path: string
+  /** 解開後多大 */
+  bytes: number
+  /** 壓縮方式（Deflate、Deflate64…） */
+  method: string
+  /** 讀不了的原因（有密碼、不支援的壓縮方式…）；可以讀時是 null */
+  problem: string | null
+}
+
+/** 讀取方式「zip 裡的文字檔」的掃描結果（Python 的 session._zip_state） */
+export interface ZipScan {
+  /** 找不到 zip、members 沒填這類讀不了的情況 */
+  error: string | null
+  /** 每個 zip 裡符合的檔；members 是空的代表這個 zip 沒有符合的檔（略過） */
+  zips: { path: string; members: ZipMember[] }[]
+  files: number
+  /** 符合的檔解開後共多大 */
+  bytes: number
+  /** 暫存大約要多少空間 */
+  estimate: number
+  /** 暫存資料夾所在磁碟剩多少（讀不到時是 null） */
+  free: number | null
+  /** 不能載入或匯出的原因 */
+  problems: string[]
 }
 
 /** 用樣本算的步驟：目前階段（stage 是空字串）的第幾步，或往上讀到、結合到的階段的第幾步 */
@@ -247,7 +279,7 @@ export interface ViewState {
     loaded: boolean
     /** 載入之後設定或檔案變了，要重新載入 */
     stale: boolean
-    reader: 'text_lines' | 'csv' | 'excel' | 'parquet' | 'stages'
+    reader: 'text_lines' | 'zip_lines' | 'csv' | 'excel' | 'parquet' | 'stages'
     encoding: string
     /** Excel 的工作表名稱；空白代表第一個工作表，* 代表全部工作表 */
     sheet: string
@@ -264,6 +296,10 @@ export interface ViewState {
     columns: string[] | null
     /** 載入後實際讀到的每個檔 */
     sources: SourceFile[]
+    /** 讀取方式是「zip 裡的文字檔」時：zip 裡要讀的檔（相對路徑，可用 * ? [] **，不分大小寫） */
+    members?: string
+    /** 讀取方式是「zip 裡的文字檔」時的掃描結果（只讀 zip 的目錄）；其他讀取方式是 null */
+    zip_scan?: ZipScan | null
   }
   output: { keep_system_columns: boolean; manifest: boolean }
   steps: StepState[]

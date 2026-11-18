@@ -58,11 +58,13 @@ from .ingest.sources import (
     concat,
     expand,
     release_workers,
-    resolve,
     sample,
     scan_parts,
+    scan_zips,
+    source_count,
     staging_dir,
 )
+from .ingest.zip_lines import method_name as zip_method_name
 from .recipe.schema import (
     DEFAULT_STAGE,
     RECIPE_VERSION,
@@ -86,7 +88,14 @@ from .steps.base import (
 )
 
 MAX_UNDO = 100
-DEFAULT_INPUT = {"files": [], "reader": "text_lines", "encoding": "auto", "sheet": "", "stages": []}
+DEFAULT_INPUT = {
+    "files": [],
+    "reader": "text_lines",
+    "encoding": "auto",
+    "sheet": "",
+    "stages": [],
+    "members": "",
+}
 DEFAULT_OUTPUT = {"keep_system_columns": True, "manifest": True}
 DEFAULT_FORMAT = "parquet"
 """新的階段的輸出格式（每個階段的 output_format 是必填）。"""
@@ -358,6 +367,8 @@ def column_summary(frame: pl.DataFrame | pl.LazyFrame) -> list[dict[str, Any]]:
 class Session:
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        self._zip_scans: dict[Any, Any] = {}
+        """讀取方式 zip_lines 的掃描結果（只讀 zip 的目錄）：依檔案清單、members、每個 zip 的大小與修改時間快取。"""
         self.recipe_path: Path | None = None
         self.base_dir: Path | None = None
         self.meta: dict[str, str] = {"name": "", "description": ""}
@@ -476,6 +487,10 @@ class Session:
             source.pop("stages", None)
             if source.get("reader") != "excel" and not source.get("sheet"):
                 source.pop("sheet", None)  # 不是 Excel 時不寫工作表，Recipe 比較好讀
+            if source.get("reader") != "zip_lines":
+                source.pop(
+                    "members", None
+                )  # 不是 zip 時不寫 members（畫面上填過的留在 Session 裡）
         out = {"name": stage["name"], "input": source, "steps": stage["steps"]}
         if stage.get("output_file"):
             out["output_file"] = stage["output_file"]  # 沒填就不寫，Recipe 比較好讀
@@ -769,7 +784,7 @@ class Session:
             del self.input["files"][index]
 
     def set_input(self, values: dict[str, Any]) -> None:
-        """讀取方式、編碼、工作表；讀前面階段的輸出時，要讀的階段（只能選前面的）。"""
+        """讀取方式、編碼、工作表、zip 裡的檔（members）；讀前面階段的輸出時，要讀的階段（只能選前面的）。"""
         with self._lock:
             if "stages" in values:
                 earlier = [st["name"] for st in self.stages[: self.current]]
@@ -790,7 +805,7 @@ class Session:
                     )
                 )
             self._change()
-            for key in ("reader", "encoding", "sheet"):
+            for key in ("reader", "encoding", "sheet", "members"):
                 if key in values:
                     self.input[key] = values[key]
             if "stages" in values:
@@ -1068,7 +1083,7 @@ class Session:
                         files.append((str(p.resolve()), st.st_size, st.st_mtime_ns))
                     except OSError:
                         continue
-        reading = {k: source.get(k) for k in ("reader", "encoding", "sheet")}
+        reading = {k: source.get(k) for k in ("reader", "encoding", "sheet", "members")}
         return _digest({"reading": reading, "files": files})
 
     @staticmethod
@@ -1129,7 +1144,7 @@ class Session:
         self._sources.pop(uid, None)
         self._stale.discard(uid)
         try:
-            total = len(resolve(source["files"], base))
+            total = source_count(source["files"], source["reader"], base, source.get("members", ""))
             parts, files = scan_parts(
                 source["files"],
                 source["reader"],
@@ -1138,6 +1153,7 @@ class Session:
                 self.progress,
                 source.get("sheet", ""),
                 on_file=lambda i, file: tracker.files(i, total, file),
+                members=source.get("members", ""),
             )
             tracker.files(total, total)
             if sum(f.rows for f in files) <= SAMPLE_THRESHOLD:
@@ -1600,6 +1616,7 @@ class Session:
                     "rows": source.height if source is not None else None,
                     "columns": _data_columns(source) if source is not None else None,
                     "sources": [f.__dict__ for f in files] if loaded is not None else [],
+                    "zip_scan": self._zip_state(),
                 },
                 "output": self.output,
                 "steps": steps,
@@ -1815,6 +1832,77 @@ class Session:
                 raise SessionError(f"{load_hint()}{where}")
             return base
 
+    def _zip_scan(self, stage: dict[str, Any]) -> Any:
+        """讀取方式 zip_lines 的階段：每個 zip 裡符合的檔（``sources.ZipScan``）；找不到 zip、members 沒填等
+        讀不了的情況丟出 InputError。只讀 zip 的目錄，同一組設定、zip 沒變時用快取。"""
+        source = stage["input"]
+        base = self.base_dir or Path.cwd()
+        files, members = list(source["files"]), source.get("members", "")
+        zips = []
+        for entry in files:
+            for path in expand(entry, base):
+                with contextlib.suppress(OSError):
+                    info = path.stat()
+                    zips.append((str(path), info.st_size, info.st_mtime_ns))
+        key = (str(base), tuple(files), members, tuple(zips))
+        if key not in self._zip_scans:
+            if len(self._zip_scans) > 32:
+                self._zip_scans.clear()
+            self._zip_scans[key] = scan_zips(files, members, base)
+        return self._zip_scans[key]
+
+    def _zip_problem(self, stage: dict[str, Any]) -> str | None:
+        """zip 裡的檔不能讀的原因（有密碼、不支援的壓縮方式、全部沒有符合的檔、暫存空間不夠…）。"""
+        if stage["input"].get("reader") != "zip_lines" or not stage["input"]["files"]:
+            return None
+        try:
+            problems = self._zip_scan(stage).problems(stage["input"].get("members", ""))
+        except InputError as err:
+            return str(err)
+        return t("；", "; ").join(problems) if problems else None
+
+    def _zip_state(self) -> dict[str, Any] | None:
+        """畫面上的掃描清單（讀取方式 zip_lines 時）：每個 zip 裡符合的檔、大小、壓縮方式、不能讀的原因。"""
+        stage = self.stage
+        if stage["input"].get("reader") != "zip_lines" or not stage["input"]["files"]:
+            return None
+        members = stage["input"].get("members", "")
+        try:
+            scan = self._zip_scan(stage)
+        except InputError as err:
+            return {
+                "error": str(err),
+                "zips": [],
+                "files": 0,
+                "bytes": 0,
+                "estimate": 0,
+                "free": None,
+                "problems": [],
+            }
+        return {
+            "error": None,
+            "zips": [
+                {
+                    "path": z.path,
+                    "members": [
+                        {
+                            "path": m.path,
+                            "bytes": m.size,
+                            "method": zip_method_name(m.method),
+                            "problem": m.problem(),
+                        }
+                        for m in z.members
+                    ],
+                }
+                for z in scan.zips
+            ],
+            "files": len(scan.members),
+            "bytes": sum(m.size for _, m in scan.members),
+            "estimate": scan.estimate,
+            "free": scan.free,
+            "problems": scan.problems(members),
+        }
+
     def _file_problem(self) -> str | None:
         """檔案清單的問題：讀實際檔的階段還沒加檔案，或清單上有找不到的檔。"""
         base = self.base_dir or Path.cwd()
@@ -1835,6 +1923,9 @@ class Session:
                     f"找不到：{'、'.join(missing)}{where}，請先從檔案清單移除",
                     f"Not found: {', '.join(missing)}{where}. Remove {'it' if len(missing) == 1 else 'them'} from the file list first",
                 )
+            problem = self._zip_problem(stage)
+            if problem:
+                return f"{problem}{where}"
         return None
 
     def _load_problem(self) -> str | None:
@@ -1859,6 +1950,14 @@ class Session:
                     f"找不到：{'、'.join(missing)}{where}，請先從檔案清單移除",
                     f"Not found: {', '.join(missing)}{where}. Remove {'it' if len(missing) == 1 else 'them'} from the file list first",
                 )
+            problem = self._zip_problem(stage)
+            if problem:
+                where = (
+                    t(f"（階段「{stage['name']}」）", f' (stage "{stage["name"]}")')
+                    if multi
+                    else ""
+                )
+                return f"{problem}{where}"
         if all(self._load_source(st)[0] is not None for st in with_files):
             return t(
                 "已載入；檔案清單、讀取方式或編碼變更後可以重新載入",

@@ -43,9 +43,9 @@ from tablade.dtypes import type_label
 from tablade.usage import worker_memory
 
 from ..i18n import t
-from . import excel
+from . import excel, zip_lines
 from .encoding import AUTO_ORDER, SUPPORTED, DecodeError
-from .transcode import CHUNK, decode_range, segment_bounds, transcode_segment
+from .transcode import CHUNK, decode_range, segment_bounds, transcode_bytes, transcode_segment
 
 SOURCE_FILE, LINE_NO, SHEET, STAGE = "__source_file", "__line_no", "__sheet", "__stage"
 ORDER = (SOURCE_FILE, LINE_NO)
@@ -97,6 +97,11 @@ class SourceFile:
     """讀 Excel 全部工作表時，這一個來源是哪個工作表。"""
     stage: str | None = None
     """這個檔是哪個階段讀的（處理紀錄用；不影響來源名稱）。"""
+    archive: str | None = None
+    """zip 裡的檔（讀取方式 ``zip_lines``）：zip 檔的路徑（和 ``path`` 一樣的寫法）。"""
+    archive_bytes: int | None = None
+    archive_sha256: str | None = None
+    """zip 檔本身的大小與 SHA-256（``bytes``、``sha256`` 是 zip 裡這個檔解開後的）。"""
 
     @property
     def name(self) -> str:
@@ -392,9 +397,15 @@ def _line_of(path: Path, offset: int) -> int:
     return count
 
 
-def _decode_error(path: Path, encoding: str, failure: tuple[int, int]) -> DecodeError:
+def _decode_error(
+    path: Path,
+    encoding: str,
+    failure: tuple[int, int],
+    newlines_before: Callable[[int], int] | None = None,
+) -> DecodeError:
+    """轉不了的字的訊息（第幾行）；``newlines_before(offset)`` 是那個位置之前有幾個換行（預設讀原檔來數）。"""
     offset, byte = failure
-    newlines = _line_of(path, offset)
+    newlines = (newlines_before or (lambda pos: _line_of(path, pos)))(offset)
     if byte < 0:
         return DecodeError(
             t(
@@ -627,29 +638,44 @@ def _segments(
                 Path(job[4]).unlink(missing_ok=True)
 
 
-def _write_lines(
-    path: Path,
-    encoding: str,
-    folder: Path,
-    progress: Progress,
-    segment: int,
-    pool: ProcessPoolExecutor | None,
-    ahead: int,
-) -> list[Path]:
-    """每取到一段轉好的文字，就寫成一個 Parquet（``line`` 一欄）並刪掉那段文字。"""
+def _write_lines(segments: Iterator[Path], folder: Path, group: int = 1) -> list[Path]:
+    """每取到 ``group`` 段轉好的文字，就寫成一個 Parquet（``line`` 一欄）並刪掉那些文字。
+
+    zip 裡的檔段比較小（主程序記憶體裡的位元組），幾段合寫成一個 Parquet，檔數才和一般的檔差不多。
+    """
     folder.mkdir(parents=True, exist_ok=True)
     files: list[Path] = []
-    with contextlib.closing(
-        _segments(path, encoding, folder, progress, segment, pool, ahead)
-    ) as segments:
-        for i, text in enumerate(segments):
-            target = folder / f"{i:06d}.parquet"
-            pl.scan_lines(text, name="line").sink_parquet(
-                target, compression="zstd", row_group_size=LINES_ROW_GROUP
-            )
+    batch: list[Path] = []
+
+    def flush() -> None:
+        target = folder / f"{len(files):06d}.parquet"
+        pl.scan_lines(list(batch), name="line").sink_parquet(
+            target, compression="zstd", row_group_size=LINES_ROW_GROUP
+        )
+        for text in batch:
             text.unlink()
-            files.append(target)
+        batch.clear()
+        files.append(target)
+
+    with contextlib.closing(segments):  # type: ignore[type-var]
+        for text in segments:
+            batch.append(text)
+            if len(batch) >= group:
+                flush()
+        if batch:
+            flush()
     return files
+
+
+def _pick_pool(size: int, minimum: int) -> ProcessPoolExecutor | None:
+    """這麼大的檔要不要用工作程序（開不了時這次開著的期間都改用單核心）。"""
+    if not (_workers() and size >= minimum):
+        return None
+    try:
+        return _get_pool()
+    except (OSError, RuntimeError, BrokenProcessPool):  # 例如公司電腦不讓開新程序
+        _give_up_pool()
+        return None
 
 
 def _stage_lines(
@@ -674,24 +700,21 @@ def _stage_lines(
     size = path.stat().st_size
     minimum = PARALLEL_MIN if parallel_min is None else parallel_min
     step = segment or SEGMENT
-    workers = pool
-    if workers is None and _workers() and size >= minimum:
-        try:
-            workers = _get_pool()
-        except (OSError, RuntimeError, BrokenProcessPool):  # 例如公司電腦不讓開新程序
-            _give_up_pool()
+    workers = pool or _pick_pool(size, minimum)
     count = getattr(workers, "_max_workers", 1) if workers is not None else 1
     ahead = 2 * count
     hasher, digest = _hash_in_background(path)
     try:
         try:
-            files = _write_lines(path, encoding, folder, progress, step, workers, ahead)
+            files = _write_lines(
+                _segments(path, encoding, folder, progress, step, workers, ahead), folder
+            )
         except PoolUnavailable:
             if pool is not None:
                 raise
             _give_up_pool()
             shutil.rmtree(folder, ignore_errors=True)
-            files = _write_lines(path, encoding, folder, progress, step, None, 2)
+            files = _write_lines(_segments(path, encoding, folder, progress, step, None, 2), folder)
     except BaseException:
         shutil.rmtree(folder, ignore_errors=True)
         raise
@@ -699,6 +722,404 @@ def _stage_lines(
         hasher.join()
     lines = pl.scan_parquet(files).select(pl.len()).collect().item() if files else 0
     return digest.hexdigest(), tuple(files), lines
+
+
+ZIP_SEGMENT = 4 << 20
+"""zip 裡的檔每段多大：段是主程序解壓後用位元組交給工作程序的。比原檔的段（32 MB）小：
+實測（2 個 1 GB 的 cp950 檔、8 個工作程序）每段 16 MB、8 MB 時工作程序合計最高約 2.6 GB（大塊記憶體釋放後
+macOS 的配置器留著不還），4 MB 時約 540 MB，速度一樣。"""
+ZIP_GROUP = 8
+"""zip 裡的檔幾段合寫成一個 Parquet（8 × 4 MB ≈ 一般檔的一段 32 MB）。"""
+_LONE_CR_TEXT = re.compile(rb"\r(?!\n)")
+
+
+def _cut(buffer: bytes) -> int:
+    """可以切段的位置（之後的下一段從這裡開始）：最後一個 ``\\n`` 後面；沒有時最後一個單獨的 ``\\r`` 後面
+    （緊接著 ``\\n`` 的不算，``\\r\\n`` 才不會被切開）；都沒有時是 0（還不能切）。
+    cp950、Big5-HKSCS、UTF-8 的多位元組字元裡都沒有 0x0A、0x0D，所以這裡一定是一個字元的開頭。"""
+    i = buffer.rfind(b"\n")
+    if i >= 0:
+        return i + 1
+    last = 0
+    for found in _LONE_CR_TEXT.finditer(buffer, 0, len(buffer) - 1):  # 最後一個位元組後面可能接 \n
+        last = found.end()
+    return last
+
+
+def _stream_segments(
+    read: Callable[[int], bytes],
+    total: int,
+    name: str,
+    encoding: str,
+    folder: Path,
+    progress: Progress,
+    segment: int,
+    pool: ProcessPoolExecutor | None,
+    ahead: int,
+) -> Iterator[Path]:
+    """依序讀出的位元組（zip 裡的檔）在換行處切段、轉成 UTF-8，依順序一段一段交出（每段一個文字檔）。
+
+    和 ``_segments`` 一樣：``pool`` 是工作程序時同時轉好幾段，在路上的段最多 ``ahead`` 個；``pool`` 是 None 時
+    在這個程序依序轉；第一個轉不了的字照檔案順序回報；結束時刪掉還沒交出的段（交出的段歸呼叫的人刪）。
+    每段記著它之前有幾個換行：轉不了時直接算出第幾行，不用重新解壓一遍。
+    """
+    middle = "utf-8" if encoding == "utf-8-sig" else encoding
+    label = t("解壓與轉碼", "Extracting and transcoding")
+    pending: collections.deque[tuple[Any, tuple[bytes, str, int, str], int]] = collections.deque()
+    made: list[Path] = []
+    handed: set[Path] = set()
+    state = {"start": 0, "newlines": 0}
+
+    def job(data: bytes) -> tuple[tuple[bytes, str, int, str], int]:
+        """這一段的工作（位元組, 編碼, 起點, 暫存檔）與它之前有幾個換行。"""
+        dst = folder / f"{len(made):06d}.txt"
+        work = (data, encoding if not made else middle, state["start"], str(dst))
+        before = state["newlines"]
+        made.append(dst)
+        state["start"] += len(data)
+        state["newlines"] += data.count(b"\n")
+        return work, before
+
+    def finished(failure: Any, work: tuple[bytes, str, int, str], before: int) -> Path:
+        data, _, start, dst = work
+        if failure is not None:
+            count = lambda offset: before + data.count(b"\n", 0, offset - start)  # noqa: E731
+            raise _decode_error(Path(name), encoding, failure, count)
+        _report(progress, label, name, start + len(data), total)
+        handed.add(Path(dst))
+        return Path(dst)
+
+    def pieces() -> Iterator[bytes]:
+        buffer = b""
+        while chunk := read(min(CHUNK, segment)):
+            buffer += chunk
+            if len(buffer) >= segment:
+                cut = _cut(buffer)
+                if cut:
+                    yield buffer[:cut]
+                    buffer = buffer[cut:]
+        if buffer:
+            yield buffer
+
+    def result(future: Any) -> Any:
+        try:
+            return future.result()
+        except BrokenProcessPool as err:  # 工作程序意外結束
+            raise PoolUnavailable(str(err)) from err
+
+    try:
+        if pool is None:
+            for data in pieces():
+                work, before = job(data)
+                yield finished(transcode_bytes(work), work, before)
+            return
+        for data in pieces():
+            work, before = job(data)
+            try:
+                future = pool.submit(transcode_bytes, work)
+            except (OSError, RuntimeError, BrokenProcessPool) as err:  # 開不了工作程序
+                raise PoolUnavailable(str(err)) from err
+            pending.append((future, work, before))
+            while len(pending) >= ahead:
+                future, work, before = pending.popleft()
+                yield finished(result(future), work, before)
+        while pending:
+            future, work, before = pending.popleft()
+            yield finished(result(future), work, before)
+    finally:
+        for future, _, _ in pending:
+            future.cancel()
+        with contextlib.suppress(Exception):
+            wait_futures([future for future, _, _ in pending])
+        for dst in made:
+            if dst not in handed:
+                with contextlib.suppress(OSError):
+                    dst.unlink(missing_ok=True)
+
+
+def _stage_member(
+    member: zip_lines.Member,
+    name: str,
+    encoding: str,
+    folder: Path,
+    progress: Progress,
+    *,
+    pool: ProcessPoolExecutor | None = None,
+    parallel_min: int | None = None,
+    segment: int | None = None,
+) -> tuple[str, tuple[Path, ...], int, bool]:
+    """zip 裡的一個檔：一邊解壓一邊切段、轉成 UTF-8，一段一段寫成 Parquet（和 ``_stage_lines`` 同一種暫存）。
+
+    回傳（解開後內容的 sha256, 依序的 Parquet 檔, 行數, 開頭有沒有 BOM）。轉不了丟出 ``DecodeError``，
+    zip 壞了丟出 ``zip_lines.ZipError``；出錯時 ``folder`` 整個刪掉。
+    """
+    minimum = PARALLEL_MIN if parallel_min is None else parallel_min
+    step = segment or ZIP_SEGMENT
+    workers = pool or _pick_pool(member.size, minimum)
+
+    def run(executor: ProcessPoolExecutor | None) -> tuple[str, list[Path], bool]:
+        count = getattr(executor, "_max_workers", 1) if executor is not None else 1
+        digest = hashlib.sha256()
+        first = {"bom": None}
+        with zip_lines.open_member(member) as stream:
+
+            def read(size: int) -> bytes:
+                chunk = stream.read(size)
+                if first["bom"] is None and chunk:
+                    first["bom"] = chunk.startswith(codecs.BOM_UTF8)
+                digest.update(chunk)
+                return chunk
+
+            segments = _stream_segments(
+                read,
+                member.size,
+                name,
+                encoding,
+                folder,
+                progress,
+                step,
+                executor,
+                2 * count,
+            )
+            files = _write_lines(segments, folder, ZIP_GROUP)
+        return digest.hexdigest(), files, bool(first["bom"])
+
+    try:
+        try:
+            sha, files, bom = run(workers)
+        except PoolUnavailable:
+            if pool is not None:
+                raise
+            _give_up_pool()
+            shutil.rmtree(folder, ignore_errors=True)
+            sha, files, bom = run(None)
+    except BaseException:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+    lines = pl.scan_parquet(files).select(pl.len()).collect().item() if files else 0
+    return sha, tuple(files), lines, bom
+
+
+def prepare_member(
+    member: zip_lines.Member, name: str, encoding: str = "auto", progress: Progress = None
+) -> Prepared:
+    """zip 裡的一個檔：暫存成一段一段的 Parquet（zip 裡的檔不能直接交給 Polars 讀，UTF-8 的也一樣）。結果會快取。
+
+    ``auto``：先當 UTF-8 一邊解壓一邊寫暫存，UTF-8 的檔只解壓一遍；遇到不合 UTF-8 的位元組就丟掉已寫的暫存，
+    改用 cp950 從頭再解壓一遍（cp950 的檔通常前幾行就有中文，浪費的只有開頭一點點）。
+    """
+    if encoding not in SUPPORTED:
+        raise DecodeError(
+            t(
+                f"不支援的編碼：{encoding}（可用：{', '.join(SUPPORTED)}）",
+                f"Unsupported encoding: {encoding} (available: {', '.join(SUPPORTED)})",
+            )
+        )
+    stat = member.archive.stat()
+    key = (
+        "zip",
+        str(member.archive.resolve()),
+        stat.st_size,
+        stat.st_mtime_ns,
+        member.path,
+        member.crc,
+        member.compressed,
+        encoding,
+    )
+    with _lock:
+        if key in _cache and _alive(_cache[key]):  # type: ignore[index]
+            return _cache[key]  # type: ignore[index]
+    folder = staging_dir() / hashlib.sha256(repr(key).encode()).hexdigest()[:24]
+
+    def stage(candidate: str) -> Prepared:
+        sha, files, lines, bom = _stage_member(member, name, candidate, folder, progress)
+        label = ("utf-8-sig" if bom else "utf-8") if candidate.startswith("utf-8") else candidate
+        return Prepared(folder, label, sha, member.size, False, lines, files)
+
+    if member.size == 0:
+        prepared = Prepared(folder, "utf-8", hashlib.sha256().hexdigest(), 0, False, 0)
+        folder.mkdir(parents=True, exist_ok=True)
+    elif encoding == "auto":
+        failures = []
+        for candidate in AUTO_ORDER:
+            try:
+                prepared = stage(candidate)
+            except DecodeError as err:
+                failures.append(str(err))
+                continue
+            break
+        else:
+            raise DecodeError(
+                t(f"「{name}」無法判斷編碼：", f'"{name}": couldn\'t detect the encoding: ')
+                + t("；", "; ").join(failures)
+            )
+    else:
+        try:
+            prepared = stage("utf-8-sig" if encoding == "utf-8" else encoding)
+        except DecodeError as err:  # zip 裡有很多檔：訊息前面寫是哪一個
+            raise DecodeError(t(f"「{name}」：{err}", f'"{name}": {err}')) from None
+
+    with _lock:
+        _cache[key] = prepared  # type: ignore[index]
+    return prepared
+
+
+_archive_digests: dict[tuple[str, int, int], str] = {}
+
+
+class _ArchiveDigest:
+    """zip 檔本身的 SHA-256：另開一條執行緒從頭讀一遍（跟著解壓同時做），同一個 zip 只算一次。"""
+
+    def __init__(self, path: Path) -> None:
+        stat = path.stat()
+        self.key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+        self.bytes = stat.st_size
+        self._thread: threading.Thread | None = None
+        self._digest = hashlib.sha256()
+        with _lock:
+            self.value = _archive_digests.get(self.key)
+        if self.value is None:
+            self._thread, self._digest = _hash_in_background(path)
+
+    def result(self) -> str:
+        if self.value is None:
+            assert self._thread is not None
+            self._thread.join()
+            self.value = self._digest.hexdigest()
+            with _lock:
+                _archive_digests[self.key] = self.value
+        return self.value
+
+
+@dataclass(frozen=True)
+class ZipEntry:
+    """掃描結果的一個 zip：符合的檔（依路徑排序）。"""
+
+    path: str
+    """zip 檔（和來源檔一樣的寫法：Recipe 資料夾裡的是相對路徑）。"""
+    archive: Path
+    members: list[zip_lines.Member]
+
+
+@dataclass(frozen=True)
+class ZipScan:
+    """讀取方式 ``zip_lines``：每個 zip 裡符合的檔（只讀 zip 的目錄，不解壓）。"""
+
+    zips: list[ZipEntry]
+    estimate: int
+    """暫存大約要多少空間（bytes）。"""
+    free: int | None
+    """暫存資料夾所在磁碟剩多少（bytes；讀不到時是 None）。"""
+
+    @property
+    def members(self) -> list[tuple[str, zip_lines.Member]]:
+        return [(z.path, m) for z in self.zips for m in z.members]
+
+    @property
+    def empty(self) -> list[str]:
+        """沒有符合的檔的 zip（略過，掃描清單提醒、處理紀錄記下來）。"""
+        return [z.path for z in self.zips if not z.members]
+
+    def problems(self, members: str) -> list[str]:
+        """不能讀的原因（有任何一項就不能載入或匯出）。"""
+        out = [
+            t(f"「{zpath}」裡的「{m.path}」：{why}", f'"{m.path}" in "{zpath}": {why}')
+            for zpath, m in self.members
+            if (why := m.problem()) is not None
+        ]
+        if self.zips and not self.members:
+            out.append(
+                t(
+                    f"所有 zip 裡都沒有符合「{members}」的檔",
+                    f'No file in any zip matches "{members}"',
+                )
+            )
+        if self.free is not None and self.estimate > self.free:
+            out.append(
+                t(
+                    f"暫存空間不夠：大約要 {_size_text(self.estimate)}，暫存資料夾所在的磁碟只剩 "
+                    f"{_size_text(self.free)}",
+                    f"Not enough temp space: about {_size_text(self.estimate)} is needed, "
+                    f"but only {_size_text(self.free)} is free where the temp folder is",
+                )
+            )
+        return out
+
+
+def _size_text(n: int) -> str:
+    return f"{n / 1e9:.1f} GB" if n >= 1e9 else f"{max(1, round(n / 1e6))} MB"
+
+
+def scan_zips(entries: str | list[str], members: str, base_dir: Path) -> ZipScan:
+    """讀取方式 ``zip_lines`` 的掃描：用檔案清單找出 zip，讀每個 zip 的目錄，列出符合 ``members`` 的檔。"""
+    if not (members or "").strip():
+        raise InputError(
+            t(
+                "要填「zip 裡的檔」（例如 2026*/HEADER*.TXT）",
+                'Fill in "Files in the zip" (for example 2026*/HEADER*.TXT)',
+            )
+        )
+    zips = []
+    for path in resolve(entries, base_dir):
+        try:
+            found = zip_lines.matching(path, members)
+        except zip_lines.ZipError as err:
+            raise InputError(str(err)) from None
+        zips.append(ZipEntry(display_name(path, base_dir), path, found))
+    every = [m for z in zips for m in z.members]
+    estimate = zip_lines.estimate_staging(every, _workers(), ZIP_SEGMENT, ZIP_GROUP)
+    try:
+        free: int | None = shutil.disk_usage(staging_dir()).free
+    except OSError:
+        free = None
+    return ZipScan(zips, estimate, free)
+
+
+def _scan_zip_parts(
+    entries: str | list[str],
+    members: str,
+    encoding: str,
+    base_dir: Path,
+    progress: Progress,
+    on_file: Callable[[int, str], None] | None,
+) -> tuple[list[Part], list[SourceFile]]:
+    """讀取方式 ``zip_lines``：zip 裡每個符合的檔是一個來源（名稱是「zip 的路徑/zip 裡的路徑」）。"""
+    scan = scan_zips(entries, members, base_dir)
+    problems = scan.problems(members)
+    if problems:
+        raise InputError(t("；", "; ").join(problems))
+    parts, files = [], []
+    i = 0
+    for entry in scan.zips:
+        if not entry.members:
+            continue
+        digest = _ArchiveDigest(entry.archive)
+        found = []
+        for member in entry.members:
+            name = f"{entry.path}/{member.path}"
+            if on_file is not None:
+                on_file(i, name)
+            i += 1
+            try:
+                prepared = prepare_member(member, name, encoding, progress)
+            except zip_lines.ZipError as err:
+                raise InputError(str(err)) from None
+            lf, rows = _scan_one(prepared, "text_lines", name)
+            parts.append((name, lf))
+            found.append(SourceFile(name, prepared.bytes, prepared.sha256, prepared.encoding, rows))
+        sha = digest.result()
+        files += [
+            replace(f, archive=entry.path, archive_bytes=digest.bytes, archive_sha256=sha)
+            for f in found
+        ]
+    return parts, files
+
+
+def source_count(entries: str | list[str], reader: str, base_dir: Path, members: str = "") -> int:
+    """這個讀取設定有幾個來源檔（進度的「已處理 N / M 個檔」）；zip 是裡面符合的檔數。"""
+    if reader == "zip_lines":
+        return len(scan_zips(entries, members, base_dir).members)
+    return len(resolve(entries, base_dir))
 
 
 def prepare(
@@ -870,12 +1291,17 @@ def scan_parts(
     progress: Progress = None,
     sheet: str = "",
     on_file: Callable[[int, str], None] | None = None,
+    members: str = "",
 ) -> tuple[list[Part], list[SourceFile]]:
     """每個來源檔一個 LazyFrame（依檔案清單的順序），欄位對齊成同一組。
 
     ``sheet`` 只有 ``reader="excel"`` 時用：工作表名稱，空白代表第一個工作表。
+    ``members`` 只有 ``reader="zip_lines"`` 時用：zip 裡要讀的檔（檔案清單是 zip）。
     ``on_file(i, 名稱)`` 在開始讀第 i 個檔（從 0 起）之前呼叫（畫面上的「已處理幾個檔」）。
     """
+    if reader == "zip_lines":
+        parts, files = _scan_zip_parts(entries, members, encoding, base_dir, progress, on_file)
+        return align(parts), files
     parts, files = [], []
     for i, path in enumerate(resolve(entries, base_dir)):
         name = display_name(path, base_dir)
@@ -1048,7 +1474,12 @@ _FIRST_LINE = re.compile(rb"\r\n|\r|\n")
 
 
 def peek_columns(
-    entries: str | list[str], reader: str, encoding: str, base_dir: Path, sheet: str = ""
+    entries: str | list[str],
+    reader: str,
+    encoding: str,
+    base_dir: Path,
+    sheet: str = "",
+    members: str = "",
 ) -> list[str] | None:
     """不讀整個檔案，只取得 input 的資料欄位（給驗證器檢查欄位引用）。
 
@@ -1056,6 +1487,13 @@ def peek_columns(
     缺的欄是空值（DESIGN.md §5.3）。檔案太多（``PEEK_MAX_FILES``、Excel 是 ``PEEK_MAX_EXCEL``）時
     回傳 None（不檢查欄位引用）。
     """
+    if (
+        reader == "zip_lines"
+    ):  # 只讀 zip 的目錄：有不能讀的檔、或所有 zip 都沒有符合的檔時丟出 InputError
+        problems = scan_zips(entries, members, base_dir).problems(members)
+        if problems:
+            raise InputError(t("；", "; ").join(problems))
+        return ["line"]
     paths = resolve(entries, base_dir)  # 找不到檔案時丟出 InputError
     if reader == "text_lines":
         return ["line"]

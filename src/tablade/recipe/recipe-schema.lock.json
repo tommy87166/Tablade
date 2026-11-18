@@ -18,6 +18,11 @@
         "columns": [
           "line"
         ]
+      },
+      "zip_lines": {
+        "columns": [
+          "line"
+        ]
       }
     },
     "recipe_version": "1.0",
@@ -475,10 +480,15 @@
               },
               "type": "array"
             },
+            "members": {
+              "default": "",
+              "type": "string"
+            },
             "reader": {
               "default": "text_lines",
               "enum": [
                 "text_lines",
+                "zip_lines",
                 "csv",
                 "excel",
                 "parquet",

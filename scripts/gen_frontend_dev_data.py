@@ -229,10 +229,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--recipe",
         default="sales_detail",
-        choices=["sales_detail", "sales_report", "sales_excel", "sales_combined", "all_steps"],
+        choices=[
+            "sales_detail",
+            "sales_report",
+            "sales_excel",
+            "sales_combined",
+            "sales_zip",
+            "all_steps",
+        ],
         help=(
             "用哪一個範例 Recipe（sales_report 是分段報表、sales_excel 讀 Excel、"
-            "sales_combined 有 4 個階段：附加與結合、all_steps 每一種步驟都用到一次）"
+            "sales_combined 有 4 個階段：附加與結合、sales_zip 讀每個月的 zip 裡的文字檔、"
+            "all_steps 每一種步驟都用到一次）"
         ),
     )
     parser.add_argument(

@@ -447,11 +447,65 @@ def write_big_messy_export(
     return target
 
 
+class _Cp950Name(zipfile.ZipInfo):
+    """檔名用 cp950、不標 UTF-8（台灣的 Windows 壓縮程式常這樣）：測試 zip 裡中文檔名的判斷。"""
+
+    def _encodeFilenameFlags(self):
+        return self.filename.encode("cp950"), self.flag_bits & ~0x800
+
+
+def _zip_entry(name: str, cp950_name: bool = False) -> zipfile.ZipInfo:
+    info = (_Cp950Name if cp950_name else zipfile.ZipInfo)(name, date_time=XLSX_TIME)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    return info
+
+
+ZIP_MONTHS = ("01", "02", "03")
+"""``write_zip_months`` 產生的月份；03 月的 zip 裡沒有 HEADER 的檔（測試「沒有符合的檔，略過」）。"""
+
+
+def write_zip_months(directory: str | Path, seed: int = 0) -> list[Path]:
+    """每個月一個 zip（``2026-01.zip``…），裡面有資料夾與兩種文字檔（examples/sales_zip.recipe.json 讀）：
+
+    - ``202601/HEADER_001.TXT``：cp950 的分段報表（和 ``銷售報表.txt`` 同一種格式）
+    - ``202601/header_002.txt``：同一種報表，UTF-8（檔名大小寫不同，測試不分大小寫）
+    - ``202601/ITEM_001.TXT``：cp950 的凌亂匯出檔
+    - ``202601/說明.TXT``：檔名是 cp950、沒標 UTF-8
+    - ``readme.pdf``：不是文字檔（不會被 ``2026*/HEADER*.TXT`` 選到）
+
+    03 月的 zip 只有 ITEM 的檔。每個檔的時間固定，同一個 seed 產生的 zip 每次都一樣。
+    """
+    out = Path(directory)
+    out.mkdir(parents=True, exist_ok=True)
+    written = []
+    for k, month in enumerate(ZIP_MONTHS):
+        folder = f"2026{month}"
+        report, _ = sectioned_report(seed + k, sections=2, entries=15)
+        items, _ = messy_export(20, seed + k)
+        target = out / f"2026-{month}.zip"
+        with zipfile.ZipFile(target, "w") as z:
+            if month != ZIP_MONTHS[-1]:
+                z.writestr(_zip_entry(f"{folder}/HEADER_001.TXT"), _crlf(report, "cp950"))
+                z.writestr(_zip_entry(f"{folder}/header_002.txt"), _crlf(report[:40], "utf-8"))
+            z.writestr(_zip_entry(f"{folder}/ITEM_001.TXT"), _crlf(items, "cp950"))
+            z.writestr(
+                _zip_entry(f"{folder}/說明.TXT", cp950_name=True), _crlf(["假資料"], "cp950")
+            )
+            z.writestr(_zip_entry("readme.pdf"), b"%PDF-1.4 fake")
+        written.append(target)
+    return written
+
+
+def _crlf(lines: list[str], encoding: str) -> bytes:
+    return ("\r\n".join(lines) + "\r\n").encode(encoding)
+
+
 def write_all(directory: str | Path, seed: int = 0) -> list[Path]:
     """產生所有範例假資料到指定資料夾。
 
     examples/sales_detail.recipe.json 讀 明細_*.csv；examples/sales_report.recipe.json 讀 銷售報表.txt；
-    examples/sales_excel.recipe.json 讀 明細.xlsx；examples/sales_combined.recipe.json 另外讀 品項對照.csv。
+    examples/sales_excel.recipe.json 讀 明細.xlsx；examples/sales_combined.recipe.json 另外讀 品項對照.csv；
+    examples/sales_zip.recipe.json 讀 2026-*.zip 裡的 HEADER 檔。
     """
     out = Path(directory)
     return [
@@ -462,4 +516,5 @@ def write_all(directory: str | Path, seed: int = 0) -> list[Path]:
         write_report(out / "銷售報表.txt", seed=seed, entries=20),
         write_excel_export(out / "明細.xlsx", n=20, seed=seed + 4),
         write_item_table(out / "品項對照.csv"),
+        *write_zip_months(out, seed=seed),
     ]

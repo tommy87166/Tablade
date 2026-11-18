@@ -14,6 +14,7 @@ from pydantic import (
     StringConstraints,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 from tablade.i18n import plural, t
@@ -28,6 +29,7 @@ RECIPE_VERSION = "1.0"
 
 READERS: dict[str, dict[str, Any]] = {
     "text_lines": {"columns": ["line"]},
+    "zip_lines": {"columns": ["line"]},
     "csv": {"columns": None},
     "excel": {"columns": None},
     "parquet": {"columns": None},
@@ -54,18 +56,29 @@ class Input(_Model):
         title="檔案清單",
         description="相對於 Recipe 檔所在的資料夾（例如 data/明細_01.csv），或絕對路徑；可用 * 一次讀多個檔",
     )
-    reader: Literal["text_lines", "csv", "excel", "parquet", "stages"] = Field(
+    reader: Literal["text_lines", "zip_lines", "csv", "excel", "parquet", "stages"] = Field(
         default="text_lines",
         title="讀取方式",
         json_schema_extra={
             "ui_labels": {
                 "text_lines": "逐行讀取（爛格式檔案）",
+                "zip_lines": "zip 裡的文字檔（逐行讀取）",
                 "csv": "乾淨的 CSV",
                 "excel": "Excel 工作表",
                 "parquet": "Parquet",
                 "stages": "前面階段的輸出",
             }
         },
+    )
+    members: str = Field(
+        default="",
+        title="zip 裡的檔",
+        description=(
+            "讀取方式是「zip 裡的文字檔」時用（必填）：檔案清單是 zip，這裡寫 zip 裡要讀的檔的相對路徑，"
+            "例如 2026*/HEADER*.TXT。比對完整路徑、不分大小寫；* 不跨過 /，** 是任何層數的資料夾"
+            "（**/HEADER*.TXT 找到 zip 裡任何地方的 HEADER*.TXT）。zip 裡每個符合的檔是一個來源，"
+            "名稱是「zip 的路徑/zip 裡的路徑」"
+        ),
     )
     encoding: Literal[SUPPORTED] = Field(default="auto", title="編碼", description="Excel 不用設")  # type: ignore[valid-type]
     sheet: str = Field(
@@ -86,6 +99,25 @@ class Input(_Model):
         ),
         json_schema_extra={"ui": "stages"},
     )
+
+    @model_validator(mode="after")
+    def _members_only_for_zip(self) -> Input:
+        if self.reader == "zip_lines" and not self.members.strip():
+            raise ValueError(
+                t(
+                    "讀取方式是「zip 裡的文字檔」時要填「zip 裡的檔」（members，例如 2026*/HEADER*.TXT）",
+                    'With "Text files in zip", fill in "Files in the zip" (members, '
+                    "for example 2026*/HEADER*.TXT)",
+                )
+            )
+        if self.reader != "zip_lines" and self.members:
+            raise ValueError(
+                t(
+                    "只有讀取方式是「zip 裡的文字檔」（zip_lines）時才能填 members",
+                    'members can be set only when the reader is "Text files in zip" (zip_lines)',
+                )
+            )
+        return self
 
 
 class Stage(_Model):

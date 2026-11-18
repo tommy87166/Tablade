@@ -40,9 +40,10 @@ from tablade.ingest.sources import (
     SourceFile,
     align,
     concat,
-    resolve,
     sample,
     scan_parts,
+    scan_zips,
+    source_count,
     staging_dir,
 )
 from tablade.recipe.schema import Recipe, Stage
@@ -148,6 +149,8 @@ class RunReport:
     """每個階段的結果（最後一個階段就是輸出）。"""
     outputs: list[OutputReport] = field(default_factory=list)
     """寫出的每個檔（依階段順序）。"""
+    skipped_archives: list[dict[str, str]] = field(default_factory=list)
+    """讀取方式 ``zip_lines``：沒有符合的檔、略過的 zip（``{"stage", "file"}``，處理紀錄記下來）。"""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -567,7 +570,7 @@ def scan_stages(
     total, done = 0, 0
     if preparing:
         total = sum(
-            len(resolve(s.input.files, base_dir))
+            source_count(s.input.files, s.input.reader, base_dir, s.input.members)
             for s in recipe.stages
             if s.input.reader != "stages"
         )
@@ -593,6 +596,7 @@ def scan_stages(
             progress,
             source.sheet,
             on_file=on_file,
+            members=source.members,
         )
         out[stage.name] = (parts, [replace(f, stage=stage.name) for f in files])
     if preparing:
@@ -601,6 +605,16 @@ def scan_stages(
             t(f"已處理 {total} / {total} 個檔", f"All {plural(total, 'file', 'files')} done"),
         )
     return out
+
+
+def skipped_archives(recipe: Recipe, base_dir: Path) -> list[dict[str, str]]:
+    """讀取方式 ``zip_lines`` 的階段裡，沒有符合的檔、略過的 zip（只讀 zip 的目錄）。"""
+    return [
+        {"stage": stage.name, "file": path}
+        for stage in recipe.stages
+        if stage.input.reader == "zip_lines"
+        for path in scan_zips(stage.input.files, stage.input.members, base_dir).empty
+    ]
 
 
 def choose_mode(files: list[SourceFile], write_output: bool, mode: Mode) -> Mode:
@@ -760,6 +774,7 @@ def execute(
         if phase is not None:
             tracker.end(phase, t("沒有錯誤", "No errors"))
         report.outputs = [out for _, out in writes.outputs()]
+        report.skipped_archives = skipped_archives(recipe, base_dir)
         last = recipe.stages[-1].name
         final = next((o for o in report.outputs if o.stage == last), None)
         report.output = final.path if final else None

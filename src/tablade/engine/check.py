@@ -59,6 +59,7 @@ def _peek_stages(
                 encoding,
                 base_dir,
                 source.get("sheet", "") if isinstance(source.get("sheet"), str) else "",
+                members=source.get("members", "") if isinstance(source.get("members"), str) else "",
             )
         except (InputError, DecodeError, LookupError) as err:
             path = f"stages[{si}].input.files"

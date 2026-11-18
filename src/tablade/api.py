@@ -49,6 +49,11 @@ def data_types() -> tuple[str, ...]:
     )
 
 
+def zip_types() -> tuple[str, ...]:
+    """讀取方式是「zip 裡的文字檔」時，開檔對話框只選 zip。"""
+    return ("zip (*.zip)", t("所有檔案 (*.*)", "All files (*.*)"))
+
+
 def recipe_types() -> tuple[str, ...]:
     """開、存 Recipe 的對話框可以選的檔案類型（名稱依畫面的語言）。"""
     return ("Tablade Recipe (*.json)", t("所有檔案 (*.*)", "All files (*.*)"))
@@ -321,7 +326,9 @@ class Api:
     @_wrap
     def add_files(self) -> dict[str, Any]:
         """「瀏覽檔案」：選的檔加進檔案清單（不會自動讀檔）。"""
-        picked = self._dialog("open", allow_multiple=True, file_types=data_types())
+        zips = self._session.input.get("reader") == "zip_lines"
+        types = zip_types() if zips else data_types()
+        picked = self._dialog("open", allow_multiple=True, file_types=types)
         if not picked:
             return {"cancelled": True, **self._state()}
         self._session.add_files(picked)

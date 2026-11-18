@@ -13,6 +13,7 @@ cp950、Big5-HKSCS、UTF-8 的多位元組字元裡都不會出現 0x0A，所以
 from __future__ import annotations
 
 import codecs
+import io
 import re
 from collections.abc import Callable
 from typing import BinaryIO
@@ -90,6 +91,17 @@ def segment_bounds(path: str, size: int, segment: int) -> list[int]:
             cuts.append(cut)
             pos = cut + segment
     return [*cuts, size]
+
+
+def transcode_bytes(job: tuple[bytes, str, int, str]) -> Failure:
+    """工作程序執行的部分（zip 裡的檔）：把主程序依序解壓出來的一段位元組轉成 UTF-8，寫到自己的暫存檔。
+
+    job 是（這一段的位元組, 編碼, 這一段在檔案裡的起點, 暫存檔）；失敗時的位置是在檔案裡的位置。
+    """
+    data, encoding, base, dst = job
+    with open(dst, "wb") as out:
+        failure = decode_range(io.BytesIO(data), out, encoding)
+    return None if failure is None else (base + failure[0], failure[1])
 
 
 def transcode_segment(job: tuple[str, str, int, int, str]) -> Failure:

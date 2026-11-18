@@ -1,5 +1,5 @@
 /** 右側設定：選取「讀取資料」時是檔案清單與讀法，選取「輸出資料」時是輸出設定。 */
-import { CircleCheck, CircleX, FolderOpen, Plus, X } from 'lucide-react'
+import { CircleAlert, CircleCheck, CircleX, FolderOpen, Plus, X } from 'lucide-react'
 import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -8,10 +8,11 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { plural, tr } from '@/i18n'
-import type { OutputFormat, StageState, ViewState } from '../bridge'
+import type { OutputFormat, StageState, ViewState, ZipScan } from '../bridge'
 
 const readers = () => ({
   text_lines: tr('逐行讀取（爛格式檔案）', 'Line by line (messy files)'),
+  zip_lines: tr('zip 裡的文字檔（逐行讀取）', 'Text files in zip (line by line)'),
   csv: tr('乾淨的 CSV', 'Clean CSV'),
   excel: tr('Excel 工作表', 'Excel sheet'),
   parquet: 'Parquet',
@@ -46,6 +47,99 @@ interface InputProps {
 }
 
 const isGlob = (path: string) => /[*?[]/.test(path)
+
+/** zip 裡要讀的檔（members）：離開欄位或按 Enter 才送出（Python 馬上重新掃描 zip 的目錄）。 */
+function MembersField({ value, onChange }: { value: string; onChange: (members: string) => void }) {
+  const [draft, setDraft] = useState(value)
+  const [saved, setSaved] = useState(value)
+  if (saved !== value) {
+    // Python 那邊的值變了（復原、換階段）：輸入框跟著換
+    setSaved(value)
+    setDraft(value)
+  }
+  const commit = () => {
+    if (draft.trim() !== value) onChange(draft.trim())
+  }
+  return (
+    <div className="space-y-1.5">
+      <label className="text-xs text-muted-foreground" htmlFor="zip-members">
+        {tr('zip 裡的檔', 'Files in the zip')}
+      </label>
+      <Input
+        id="zip-members"
+        className="font-mono"
+        value={draft}
+        placeholder={tr('例如 2026*/HEADER*.TXT', 'e.g. 2026*/HEADER*.TXT')}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commit()
+        }}
+      />
+      <p className="text-xs text-muted-foreground">
+        {tr(
+          'zip 裡的相對路徑，不分大小寫：* 不跨資料夾，** 是任何層數的資料夾（**/HEADER*.TXT 找到 zip 裡任何地方的）。zip 裡每個符合的檔是一個來源。',
+          'A path inside the zip, case-insensitive: * stays within one folder, ** matches any number of folders (**/HEADER*.TXT finds it anywhere in the zip). Each matching file is a separate source.',
+        )}
+      </p>
+    </div>
+  )
+}
+
+/** 掃描結果：每個 zip 裡符合的檔（只讀 zip 的目錄，不解壓）；沒有符合的 zip 黃色提醒，讀不了的紅色。 */
+function ZipScanList({ scan }: { scan: ZipScan }) {
+  if (scan.error) return <p className="rounded-md bg-destructive/10 p-2 text-xs text-destructive">{scan.error}</p>
+  return (
+    <div className="space-y-1.5">
+      <div className="text-xs text-muted-foreground">{tr('符合的檔（載入前先掃描）', 'Matching files (scanned before loading)')}</div>
+      <ul className="divide-y rounded-md border text-xs">
+        {scan.zips.map((z) => (
+          <li key={z.path} className="space-y-1 px-2 py-1.5">
+            <div className="truncate font-mono font-medium" title={z.path}>
+              {z.path}
+            </div>
+            {z.members.length ? (
+              <ul className="space-y-0.5">
+                {z.members.map((m) => (
+                  <li key={m.path} className="flex items-center gap-2">
+                    {m.problem ? (
+                      <CircleX className="size-3.5 shrink-0 text-destructive" />
+                    ) : (
+                      <CircleCheck className="size-3.5 shrink-0 text-green-600" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate font-mono" title={m.problem ?? m.path}>
+                      {m.path}
+                    </span>
+                    <span className="shrink-0 text-muted-foreground tabular-nums">{formatBytes(m.bytes)}</span>
+                    <span className={`shrink-0 ${m.problem ? 'text-destructive' : 'text-muted-foreground'}`}>{m.method}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="flex items-center gap-1.5 text-amber-700 dark:text-amber-400">
+                <CircleAlert className="size-3.5 shrink-0" />
+                {tr('沒有符合的檔（略過，處理紀錄會記下來）', 'No matching files (skipped; recorded in the processing log)')}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+      <p className="text-xs text-muted-foreground tabular-nums">
+        {tr(
+          `共 ${scan.zips.length} 個 zip、${scan.files} 個檔，解開後約 ${formatBytes(scan.bytes)}；暫存大約需要 ${formatBytes(scan.estimate)}${scan.free !== null ? `，磁碟剩 ${formatBytes(scan.free)}` : ''}`,
+          `${plural(scan.zips.length, 'zip', 'zips')}, ${plural(scan.files, 'file', 'files')}, about ${formatBytes(scan.bytes)} extracted; needs about ${formatBytes(scan.estimate)} of temp space${scan.free !== null ? ` (${formatBytes(scan.free)} free)` : ''}`,
+        )}
+      </p>
+      {scan.problems.length ? (
+        <ul className="space-y-0.5 rounded-md bg-destructive/10 p-2 text-xs text-destructive">
+          {scan.problems.map((problem) => (
+            <li key={problem}>{problem}</li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  )
+}
 
 /** 讀前面階段的輸出：勾選要讀的階段（依階段的順序讀）。 */
 function StagesInput({ state, onInput }: Pick<InputProps, 'state' | 'onInput'>) {
@@ -218,7 +312,11 @@ export function InputPanel({ state, onAddFiles, onAddEntry, onRemove, onInput }:
           <Input
             value={entry}
             onChange={(e) => setEntry(e.target.value)}
-            placeholder={tr('手動輸入路徑，例如 data/明細_*.csv', 'Enter a path, e.g. data/detail_*.csv')}
+            placeholder={
+              input.reader === 'zip_lines'
+                ? tr('手動輸入 zip 的路徑，例如 data/2026*.zip', 'Enter a zip path, e.g. data/2026*.zip')
+                : tr('手動輸入路徑，例如 data/明細_*.csv', 'Enter a path, e.g. data/detail_*.csv')
+            }
           />
           <Button type="submit" size="sm" variant="outline" disabled={!entry.trim()}>
             <Plus /> {tr('加入', 'Add')}
@@ -227,6 +325,7 @@ export function InputPanel({ state, onAddFiles, onAddEntry, onRemove, onInput }:
       </div>
       <div className="space-y-3">
         {readerSelect}
+        {input.reader === 'zip_lines' ? <MembersField value={input.members ?? ''} onChange={(members) => onInput({ members })} /> : null}
         {input.reader === 'parquet' ? (
           <p className="text-xs text-muted-foreground">
             {tr(
@@ -284,6 +383,7 @@ export function InputPanel({ state, onAddFiles, onAddEntry, onRemove, onInput }:
           </div>
         )}
       </div>
+      {input.reader === 'zip_lines' && input.zip_scan ? <ZipScanList scan={input.zip_scan} /> : null}
       {input.error ? <p className="rounded-md bg-destructive/10 p-2 text-sm text-destructive">{input.error}</p> : null}
       {/* 載入資料在工具列（依序載入全部階段）；這裡只寫狀態 */}
       {!input.loaded ? (

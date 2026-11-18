@@ -66,6 +66,7 @@ uv run tablade run examples/sales_detail.recipe.json      # 先 uv run python sc
 uv run tablade run examples/sales_report.recipe.json      # 分段報表範例（同樣的假資料）
 uv run tablade run examples/sales_excel.recipe.json       # Excel 範例（同樣的假資料）
 uv run tablade run examples/sales_combined.recipe.json    # 多階段範例：附加＋結合（同樣的假資料）
+uv run tablade run examples/sales_zip.recipe.json         # zip 裡的文字檔範例（同樣的假資料：每個月一個 zip）
 uv run tablade validate recipe.json --run                 # 驗證＋用真實資料試跑
 uv run python scripts/update_schema_lock.py              # 升 RECIPE_VERSION 後
 uv run ruff check . && uv run ruff format --check .

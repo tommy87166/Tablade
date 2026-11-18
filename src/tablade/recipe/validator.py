@@ -1309,7 +1309,31 @@ def link_issues(recipe: dict[str, Any], ref_fields: dict[str, list[str]]) -> lis
                         ),
                     )
                 )
-        elif listed:
+        members = source.get("members")
+        if source.get("reader") == "zip_lines" and not (
+            isinstance(members, str) and members.strip()
+        ):
+            issues.append(
+                _issue(
+                    ["stages", si, "input", "members"],
+                    t(
+                        "讀取方式是「zip 裡的文字檔」時要填 members（zip 裡要讀的檔，例如 2026*/HEADER*.TXT）",
+                        'With the "zip_lines" reader, fill in members (the files to read in the zip, '
+                        "for example 2026*/HEADER*.TXT)",
+                    ),
+                )
+            )
+        elif source.get("reader") != "zip_lines" and members:
+            issues.append(
+                _issue(
+                    ["stages", si, "input", "members"],
+                    t(
+                        "只有讀取方式是「zip 裡的文字檔」（zip_lines）時才能填 members",
+                        'members can be set only when the reader is "zip_lines"',
+                    ),
+                )
+            )
+        if source.get("reader") != "stages" and listed:
             issues.append(
                 _issue(
                     ["stages", si, "input", "stages"],

@@ -100,6 +100,7 @@
 | 模式 | 用途 | 產出欄位 |
 |---|---|---|
 | `text_lines` | 爛格式 CSV / TXT 報表：每一個實體行原封不動讀進來 | `__source_file`, `__line_no`, `line` |
+| `zip_lines` | zip 裡的文字檔，和 `text_lines` 一樣逐行讀（不用先解壓縮）：`files` 是 zip 的清單，`members` 是 zip 裡要讀的檔（§5.4） | `__source_file`（「zip 的路徑/zip 裡的路徑」）, `__line_no`, `line` |
 | `csv` | 乾淨的 CSV，交給 Polars 解析 | `__source_file`, `__line_no`, 各欄 |
 | `excel` | xlsx / xlsm / xlsb / xls / ods，指定工作表（`sheet`，空白是第一個工作表，`*` 是全部工作表） | `__source_file`, `__line_no`, `A`, `B`, `C`…（全部工作表時多一個 `__sheet`） |
 | `parquet` | Parquet 檔：欄位與型別照檔案（不是全部文字）；檔案自己帶的 `__` 開頭欄位改名成「原始…」的一般欄保留（`__line_no` → 原始行號） | `__source_file`（檔名）, `__line_no`（第幾列）, 各欄 |
@@ -156,6 +157,8 @@
 | Excel（`excel`） | — | 不轉碼 | 不寫（fastexcel 整張工作表讀進記憶體） | 每個工作表一個來源 |
 | Parquet（`parquet`） | — | 不轉碼 | 不寫 | `scan_parquet(原檔)` |
 | 讀前面階段（`stages`） | — | 不讀檔 | 看前面的階段：記憶體，或串流時的暫存 Parquet（§8） | 前面階段的結果 |
+| zip 裡的文字檔（`zip_lines`） | cp950、Big5-HKSCS 等其他編碼 | 要 | 一段一段 zstd 壓縮的 Parquet | `scan_parquet(這些段)` |
+| zip 裡的文字檔 | UTF-8 | 不換編碼，**但一樣寫暫存**（zip 裡的檔不能直接交給 Polars 讀） | 同上 | 同上 |
 
 空的檔（0 bytes）不管哪種文字讀法都不轉碼、不寫暫存。
 
@@ -190,6 +193,18 @@
 4. 掃描：`scan_csv(.txt)`。
 
 CSV 不改成 Parquet：Polars 讀 CSV 一定要一整份檔，不管轉碼怎麼排程，最後都會有一整份 `.txt`；改成每段各自解析 CSV 再存 Parquet，欄數不符、空行的行為和整份讀不一樣（docs/parquet-staging-plan.md 的「CSV 為什麼不改」）。要省空間，可以改用「逐行讀取＋依分隔符號拆成多欄」（範例 `sales_detail` 就是這樣讀的）。
+
+**4. zip 裡的文字檔**（`zip_lines`，`ingest/zip_lines.py` 與 `sources._stage_member`；計畫在 docs/zip-lines-plan.md）
+
+1. 掃描（載入之前，畫面上馬上列出；12 個 zip 也是幾毫秒）：用 `files` 找出 zip，只讀每個 zip 尾端的目錄（不解壓），整理 zip 裡的路徑（`\` 換成 `/`、拿掉 `./`、資料夾項目不算；沒標 UTF-8 的檔名依序試 UTF-8 → cp950 → cp437），用 `members` 比對完整路徑（不分大小寫，`*` 不跨 `/`，`**` 是任何層數的資料夾）。每個符合的檔記大小、壓縮方式、有沒有密碼，並估計暫存空間（寫好的 Parquet 用「解開後大小 ÷ 5」估，加上轉碼途中的文字段：最多「工作程序數 × 2」段在路上，加上等著合寫成一個 Parquet 的 8 段），跟暫存資料夾所在磁碟剩下的空間比。
+2. 先擋下（不能載入、匯出，原因寫在按鈕的提示與讀取資料的面板）：有密碼、不支援的壓縮方式、所有 zip 都沒有符合的檔、暫存空間不夠。**某個 zip 沒有符合的檔只是略過**，掃描清單標黃色，處理紀錄的 `archives_without_matches` 記下來。
+3. 每個檔用哪種方式解壓，看 zip 目錄裡那個檔自己記的壓縮方式：不壓縮、Deflate、bzip2、LZMA 用 `zipfile`；Deflate64 從目錄記的位置讀出壓縮過的原始位元組，交給 `inflate64` 套件（沒有裝時掃描就標成不支援）。同一個 zip 裡可能混著用。
+4. 解壓與轉碼（`_stream_segments`）：主程序依序解壓（同一個檔只能從頭依序解），約每 4 MB 在換行後面切段（`\n`，或後面不是 `\n` 的 `\r`），把那一段的位元組交給工作程序轉成 UTF-8 文字小檔（`transcode.transcode_bytes`），主程序照順序每 8 段合寫成一個 Parquet 並刪掉那些文字段（`_write_lines`，8 × 4 MB 約等於一般檔的一段）。同時在路上的段最多「工作程序數 × 2」個；比較小的檔或開不了工作程序時主程序自己依序轉。段比一般檔的 32 MB 小：段是用位元組在程序之間傳的，實測每段 16 MB、8 MB 時工作程序合計最高約 2.6 GB（大塊記憶體釋放後 macOS 的配置器留著不還），4 MB 時約 550 MB，速度一樣。
+5. 編碼：`auto` 時先當 UTF-8 一邊解壓一邊寫暫存，**UTF-8 的檔只解壓一遍**；遇到不合 UTF-8 的位元組就丟掉已寫的暫存，用 cp950 從頭再解壓一遍。指定了編碼就只解壓一遍。每段記著它之前有幾個換行，轉不了時直接算出第幾行。
+6. 同時算解開後內容的 SHA-256；讀到結尾時核對 CRC（不符是「zip 可能壞了」）。zip 本身的 SHA-256 另開一條執行緒跟著讀，同一個 zip 只算一次。
+7. 來源的名稱是「zip 的路徑/zip 裡的路徑」（例如 `data/2026-01.zip/202601/HEADER_001.TXT`），依 zip 清單的順序、同一個 zip 裡依路徑排。處理紀錄的 `inputs[]` 多 `archive`（zip 本身的路徑、大小、SHA-256），`bytes`、`sha256` 是解開後的內容。
+8. 快取的 key：zip 的路徑＋大小＋修改時間、zip 裡的路徑＋CRC＋壓縮後大小、編碼。
+9. 實測：2 個 zip，各有一個約 1 GB 的 cp950 分段報表（共 3,696 萬行），準備檔案 3.8 秒、暫存最高 0.34 GB、轉完 0.16 GB，工作程序合計約 550 MB；串流匯出 24 秒，和讀解開後的檔一樣（improve.md 第 11 項）。
 
 **快取與清理**
 
@@ -410,7 +425,8 @@ CSV 不改成 Parquet：Polars 讀 CSV 一定要一整份檔，不管轉碼怎�
 - `recipe.sha256` 是 `recipe.content` 以排序過的緊湊 JSON 算出來的；完整的 Recipe 一起放進去，日後可以重跑。
 - `inputs[].sha256` 讀檔時就算好了（和檢查編碼同一次讀取）；`output.sha256` 寫完後再讀一次輸出檔算。
 - 串流執行沒有每一步的列數（`rows` 是 `null`）；警告沿用執行報告（每項檢查最多 100 則），`count` 是總數。
-- `inputs[].rows` 是讀進來的資料列數：逐行讀取（`text_lines`）是行數；CSV 不含標題列（7 行的檔是 6）；Excel、Parquet 是列數。
+- `inputs[].rows` 是讀進來的資料列數：逐行讀取（`text_lines`、`zip_lines`）是行數；CSV 不含標題列（7 行的檔是 6）；Excel、Parquet 是列數。
+- zip 裡的檔（`zip_lines`）：`inputs[].file` 是「zip 的路徑/zip 裡的路徑」，`bytes`、`sha256` 是解開後的內容，`archive` 是 zip 本身（`{file, bytes, sha256}`）。沒有符合的檔、略過的 zip 記在最上層的 `archives_without_matches`（`[{stage?, file}]`，有才寫）。
 - `output.columns` 只列資料欄：輸出檔保留了系統欄位（`__source_file`、`__line_no`…，「保留系統欄位」開著）時也不列在這裡。
 - 處理紀錄也先寫暫存檔，和輸出檔一起改名（§6）：不會留下半個檔案，改名到一半失敗時一起還原。自我檢測的「完整執行範例 Recipe」也檢查 manifest 的 SHA-256。
 - 有好幾個階段時：`stage` 記寫出這個檔的階段，`inputs[].stage`、`steps[].stage` 記是哪個階段的，`stages` 記它往上用到的階段的結果（列數、欄位；暫存檔會刪掉，不記雜湊）。
