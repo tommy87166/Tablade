@@ -48,11 +48,11 @@ version check against GitHub at start-up (nothing is sent, nothing is downloaded
 > from the command line. A recipe is a list of stages run in order (each stage reads files or the results of
 > earlier stages), so differently formatted data can be cleaned separately, then appended or looked up with a join.
 > 25 step types: besides removing junk rows, splitting (by delimiter or fixed position),
-> copying a column on matching rows (e.g. a section title) and filling down, filtering and merging source files, you can classify rows and extract with regular expressions to
+> copying a column on matching rows (e.g. a section title) and filling down, filtering and combining source files, you can classify rows and extract with regular expressions to
 > flatten sectioned print-format reports, read Excel sheets, clean text (full-width to half-width, invisible characters), replace values,
 > convert text to numbers and dates (rows that fail are reported with their line numbers), and remove, keep /
 > reorder or rename columns, remove duplicates, unpivot, group by and pivot (each source file on its own until you
-> merge them), and join another stage's result. The bottom pane's Types tab shows each column's type, and every export comes with a
+> combine them), and join another stage's result. The bottom pane's Types tab shows each column's type, and every export comes with a
 > manifest. See the [roadmap](#️-roadmap).
 
 ---
@@ -86,9 +86,9 @@ Five needs drove this tool:
 
 | Layer | Technology | Role |
 |---|---|---|
-| Engine | [Polars](https://pola.rs/) 2.x (Python API) | Each step compiles to a LazyFrame operation; preview runs `head(1000)`, export streams to Parquet. |
+| Engine | [Polars](https://pola.rs/) 2.x (Python API) | Each step compiles to a LazyFrame operation; the preview reads inputs of up to 200,000 lines in full and samples the first 100,000 + last 1,000 lines of each file beyond that; export streams to Parquet or CSV. |
 | Window | [pywebview](https://pywebview.flowrl.com/) 6 | Native window (WebView2 on Windows, WKWebView on macOS). JS calls Python directly — **no HTTP server, no open port**. |
-| Front end | React 19 + TypeScript + Vite, [shadcn/ui](https://ui.shadcn.com/) (Radix + Tailwind CSS v4) | Built into **one self-contained HTML file** (~300 KB) that Python loads as a string. |
+| Front end | React 19 + TypeScript + Vite, [shadcn/ui](https://ui.shadcn.com/) (Radix + Tailwind CSS v4) | Built into **one self-contained HTML file** (~700 KB, ~200 KB gzipped) that Python loads as a string. |
 | Encoding | Python codecs | Auto-detects `utf-8-sig` → `cp950`; reports the first undecodable byte and line. |
 | Excel | [fastexcel](https://github.com/ToucanToco/fastexcel) (calamine) | Fast, read-only XLSX / XLS. |
 | Recipe | pydantic v2 | Validates recipe JSON. |
@@ -102,16 +102,21 @@ Five needs drove this tool:
 | `text_lines` | Messy CSV / TXT reports — every physical line kept verbatim | `__source_file`, `__line_no`, `line` | M1 |
 | `excel` | XLSX / XLSM / XLS / ODS, one sheet or `*` for every sheet of every file — every row is data (no header row), every cell read as text | `__source_file`, `__line_no` (the Excel row number), `A`, `B`, `C`…; with `*` also `__sheet` (each sheet is processed as its own source) | ✅ M4 |
 | `parquet` | Parquet files — columns and types as stored; the file's own `__` columns are kept as ordinary columns renamed to 原始… | `__source_file` (file name), `__line_no` (row number), all columns | ✅ M5 |
-| `stages` | The results of earlier stages — each source stays its own source (named `@stage／file`); append them with *merge source files* | `__stage`, the upstream system columns (warnings still point at the original lines), all columns | ✅ M5 |
+| `stages` | The results of earlier stages — each source stays its own source (named `@stage／file`); append them with *Combine source files* | `__stage`, the upstream system columns (warnings still point at the original lines), all columns | ✅ M5 |
 
 - Columns starting with `__` are system columns: hidden in the UI by default, optional on export.
 - A recipe keeps a **file list**: files inside the recipe's folder are stored as relative paths,
-  others as absolute paths, and you can type a path with `*` by hand. Data is read only when you
-  press "Load data & preview" in the toolbar, and only once every entry in the list is found. To just
-  export, press "Process and export" directly: no loading needed — it first test-runs every stage on
+  others as absolute paths, and you can type a path with `*`, `?` or `[…]` by hand (a path that is an
+  existing file is used as-is, so names containing `[` or `?` still work). Data is read only when you
+  press “Load & preview” in the toolbar, and only once every entry in the list is found. To just
+  export, press “Process & export” directly: no loading needed — it first test-runs every stage on
   the first 2,000 lines of each file and stops at the failing step.
-- Multiple files each get their own pipeline and are joined in list order at a "merge source files"
+- Multiple files each get their own pipeline and are joined in list order at a “Combine source files”
   step or before writing — mismatched columns become null.
+- Output file names (each stage's `output_file`) are names only; the extension follows the format. They
+  can't contain path characters, start with “.” or be a Windows reserved name (`CON`, `NUL`, `COM1`…),
+  the name can be at most 200 bytes, names must be unique within a recipe (case-insensitive, compared
+  after NFC normalization; `明細.csv` and `明細.parquet` count as the same), and no output may overwrite an input file.
 - Each file's row order is fixed at read time (`__line_no`) and every step keeps it, so steps never
   sort; per-file steps (fill down, remove top/bottom rows) work file by file without window
   functions, which keeps memory flat on multi-GB inputs.
@@ -124,11 +129,11 @@ pywebview window — frontend/ (React + shadcn/ui, one HTML file)
       ▼
 api.py  (argument conversion + error wrapping only)
       ▼
-recipe/ (pydantic) ──► engine/compiler.py   steps (data) → Polars LazyFrame
+recipe/ (pydantic) ──► engine/run.py        steps (data) → Polars LazyFrame
       ┌──────────────────────┼──────────────────────┐
       ▼                      ▼                      ▼
 ingest/                steps/                  export/
-encoding, line reader, pure functions:         Parquet + manifest
+encoding, line reader, pure functions:         Parquet / CSV + manifest
 CSV / Excel, line no.  LazyFrame → LazyFrame
 
 cli.py — `tablade run recipe.json` runs the same engine without the UI
@@ -142,8 +147,10 @@ cli.py — `tablade run recipe.json` runs the same engine without the UI
   downloaded, and nothing updates itself. Set `TABLADE_NO_UPDATE_CHECK=1` to turn it off.
 - **No other network code.** `scripts/check_code_policy.py` parses every file in `src/` and rejects
   imports of `socket`, `http`, `urllib`, `requests`, `httpx`, `aiohttp`, `ssl` and friends (only
-  `update.py` may use `urllib.request`), plus `eval` / `exec` / `compile` / `__import__`. It runs
-  in pre-commit and CI.
+  `update.py` may use `urllib.request`), plus `eval` / `exec` / `compile` / `__import__` /
+  `importlib.import_module`. Only `desktop.py` may start other programs (`subprocess`, `os.system`…;
+  it opens a local folder with the system's file browser), and Polars `read_*` / `scan_*` calls may not
+  read URLs or cloud storage (`storage_options`). It runs in pre-commit and CI.
 - **No local server.** The page is loaded as an HTML string, so pywebview never starts its
   built-in HTTP server and no port is opened.
 - **Content-Security-Policy `default-src 'none'`** (injected at build time). The page cannot fetch, connect, frame or
@@ -152,7 +159,9 @@ cli.py — `tablade run recipe.json` runs the same engine without the UI
 - **Data is never rendered as HTML.** Cell values are written with `textContent`, so a cell
   containing markup can't turn into script that calls Python.
 - **Residual risk (known):** the policy check covers Tablade's own code, not third-party
-  packages. Dependencies are pinned in `uv.lock` and kept to a small, well-known set.
+  packages, and it is a gatekeeper rather than a sandbox: deliberate tricks (such as building a name
+  as a string and calling `getattr`) get past it. Dependencies are pinned in `uv.lock` and kept to a
+  small, well-known set.
 
 ### 🛡️ Keeping real data out of the repo
 
@@ -198,7 +207,7 @@ The skill's version is the recipe format version, so a skill always writes recip
    (To check what the sandbox can do first, upload the probe from `tablade skill --probe` and say “執行 Tablade probe”.)
 3. **Ask Copilot.** Upload the data (or a summary from `tablade profile 資料.csv`) and describe the cleanup.
    Copilot writes the recipe and checks it with `scripts/validate_recipe.py`.
-4. **Open it in Tablade.** Put the recipe next to the data and use **Open recipe**. Tablade validates it and
+4. **Open it in Tablade.** Put the recipe next to the data and use **Open Recipe**. Tablade validates it and
    dry-runs every step on the real data; if anything is wrong, **Copilot → Check and copy error report** gives
    you a report to paste back to Copilot.
 
@@ -208,9 +217,9 @@ The skill's version is the recipe format version, so a skill always writes recip
 
 | Check | Result |
 |---|---|
-| Unit tests (`pytest`) | 244 passed (every step's documented examples run as tests; the UI's session is driven step by step like a user) |
+| Unit tests (`pytest`) | all pass (about 900; every step's documented examples run as tests; the UI's session is driven step by step like a user) |
 | Example recipe (`examples/sales_detail.recipe.json`, 2 cp950 files, 94 lines → 70 rows) | ✅ output matches the expected rows; every row's `__line_no` points to its physical line |
-| Self-test inside the packaged app (generated cp950 CSV → Parquet → read back → lazy query → read Excel → multi-core transcode → full run of the example recipe: transcode, per-file processing, merge source files, streaming export) | ✅ Windows x64 (CI, 2 cores: 2 worker processes are still started) and macOS arm64 |
+| Self-test inside the packaged app (generated cp950 CSV → Parquet → read back → lazy query → read Excel → multi-core transcode → full run of the example recipe: transcode, per-file processing, Combine source files, streaming export) | ✅ Windows x64 (CI, 2 cores: 2 worker processes are still started) and macOS arm64 |
 | Window smoke test (open window, self-test, load the example through the JS bridge, wait for the grid to render 70 rows, close) | ✅ onefile and onedir on macOS arm64; Windows runs in CI |
 | AI skill from the packaged app (`tablade skill`) | ✅ onefile and onedir |
 
@@ -227,7 +236,7 @@ The skill's version is the recipe format version, so a skill always writes recip
 | 2 × 1.5 GB UTF-8 files — example recipe, streaming run | 29 s | 2.4 GB |
 | 200 × 10 MB files — same | 23 s | 1.3 GB |
 | 1,000 × 100 KB files — same | 15 s | 0.7 GB |
-| 2 × 2 GB cp950 files — example recipe plus “merge source files”, streaming run | 40 s (was 119 s) | 1.3 GB (was 2.9 GB) |
+| 2 × 2 GB cp950 files — example recipe plus “Combine source files”, streaming run | 40 s (was 119 s) | 1.3 GB (was 2.9 GB) |
 | before the streaming rewrite: 1 GB cp950 | 96 s | 10.2 GB |
 
 Windows (CI): onefile 68.7 MB zipped. The onefile build is confirmed to open on a locked-down company computer (M0 done); start-up time not measured yet.
@@ -259,12 +268,12 @@ Command line:
 tablade                              # open the window
 tablade selftest [--out result.json] # self-test with generated data (exit code 0 = pass)
 tablade gui --smoke                  # open the window, self-test, close
-tablade convert in.csv out.parquet [--encoding auto|utf-8|cp950|big5hkscs]
+tablade convert in.csv out.parquet [--encoding auto|utf-8|utf-8-sig|cp950|big5hkscs]
 tablade run recipe.json [--out-dir DIR] [--json]  # run a recipe: outputs go to output/, manifests to log/ (default: the recipe's folder); print row counts per step
 tablade validate recipe.json [--run] [--json]    # check a recipe (--run: dry-run on the real data)
 tablade schema [--out spec.json]                 # step catalog + recipe JSON Schema
 tablade skill [--out x.zip] [--probe]            # AI skill for Microsoft 365 Copilot (or the sandbox probe)
-tablade profile 資料.csv [--lines 30] [--mask]   # compact summary of a data file for an AI assistant
+tablade profile 資料.csv [--lines 30] [--mask] [--out summary.md]  # compact summary of a data file for an AI assistant (--mask: mask the content and file names)
 tablade version
 ```
 
@@ -277,6 +286,10 @@ uv run tablade run examples/sales_report.recipe.json   # sectioned print-format 
 uv run tablade run examples/sales_excel.recipe.json    # Excel sheet: drop the title rows, convert dates and numbers
 uv run tablade run examples/sales_combined.recipe.json # 4 stages: append a text export and an Excel sheet, then join an item table
 ```
+
+If there are words that must never appear in the repo (people's names, company names, project code names…),
+list them in `.tablade-denylist` at the repo root (one per line; it is already in `.gitignore`), and pre-commit
+blocks any file that contains them.
 
 ---
 
@@ -292,21 +305,26 @@ src/tablade/
 ├─ cli.py             command line (gui / run / validate / schema / skill / profile / selftest / convert / version)
 ├─ selftest.py        packaged-environment self-test on generated data
 ├─ fixtures.py        deterministic fake data (tests, self-test, examples)
+├─ i18n.py            UI language (Chinese / English)
+├─ update.py          version check at start-up (the only network call)
+├─ usage.py           memory and temp-folder usage; desktop.py opens a local folder
 ├─ recipe/            pydantic models, version, stdlib-only validator, spec + schema lock
 ├─ steps/             one module per step family, registered in registry.py
-├─ engine/            run a recipe (row counts, warnings with line numbers), check = validate + dry-run
-├─ ingest/            encoding detection, text_lines / csv readers, glob + multi-file concat
-└─ export/            atomic Parquet writer
+├─ engine/            run a recipe (row counts, warnings with line numbers, Parquet / CSV output), check = validate + dry-run
+├─ ingest/            encoding detection, text_lines / csv / Excel / Parquet readers, glob, transcoding, column alignment
+└─ export/            output locations and file-name checks, manifests
 frontend/             Vite + React + TypeScript + shadcn/ui; bridge.ts mirrors api.py
 assets/               icon.svg (source), icon.ico, icon.icns, icon.png
-scripts/              build, make_icons, gen_fixtures, check_no_data, check_code_policy
+scripts/              build, make_icons, gen_fixtures, gen_frontend_dev_data, check_no_data, check_code_policy,
+                      check_i18n, check_release, update_schema_lock
 tests/                pytest suite
 tablade.spec          PyInstaller config (onefile / onedir via TABLADE_BUILD)
 ```
 
-- **Steps are data, not code.** A recipe stores step type + parameters; the compiler maps them
-  to Polars operations. User input is never executed.
-- **Every step is a pure function** `apply(lf, params) -> LazyFrame` — no file I/O, no UI.
+- **Steps are data, not code.** A recipe stores step type + parameters; the engine (`engine/run.py`)
+  maps them to Polars operations. User input is never executed.
+- **Every step is a pure function** `apply(lf) -> LazyFrame` (the parameters are the step model's
+  fields) — no file I/O, no UI.
 - **Structure-defining steps** (promote headers, split into N columns, pivot) scan the data once
   when the step is created and freeze the column names into the recipe.
 - Full design and rationale: [`DESIGN.md`](DESIGN.md).
@@ -323,7 +341,7 @@ tablade.spec          PyInstaller config (onefile / onedir via TABLADE_BUILD)
 | M2 UI | Step list (add, reorder, disable, delete), preview grid, parameter forms, recipe import with error report, skill download | The example cleanup can be done without writing JSON ✅ |
 | M3 Local formats & traceability | `parse_number`, `parse_date` (ROC calendar), `trim_clean`, `replace_values`, `remove_columns`, `select_columns`, `rename_columns`, types tab, manifest | Output ships with a manifest; warnings carry line numbers ✅ |
 | M4 Multi-file & Excel | glob, diagonal concat, Excel reader, `classify_rows`, `extract_regex`, `split_fixed_width` | A sectioned report example flattens completely ✅ |
-| M5 Advanced steps | `dedupe`, `unpivot`, `group_by`, `pivot`, multi-stage recipes, the `parquet` reader, `join`, append (read several stages + merge source files) | The `sales_combined` example appends a text export and an Excel sheet, then looks up item categories ✅ |
+| M5 Advanced steps | `dedupe`, `unpivot`, `group_by`, `pivot`, multi-stage recipes, the `parquet` reader, `join`, append (read several stages + Combine source files) | The `sales_combined` example appends a text export and an Excel sheet, then looks up item categories ✅ |
 | M6 Languages | Switch the UI between Traditional Chinese and English (button left of “⋯”; defaults to the OS language) | Every screen is available in English ✅ (the recipe file, the AI skill and the CLI stay in Chinese) |
 
 ---
@@ -336,10 +354,10 @@ tablade.spec          PyInstaller config (onefile / onedir via TABLADE_BUILD)
   form can run that stage once on all the data.
 - **Large files are previewed from a sample.** Above 200,000 lines the preview uses the first
   100,000 and last 1,000 lines of each file, so per-step row counts in the UI are sample counts;
-  the data pane says "sample mode", plus a red warning that the preview may be inaccurate when a step that
+  the data pane says “Sample mode”, plus a red “Warning: preview may be inaccurate” when a step that
   needs the whole file (remove duplicates, group by, pivot) comes before the selected step (hover to see
   which steps). Export streams through everything, the progress window shows how many
-  lines have been processed, and afterwards "Output" reads the exported file and says "full mode".
+  lines have been processed, and afterwards “Output” reads the exported file and says “Full mode”.
   Streaming export reports only the final row count, and its warnings cover the rows that are still
   in the output. Group-by and pivot previews are computed from the sample too (pivot reads its new
   columns from the preview data; values that only show up at export time are reported as warnings).

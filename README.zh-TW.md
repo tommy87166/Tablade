@@ -75,9 +75,9 @@
 
 | 層 | 技術 | 角色 |
 |---|---|---|
-| 引擎 | [Polars](https://pola.rs/) 2.x（Python API） | 每個步驟編譯成 LazyFrame 操作；預覽只跑 `head(1000)`，匯出時串流寫成 Parquet。 |
+| 引擎 | [Polars](https://pola.rs/) 2.x（Python API） | 每個步驟編譯成 LazyFrame 操作；預覽在 20 萬行以內整份讀進來，超過時用每個檔的前 10 萬行＋最後 1,000 行，匯出時串流寫成 Parquet 或 CSV。 |
 | 視窗 | [pywebview](https://pywebview.flowrl.com/) 6 | 原生視窗（Windows 用 WebView2、macOS 用 WKWebView）。JS 直接呼叫 Python——**不起 HTTP 服務、不開 port**。 |
-| 前端 | React 19 + TypeScript + Vite，[shadcn/ui](https://ui.shadcn.com/)（Radix + Tailwind CSS v4） | build 成**單一、自給自足的 HTML 檔**（約 300 KB），由 Python 以字串載入。 |
+| 前端 | React 19 + TypeScript + Vite，[shadcn/ui](https://ui.shadcn.com/)（Radix + Tailwind CSS v4） | build 成**單一、自給自足的 HTML 檔**（約 700 KB、gzip 後約 200 KB），由 Python 以字串載入。 |
 | 編碼 | Python codecs | 自動偵測 `utf-8-sig` → `cp950`；失敗時指出第一個無法解碼的位元組與行號。 |
 | Excel | [fastexcel](https://github.com/ToucanToco/fastexcel)（calamine） | 快速、唯讀的 XLSX / XLS 讀取。 |
 | Recipe | pydantic v2 | 驗證 recipe JSON。 |
@@ -94,8 +94,10 @@
 | `stages` | 前面階段的結果：每個來源各自是一個來源（名稱是「@階段／檔名」）；要接成一份（附加）就用「合併來源檔」 | `__stage`、上游的系統欄位（警告照樣指回原始檔的行號）、各欄 | ✅ M5 |
 
 - `__` 開頭的是系統欄位：UI 預設隱藏，匯出時可選擇是否保留。
-- Recipe 記一份**檔案清單**：Recipe 資料夾裡的檔存相對路徑，其他存絕對路徑，也可以手動輸入含 `*` 的路徑。清單裡的檔都找得到時，按工具列的「載入資料及預覽」才讀檔、算出每一步的預覽；只要匯出的話，可以直接按「處理並匯出資料」（不用先載入，會先用每個檔的前 2,000 行試跑，有錯就停下並指出是哪一步）。
+- Recipe 記一份**檔案清單**：Recipe 資料夾裡的檔存相對路徑，其他存絕對路徑，也可以手動輸入含 `*`、`?`、`[…]` 的路徑（路徑本身就是一個檔時直接用，檔名有 `[`、`?` 也沒關係）。清單裡的檔都找得到時，按工具列的「載入資料及預覽」才讀檔、算出每一步的預覽；只要匯出的話，可以直接按「處理並匯出資料」（不用先載入，會先用每個檔的前 2,000 行試跑，有錯就停下並指出是哪一步）。
 - 多檔時每個檔各自一條流水線，到「合併來源檔」或寫出前才依清單順序接起來；欄位不一致時自動補 null。
+- 輸出檔名（每個階段的 `output_file`）只填檔名，副檔名照格式補上；不能有路徑字元、不能「.」開頭、不能是 Windows 的保留名稱（`CON`、`NUL`、`COM1`…），
+  主檔名最多 200 個位元組，同一個 Recipe 裡不能重複（不分大小寫、NFC 正規化後比；`明細.csv` 和 `明細.parquet` 也算），也不能寫到任何一個輸入檔上。
 - 每個檔讀進來時就依 `__line_no` 排好，每個步驟都保持這個順序，所以步驟不排序；
   依檔案計算的步驟（向下填滿、移除前後 N 列）不用 window 函式，幾 GB 的檔案記憶體用量也固定。
 
@@ -107,11 +109,11 @@ pywebview 視窗 — frontend/（React + shadcn/ui，單一 HTML）
       ▼
 api.py（只做參數轉換與錯誤包裝）
       ▼
-recipe/（pydantic）──► engine/compiler.py   步驟（資料）→ Polars LazyFrame
+recipe/（pydantic）──► engine/run.py        步驟（資料）→ Polars LazyFrame
       ┌──────────────────────┼──────────────────────┐
       ▼                      ▼                      ▼
 ingest/                steps/                  export/
-編碼、逐行讀取、         純函式：                 Parquet + manifest
+編碼、逐行讀取、         純函式：                 Parquet / CSV + manifest
 CSV / Excel、行號        LazyFrame → LazyFrame
 
 cli.py — `tablade run recipe.json` 不開 UI，跑同一套引擎
@@ -124,14 +126,16 @@ cli.py — `tablade run recipe.json` 不開 UI，跑同一套引擎
   不自動更新。設定 `TABLADE_NO_UPDATE_CHECK=1` 就完全不連線。
 - **沒有其他網路程式碼。** `scripts/check_code_policy.py` 會解析 `src/` 底下每個檔案，禁止 import
   `socket`、`http`、`urllib`、`requests`、`httpx`、`aiohttp`、`ssl` 等模組（只有 `update.py`
-  可以用 `urllib.request`），也禁止 `eval` / `exec` / `compile` / `__import__`。pre-commit 與 CI 都會跑。
+  可以用 `urllib.request`），也禁止 `eval` / `exec` / `compile` / `__import__` / `importlib.import_module`。
+  呼叫外部程式（`subprocess`、`os.system` 等）只有 `desktop.py` 可以（用系統的程式開啟本機資料夾），
+  Polars 的 `read_*` / `scan_*` 也不能讀網址或雲端（`storage_options`）。pre-commit 與 CI 都會跑。
 - **沒有本機伺服器。** 頁面以 HTML 字串載入，pywebview 不會啟動內建的 HTTP server，也不開 port。
 - **Content-Security-Policy `default-src 'none'`**（build 時注入）。頁面無法連線、嵌入或載入任何外部資源。
   `'unsafe-eval'` 只是因為 pywebview 的 JS bridge 需要。
 - **資料不會被當成 HTML 顯示。** 儲存格內容一律用 `textContent` 寫入，含有標記的資料不會變成
   可以呼叫 Python 的程式。
-- **已知的殘餘風險：** 規則檢查只涵蓋 Tablade 自己的程式碼，不含第三方套件。依賴版本鎖定在
-  `uv.lock`，並維持在少數、知名的套件。
+- **已知的殘餘風險：** 規則檢查只涵蓋 Tablade 自己的程式碼，不含第三方套件；它是把關的工具、不是沙箱，
+  刻意繞過（例如拼字串再 `getattr`）擋不住。依賴版本鎖定在 `uv.lock`，並維持在少數、知名的套件。
 
 ### 🛡️ 不讓真實資料進入 repo
 
@@ -173,7 +177,7 @@ Tablade 會從步驟 registry 產生 [Agent Skills](https://learn.microsoft.com/
    （想先確認沙箱能做什麼，可以上傳 `tablade skill --probe` 產生的 probe，再說「執行 Tablade probe」。）
 3. **請 Copilot 寫。** 上傳資料（或 `tablade profile 資料.csv` 產生的摘要），描述要怎麼整理。
    Copilot 會寫出 recipe，並用 `scripts/validate_recipe.py` 自我檢查。
-4. **用 Tablade 開啟。** 把 recipe 放在資料旁邊，選 **開啟 recipe**。Tablade 會驗證並用真實資料試跑每一步；
+4. **用 Tablade 開啟。** 把 recipe 放在資料旁邊，選 **開啟 Recipe**。Tablade 會驗證並用真實資料試跑每一步；
    有問題時選 **Copilot → 檢查並複製錯誤報告**，把報告貼回給 Copilot。
 
 ---
@@ -182,7 +186,7 @@ Tablade 會從步驟 registry 產生 [Agent Skills](https://learn.microsoft.com/
 
 | 項目 | 結果 |
 |---|---|
-| 單元測試（`pytest`） | 244 項通過（每種步驟文件裡的範例都當成測試跑；UI 背後的 session 照使用者的操作順序一步步測） |
+| 單元測試（`pytest`） | 全部通過（約 900 項；每種步驟文件裡的範例都當成測試跑；UI 背後的 session 照使用者的操作順序一步步測） |
 | 範例 recipe（`examples/sales_detail.recipe.json`，2 個 cp950 檔、94 行 → 70 列） | ✅ 輸出與預期完全一致；每一列的 `__line_no` 都指回原始檔的那一行 |
 | 打包後的自我檢測（產生 cp950 CSV → Parquet → 讀回比對 → Lazy 查詢 → 讀 Excel → 多核心轉碼 → 完整執行範例 recipe：轉碼、各檔分開處理、合併來源檔、串流匯出） | ✅ Windows x64（CI，2 個核心：仍實際開 2 個工作程序測試）與 macOS arm64 |
 | 視窗 smoke test（開視窗、自我檢測、透過 JS bridge 載入範例、等表格畫出 70 列、關閉） | ✅ macOS arm64 的 onefile、onedir；Windows 由 CI 跑 |
@@ -233,12 +237,12 @@ uv run --group icons python scripts/make_icons.py    # 從 assets/icon.svg 重�
 tablade                              # 開啟視窗
 tablade selftest [--out result.json] # 用假資料自我檢測（結束代碼 0 表示通過）
 tablade gui --smoke                  # 開視窗、自我檢測後關閉
-tablade convert in.csv out.parquet [--encoding auto|utf-8|cp950|big5hkscs]
+tablade convert in.csv out.parquet [--encoding auto|utf-8|utf-8-sig|cp950|big5hkscs]
 tablade run recipe.json [--out-dir 資料夾] [--json]  # 執行 recipe：輸出寫到 output/、處理紀錄寫到 log/（預設在 recipe 所在的資料夾），列出每一步的列數
 tablade validate recipe.json [--run] [--json]    # 驗證 recipe（--run：用真實資料試跑）
 tablade schema [--out spec.json]                 # 步驟目錄＋recipe JSON Schema
 tablade skill [--out x.zip] [--probe]            # 給 Microsoft 365 Copilot 的 AI skill（或沙箱 probe）
-tablade profile 資料.csv [--lines 30] [--mask]   # 給 AI 助理看的資料檔摘要
+tablade profile 資料.csv [--lines 30] [--mask] [--out 摘要.md]  # 給 AI 助理看的資料檔摘要（--mask：遮罩內容與檔名）
 tablade version
 ```
 
@@ -269,21 +273,25 @@ src/tablade/
 ├─ cli.py             命令列（gui / run / validate / schema / skill / profile / selftest / convert / version）
 ├─ selftest.py        用假資料檢測打包後的環境
 ├─ fixtures.py        決定性的假資料（測試、自我檢測、範例共用）
+├─ i18n.py            畫面的語言（中文／英文）
+├─ update.py          啟動時查最新版號（唯一的對外連線）
+├─ usage.py           記憶體與暫存資料夾用量；desktop.py 開啟本機資料夾
 ├─ recipe/            pydantic model、版本號、只用標準函式庫的驗證器、spec 與 schema lock
 ├─ steps/             每類步驟一個模組，登錄到 registry.py
-├─ engine/            執行 recipe（每步列數、附行號的警告）；check = 驗證＋試跑
-├─ ingest/            編碼偵測、text_lines / csv 讀取、glob 與多檔合併
-└─ export/            原子寫入的 Parquet 輸出
+├─ engine/            執行 recipe（每步列數、附行號的警告、寫出 Parquet / CSV）；check = 驗證＋試跑
+├─ ingest/            編碼偵測、text_lines / csv / Excel / Parquet 讀取、glob、轉碼與多檔對齊
+└─ export/            輸出檔的位置與檔名檢查、處理紀錄（manifest）
 frontend/             Vite + React + TypeScript + shadcn/ui；bridge.ts 與 api.py 對應
 assets/               icon.svg（原始檔）、icon.ico、icon.icns、icon.png
-scripts/              build、make_icons、gen_fixtures、check_no_data、check_code_policy
+scripts/              build、make_icons、gen_fixtures、gen_frontend_dev_data、check_no_data、check_code_policy、
+                      check_i18n、check_release、update_schema_lock
 tests/                pytest
 tablade.spec          PyInstaller 設定（以 TABLADE_BUILD 切換 onefile / onedir）
 ```
 
-- **步驟是資料，不是程式碼。** recipe 只記步驟類型與參數，由 compiler 對應成 Polars 操作，
+- **步驟是資料，不是程式碼。** recipe 只記步驟類型與參數，由引擎（`engine/run.py`）對應成 Polars 操作，
   絕不執行使用者輸入。
-- **每個步驟都是純函式** `apply(lf, params) -> LazyFrame`：不讀寫檔案、不碰 UI。
+- **每個步驟都是純函式** `apply(lf) -> LazyFrame`（參數是步驟 model 的欄位）：不讀寫檔案、不碰 UI。
 - **依資料決定結構的步驟**（把第一列作為欄位標題、拆成 N 欄、樞紐）在建立步驟時先掃一次資料，把欄名寫死在 recipe。
 - 完整設計與理由：[`DESIGN.md`](DESIGN.md)。
 

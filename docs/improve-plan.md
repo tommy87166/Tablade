@@ -227,4 +227,4 @@
 
 - `uv run pytest`、`scripts/check_no_data.py --all`、`scripts/check_code_policy.py`、`ruff check`、`ruff format --check`；有改前端時再加 `npm --prefix frontend run lint` 與 `npm --prefix frontend run build`。
 - 文件同步：DESIGN.md（§8 串流、§9 處理紀錄、§16 畫面）、兩份 README、AI skill（`skill.py`）、CLAUDE.md 的常用指令（第 2 批改了 `tablade run` 的參數）。
-- 做完的項目從 improve.md 移掉。
+- 做完的項目在 improve.md 標「已完成」（留作紀錄，不移掉）。

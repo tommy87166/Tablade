@@ -1,7 +1,7 @@
 # Tablade（暫定名稱）— 設計文件
 
 > Table + Blade：資料整理的瑞士刀。
-> 取代 Alteryx 的開源、本機執行、Power Query 式「一步一步」資料整理工具，最終輸出 Parquet。
+> 取代 Alteryx 的開源、本機執行、Power Query 式「一步一步」資料整理工具，最終輸出 Parquet 或 CSV。
 
 ---
 
@@ -13,7 +13,7 @@
 
 - 像 Power Query 一樣，以**線性步驟清單**（Applied Steps）整理資料，每一步可預覽、修改、停用、刪除。
 - 可處理**多檔合併**、**爛格式檔案**（標題雜訊、空行、分段報表、Big5 編碼）。
-- 最終輸出 **Parquet**，並附上記錄資料來源與處理過程的 **manifest**。
+- 最終輸出 **Parquet** 或 **CSV**（每個階段各自選），並附上記錄資料來源與處理過程的 **manifest**。
 - 步驟存成 **recipe JSON**，同樣的 recipe 套用到新資料可重現結果。
 - 在 **Mac 與 Windows** 上以**單一執行檔**執行，免安裝 Python。
 
@@ -35,7 +35,7 @@
 | 處理的資料可能含敏感資訊 | repo 內**永遠不得出現真實資料**（見 §11） |
 | repo 從第一天就公開 | 程式碼、文件、commit 訊息、issue 都不得含真實資料或可識別的組織資訊（見 §11） |
 | 目標電腦可執行 Electron 程式 | 未簽章程式至少不會全面被擋，但單一執行檔需實測（見 §10） |
-| 筆電記憶體約 16GB | 預覽只跑前 N 列；大量 join / group-by 時要注意記憶體 |
+| 筆電記憶體約 16GB | 大檔的預覽只用樣本（§8）、匯出用串流；大量 join / group-by 時要注意記憶體 |
 
 ---
 
@@ -73,21 +73,21 @@
          ▼
    api.py（JS bridge：只做參數轉換與錯誤包裝）
          ▼
-   recipe/（schema 驗證）──► engine/compiler.py
+   recipe/（schema 驗證）──► engine/run.py
                                  │  步驟（資料）→ Polars LazyFrame 操作
          ┌───────────────────────┼───────────────────────┐
          ▼                       ▼                       ▼
    ingest/                 steps/（每種步驟一個模組）    export/
-   編碼轉換、逐行讀取、       純函式：                   Parquet + manifest
-   CSV / Excel、加行號        LazyFrame → LazyFrame
+   編碼轉換、逐行讀取、       純函式：                   輸出位置、Parquet / CSV、
+   CSV / Excel、加行號        LazyFrame → LazyFrame      manifest
 
    cli.py：`tablade run recipe.json`（不開 UI，批次執行，也方便測試）
 ```
 
 **核心原則**
 
-1. **步驟是資料，不是程式碼**：recipe 只記「步驟類型＋參數」，由 compiler 對應成 Polars 操作。**不使用 `eval` / `exec` 執行使用者輸入。**
-2. **每個步驟都是純函式**：`apply(lf: pl.LazyFrame, params) -> pl.LazyFrame`，不讀寫檔案、不碰 UI。
+1. **步驟是資料，不是程式碼**：recipe 只記「步驟類型＋參數」，由引擎（`engine/run.py`）對應成 Polars 操作。**不使用 `eval` / `exec` 執行使用者輸入。**
+2. **每個步驟都是純函式**：`apply(lf: pl.LazyFrame) -> pl.LazyFrame`（參數就是步驟 model 的欄位），不讀寫檔案、不碰 UI。
 3. **UI 與引擎分離**：引擎可以只靠 CLI 完整運作；UI 只是呼叫引擎。
 4. **可追溯**：每一筆輸出都能追回來源檔名與原始實體行號。
 
@@ -103,7 +103,7 @@
 | `csv` | 乾淨的 CSV，交給 Polars 解析 | `__source_file`, `__line_no`, 各欄 |
 | `excel` | xlsx / xlsm / xlsb / xls / ods，指定工作表（`sheet`，空白是第一個工作表，`*` 是全部工作表） | `__source_file`, `__line_no`, `A`, `B`, `C`…（全部工作表時多一個 `__sheet`） |
 | `parquet` | Parquet 檔：欄位與型別照檔案（不是全部文字）；檔案自己帶的 `__` 開頭欄位改名成「原始…」的一般欄保留（`__line_no` → 原始行號） | `__source_file`（檔名）, `__line_no`（第幾列）, 各欄 |
-| `stages` | 讀前面階段的結果（`"stages": ["階段A", …]`）；每個來源檔各自是一個來源，名稱是「@階段／檔名」 | `__stage`, 上游的系統欄位（`__source_file`、`__line_no` 保留上游的，警告一路指回原始檔）, 各欄 |
+| `stages` | 讀前面階段的結果（`"stages": ["階段A", …]`）；每個來源檔各自是一個來源，名稱是「@階段／檔名」（同一個名稱算同一個來源） | `__stage`, 上游的系統欄位（`__source_file`、`__line_no` 保留上游的，警告一路指回原始檔）, 各欄 |
 
 - `text_lines` 是爛檔的預設模式。**不要讓解析器自動略過空行或猜測格式**，否則行號會跟原始檔對不起來。
 - `__line_no` 從 1 起算，對應原始檔的實體行號（Excel 則對應工作表列號）。
@@ -112,9 +112,17 @@
 - **全部工作表**：工作表寫 `*`（Excel 的工作表名稱不能有 `*`，不會撞名）就讀每個檔的每一個工作表。每個工作表各自是一個來源（part 名稱是「檔名［工作表］」）：「移除前 N 列」「把第一列作為欄位標題」「向下填滿」這類分檔的步驟對每個工作表各自套用，「合併來源檔」的順序清單也列出每個工作表。多一個系統欄位 `__sheet`（排在 `__source_file` 後面）記工作表名稱；`__source_file` 仍是檔名。警告、點警告跳到那一列、manifest 的輸入檔與警告都帶工作表。「合併來源檔」之後不再分工作表（`__sheet` 改成空值）。
 - **讀前面階段的結果**（`stages`）：上游還沒合併的話，這個階段照樣每個原始來源檔分別處理。`__stage` 記這一列是從哪個階段讀進來的
   （直接讀到的那個；再被下一個階段讀時改成新的），同一個檔在兩個階段各自處理後再附加也分得出來。
+  來源用看得到的名稱分（「@階段／檔名」，含工作表）：名稱一樣的算同一個來源，依第一次出現的位置接起來
+  （例如上游自己讀了兩個階段、裡面有同名的檔；`engine/run.py` 的 `stage_parts`）。資料在記憶體裡或串流都是同一種切法。
   欄位對齊成同一組（缺的欄是空值）；**同名欄的型別要一樣**，否則讀取時就報錯，指出哪一欄在哪個來源是什麼型別；
   整欄都是空值的不算衝突，小數位數不同時取位數多的（`sources.align()`，讀好幾個 parquet 檔時也一樣）。
-- 以 `__` 開頭的欄位是系統欄位，UI 預設隱藏但可顯示，匯出時可選擇是否保留。
+- 以 `__` 開頭的欄位是系統欄位，UI 預設隱藏但可顯示，匯出時可選擇是否保留。每個階段有哪些系統欄位：
+  - 一定有 `__source_file`、`__line_no`。
+  - 讀 Excel 全部工作表（`sheet` 是 `*`）多 `__sheet`。
+  - 讀前面階段的結果（`stages`）多 `__stage`，也帶著那些階段的系統欄位。
+  - 「合併來源檔」之後多 `__orig_source_file`、`__orig_line_no`、`__orig_sheet`、`__orig_stage`（合併前有的才有，見 §8）。
+  - Recipe 裡只有**條件**（篩選、將列進行分類、依條件複製欄位的 `conditions`）可以引用系統欄位，其他參數只能引用資料欄位；
+    驗證器會檢查這一步之前有沒有那個系統欄位（`recipe/validator.py` 的 `_system_ref_issues`）。
 
 ### 5.2 編碼
 
@@ -124,7 +132,9 @@
 
 ### 5.3 多檔
 
-- `inputs[].files` 是**檔案清單**：每一項是相對於 recipe 資料夾的路徑或絕對路徑，一律用 `/`，可以含 `*`（glob）。依清單順序讀取，同一項裡依檔名排序，同一個實際的檔只讀一次。
+- 每個階段的 `input.files` 是**檔案清單**：每一項是相對於 recipe 資料夾的路徑或絕對路徑，一律用 `/`。依清單順序讀取，同一項裡依路徑排序，同一個實際的檔只讀一次。
+  - 路徑本身就是一個檔時直接用（檔名、資料夾名稱可以有 `[`、`?`，例如「明細[1].csv」）。
+  - 不是檔、又有 `*`、`?`、`[…]` 時才當成 glob（`ingest/sources.py` 的 `expand`）。
 - UI 的「瀏覽檔案」：recipe 資料夾裡（含子資料夾）的檔存相對路徑，其他位置存絕對路徑（用 `is_relative_to` 判斷，Windows 跨磁碟也不會出錯）。程式不會自己產生 `*`；需要時手動輸入路徑加入清單。另存到別的資料夾時，每一項依新位置重新決定相對或絕對。
 - 每個來源檔各自掃描成一個 LazyFrame（`scan_parts()`），欄位對齊成同一組：欄位不一致時缺的欄補 null（效果同 `diagonal_relaxed`）。
 - 每一列都帶 `__source_file`（recipe 資料夾裡的檔是相對路徑，其他是整理過的絕對路徑）。各檔分開跑步驟，到「合併來源檔」或寫出前才依清單順序接起來（§8）。
@@ -143,10 +153,13 @@
       "input": { "files": ["data/品項對照.csv"], "reader": "csv", "encoding": "auto" },
       "steps": [
         { "id": "a1", "type": "trim_clean", "columns": ["品號", "類別"] }
-      ]
+      ],
+      "output_format": "csv",
+      "output_file": "品項對照"
     },
     {
       "name": "預設階段",
+      "output_format": "parquet",
       "input": { "files": ["data/明細_*.csv"], "reader": "text_lines", "encoding": "auto" },
       "steps": [
         { "id": "s1", "type": "remove_top_rows", "n": 4 },
@@ -160,9 +173,11 @@
       ]
     }
   ],
-  "output": { "format": "parquet", "keep_system_columns": true }
+  "output": { "keep_system_columns": true }
 }
 ```
+
+（目前沒有測試檢查這個範例：改了以後用 `recipe/validator.py` 的 `validate()` 跑一次，確認沒有錯誤。）
 
 **規則**
 
@@ -173,16 +188,26 @@
   只能引用**前面**的階段，所以不會有循環；第一個階段只能讀實際檔。中間階段沒有被用到、也不寫檔時，驗證器給提醒（`severity: warning`）。
 - **輸出檔**：每個階段有必填的 `output_format`（`parquet` 或 `csv`），可以有 `output_file`（只填檔名，例如 `"明細"`；副檔名照格式補上）。
   最後一個階段一定寫檔，沒填時用 Recipe 的名稱（`明細.recipe.json` → `明細.parquet` 或 `明細.csv`）；中間的階段有填才寫，沒填就只是暫存的。
+  寫出的檔一樣可以被後面的階段引用。
   - CSV 是 UTF-8 加 BOM（Excel 雙擊打開中文不會亂碼）；小數照原樣、日期 `2026-01-05`、日期時間 `2026-01-05 10:00:00`、空值是空白。
-  - 填了副檔名但跟格式不一樣時報錯；主檔名在同一個 Recipe 裡不能重複（`明細.csv` 和 `明細.parquet` 也算，處理紀錄都是 `log/明細.manifest.json`）。
   - 後面的階段讀的是引擎傳下來的結果（記憶體或暫存資料夾的暫存 Parquet），不讀輸出檔，所以輸出格式不影響引用（`tests/test_large.py` 的 `test_later_stages_never_read_the_output_files`）。
   - CSV 輸出匯出後不提供完整模式（沒有存型別，也常被 Excel 改過再存），「輸出資料」照舊是抽樣模式；超過 Excel 的 1,048,576 列時，匯出摘要提醒。
-  寫出的檔一樣可以被後面的階段引用。檔名不能有路徑字元（`/ \ : * ? " < > |`）、不能「.」開頭、同一個 Recipe 裡不能重複（不分大小寫），
-  寫出的位置不能是任何一個階段的輸入檔；已經存在的檔直接覆蓋。格式、保留系統欄位、處理紀錄的設定在最外層的 `output`，套用到每個輸出檔。
+  - 檔名的規則（`recipe/validator.py` 的 `output_issues`，驗證器與 Tablade 共用）：
+    - 不能有路徑字元（`/ \ : * ? " < > |`）與控制字元，不能「.」開頭。
+    - 不能是 Windows 的保留名稱：`CON`、`PRN`、`AUX`、`NUL`、`COM1`～`COM9`、`LPT1`～`LPT9`（不分大小寫，`CON.parquet` 也算）。
+    - 主檔名最多 200 個位元組（UTF-8，中文約 66 個字；處理紀錄的暫存檔名會再長 28 個位元組，檔名上限一般是 255）。
+    - 填了副檔名但跟格式不一樣時報錯。
+    - 主檔名在同一個 Recipe 裡不能重複：不分大小寫，NFC 正規化後比（NFC／NFD 寫法不同的同一個字也算）；`明細.csv` 和 `明細.parquet` 也算，處理紀錄都是 `log/明細.manifest.json`。
+  - 寫出的位置不能是任何一個階段的輸入檔，處理紀錄的位置（`log/主檔名.manifest.json`）也一樣比對；
+    只差大小寫或 Unicode 組合方式的路徑也算同一個檔（`export/outputs.py` 的 `path_key`）。已經存在的檔直接覆蓋。
+- 保留系統欄位、處理紀錄的設定在最外層的 `output`（`keep_system_columns`、`manifest`），套用到每個輸出檔；格式在每個階段的 `output_format`。
 - 每個步驟都有 `id`（整份 Recipe 不能重複），並可加上 `"enabled": false` 暫時停用。
 - recipe 只記檔名、**不記資料夾**：輸出檔一律寫到 Recipe 所在資料夾底下的 `output/`，處理紀錄寫到並排的 `log/`（`export/outputs.py`），
   視窗裡按「處理並匯出資料」不再開存檔對話框；命令列 `tablade run --out-dir 資料夾` 可以把 `output/`、`log/` 改建在別的資料夾底下。
-  每個要寫的檔先寫成同一個資料夾裡的暫存檔，整個執行成功才一起改名成正式的檔：跑到一半失敗時，之前的輸出檔維持原樣。
+  每個要寫的檔（輸出檔與處理紀錄）先寫成同一個資料夾裡的暫存檔，整個執行成功才一起改名成正式的檔（`engine/run.py` 的 `_Writes`）：
+  - 跑到一半失敗時，之前的輸出檔維持原樣。
+  - 改名到一半失敗時，已經換成新檔的全部還原（原本沒有的刪掉），處理紀錄也一樣：不會有的新、有的舊，輸出檔也不會配到別次的處理紀錄。
+  - Windows 上改名前先確認每個已經存在的檔沒有被別的程式開著（例如開在 Excel 裡），有一個不行就都不動，請使用者關掉再試。
 - **依資料決定結構的步驟**（把第一列作為欄位標題、拆成幾欄、樞紐），在**建立步驟的當下**先掃一次資料，把欄名和欄數寫死在 recipe 裡。之後套用到新資料時，若出現更多段數或新的欄位，產生**警告**，不默默增減欄位。
 - recipe 本身可能含有敏感資訊（例如篩選條件裡的人名或公司名稱），所以**真實 recipe 也不得 commit**，repo 只放範例 recipe。
 
@@ -192,15 +217,15 @@
 
 ### 7.1 MVP（第一版）
 
-已完成：`remove_top_rows`、`remove_bottom_rows`、`remove_blank_rows`、`promote_headers`、`split_delimited`、`split_column`、`conditional_copy`、`fill_down`、`remove_columns`、`select_columns`、`rename_columns`、`trim_clean`、`replace_values`、`parse_number`、`parse_date`、`filter`、`merge_files`。
+已完成（下表全部）：`remove_top_rows`、`remove_bottom_rows`、`remove_blank_rows`、`promote_headers`、`split_delimited`、`split_column`、`conditional_copy`、`fill_down`、`remove_columns`、`select_columns`、`rename_columns`、`trim_clean`、`replace_values`、`parse_number`、`parse_date`、`filter`、`merge_files`、`classify_rows`、`extract_regex`、`split_fixed_width`。
 
 | 類型 | 說明 | Polars 實作方向 |
 |---|---|---|
 | `remove_top_rows` | 移除前 N 列 | 每個來源檔各自 `slice(n)` |
 | `remove_bottom_rows` | 移除最後 N 列 | 每個來源檔先數列數，再 `head(列數 − n)` |
-| `remove_blank_rows` | 移除空白列 | 依全部欄位都是 null 或空字串篩選 |
-| `promote_headers` | 指定某一列當欄名 | 建立步驟時讀取該列內容，寫死在 recipe；執行時每個來源檔只讀開頭一列比對欄名 |
-| `split_delimited` | 把 `line` 依分隔符號拆成多欄（處理引號） | 用 Python `csv` 解析，或 `str.split` 加上引號處理 |
+| `remove_blank_rows` | 移除空白列：全部資料欄位都是空白的列（系統欄位不算） | 依全部資料欄位都是 null 或只有空白字元（含空字串）篩選 |
+| `promote_headers` | 用目前的第一列當欄名，並移除那一列 | 建立步驟時讀取第一列內容，寫死在 recipe；執行時每個來源檔只讀開頭一列比對欄名（不同時警告，仍用原本的欄名） |
+| `split_delimited` | 把 `line` 依分隔符號拆成多欄（處理引號） | Polars 原生的正規表示式（`str.extract_all`）找出每一段：引號內的分隔符號不拆，兩個連續引號代表一個引號；不處理引號時 `str.split`。不呼叫 Python |
 | `split_column` | 某一欄依分隔符號再拆 | `str.split_exact(sep, n)` 後 `unnest` |
 | `conditional_copy` | 依條件複製欄位：符合條件（寫法和 `filter` 一樣）的列，把指定欄位的值複製到新欄位，其他列留空；不拿掉任何列。攤平分段報表時把段落標題的值複製出來，接著「向下填滿」帶到下面的明細 | `when(條件).then(欄).otherwise(None)`，一列一列處理 |
 | `fill_down` | 向下填滿 | 每個來源檔各自 `forward_fill()`（各檔分開跑，不會填到別的檔） |
@@ -266,18 +291,21 @@
 1. pydantic 參數 model
 2. `apply()` 純函式
 3. `describe()`：給 UI 顯示的一句話說明，例如「移除前 4 列」
-4. `infer_schema()`（如果需要）：建立步驟時掃描資料，決定欄名與欄數
+4. `suggest(frame, context)`（如果需要）：新增步驟時依目前的資料給建議參數（例如欄名、欄數、帶入右鍵點選的欄位）
 5. 單元測試（假資料）
 6. 欄位效果宣告：這一步對欄位做了什麼（見 §17.5），驗證器不用資料就能檢查欄位引用
 7. 範例：輸入假資料、參數、預期輸出；同時是單元測試，也會寫進 AI skill 的步驟目錄
-8. 給 AI 的說明：適用情境與常見誤用
+8. 給 AI 的說明（`ai_notes`）：適用情境與常見誤用
+9. 畫面的英文：`label_en`、`doc_en`、每個參數欄位的 `en()`（§16.8）
+
+完整的做法與 `@register` 會檢查哪些項目，以 CLAUDE.md 的「新增步驟」為準。
 
 ---
 
 ## 8. 預覽與執行
 
 - **讀檔**（`ingest/sources.py`）：不把整個檔案讀進記憶體。以 1 MB 分塊讀取，同時算 SHA-256、檢查是否為 UTF-8；UTF-8 檔直接交給 Polars 的 `scan_lines` / `scan_csv`（lazy、可串流），cp950 等其他編碼（或有單獨 `\r` 換行）的檔案先分塊轉成 UTF-8 暫存檔再掃描。分塊不用更大：16 MB 的區塊解碼後釋放的記憶體，macOS 的配置器會留著不還，每個程序會長到幾百 MB 到 1.5 GB，1 MB 時固定在幾十 MB、速度一樣。暫存檔依「路徑＋大小＋修改時間＋編碼」快取，**關閉視窗時刪除**（macOS 關視窗時不一定會跑 Python 的結束程序，所以不能只靠 atexit）。自我檢測畫面最下面列出暫存資料夾的位置與目前大小，可以按「開啟暫存資料夾」用檔案總管／Finder 打開（`desktop.py`，只開本機資料夾）。暫存資料夾裡有一個鎖檔，程式開著時一直鎖住；啟動時把沒有人鎖著的 `tablade-stage-*` 資料夾（上次當掉或被強制結束時留下的轉碼副本）清掉，另一個開著的 Tablade 正在用的不會動。**需要約原檔 1.5 倍的暫存空間。**
-- **平行轉碼**（`ingest/transcode.py`，只用標準函式庫）：64 MB 以上要轉碼的檔，在換行後面切成約 32 MB 的段，交給多個工作程序（`ProcessPoolExecutor`、spawn；CPU 核心數減 1，最多 8 個）同時轉，再依序接起來。cp950、Big5-HKSCS、UTF-8 的多位元組字元裡都不會出現 `0x0A`，`\n` 後面一定是一個字元的開頭，所以接起來的結果和單核心完全相同；`\r\n` 也不會被切開。SHA-256 一定要從頭讀到尾，由主程序另一條執行緒同時算。解碼錯誤依檔案順序回報第一個（和單核心相同的訊息）。開不了工作程序（受管控的電腦、`__main__` 不是檔案等）就改用單核心，之後不再嘗試。工作程序第一次要轉碼時才開，「載入資料及預覽」「處理並匯出資料」「完整跑一次」跑完就關掉（`sources.release_workers`）：8 個工作程序合計約 260 MB，原本會一直留到關閉視窗；下次要轉碼再開（Mac 上不到半秒）。打包後的 App 靠 `__main__.py` 的 `multiprocessing.freeze_support()` 讓工作程序從同一個執行檔啟動；自我檢測有一項「多核心轉碼」確認這件事：不管核心數多少都實際開 2 個工作程序轉碼一次（CI 的 Windows 只有 2 個核心，平常會用單核心，不這樣做就測不到），訊息裡另外寫這台電腦的大檔平常用幾個工作程序。
+- **平行轉碼**（`ingest/transcode.py`，只用標準函式庫）：64 MB 以上要轉碼的檔，在換行後面切成約 32 MB 的段，交給多個工作程序（`ProcessPoolExecutor`、spawn；CPU 核心數減 1，最多 8 個）同時轉，再依序接起來。cp950、Big5-HKSCS、UTF-8 的多位元組字元裡都不會出現 `0x0A`，`\n` 後面一定是一個字元的開頭，所以接起來的結果和單核心完全相同；`\r\n` 也不會被切開。SHA-256 一定要從頭讀到尾，由主程序另一條執行緒同時算。解碼錯誤依檔案順序回報第一個（和單核心相同的訊息）。只有開不了工作程序（受管控的電腦、`__main__` 不是檔案等）或工作程序意外結束時，才改用單核心（`PoolUnavailable`），這次開著的期間不再嘗試；讀寫檔的錯誤（暫存碟空間不足、檔案被鎖住…）照原樣回報，不改用單核心重來。工作程序第一次要轉碼時才開，「載入資料及預覽」「處理並匯出資料」「完整跑一次」與試跑（錯誤報告、`tablade validate --run`）跑完就關掉（`sources.release_workers`）：8 個工作程序合計約 260 MB，原本會一直留到關閉視窗；下次要轉碼再開（Mac 上不到半秒）。打包後的 App 靠 `__main__.py` 的 `multiprocessing.freeze_support()` 讓工作程序從同一個執行檔啟動；自我檢測有一項「多核心轉碼」確認這件事：不管核心數多少都實際開 2 個工作程序轉碼一次（CI 的 Windows 只有 2 個核心，平常會用單核心，不這樣做就測不到），訊息裡另外寫這台電腦的大檔平常用幾個工作程序。
 - **預覽**：輸入不超過 `SAMPLE_THRESHOLD`（20 萬行）時整份讀進記憶體，每一步的列數是精確值；超過時只用**每個來源檔的前 10 萬行與最後 1,000 行**當樣本（一次串流掃描取得），步驟的列數標示為樣本的。結尾的頁尾、合計也在樣本裡，「移除後 N 列」的預覽仍然正確。
 - **快取**：以「輸入檔指紋＋前 k 步的 recipe 雜湊」當 key，快取每一步的預覽結果。修改第 k 步時，只需重算第 k 步之後的步驟。
 - **列順序**：讀檔時就依 `__source_file, __line_no` 排好，filter / with_columns 會保持順序，所以**步驟不排序**（排序在串流下會把整份資料放進記憶體）。Polars 2.x 的串流引擎在 join / group_by / unpivot 之後不保證順序，所以 `group_by`、`pivot` 依 `__line_no`（每組第一筆的行號）排序彙總後的少量結果，`dedupe` 用 `maintain_order=True`，`unpivot` 不用 Polars 的 `unpivot()`（見 §7.2）。
@@ -286,9 +314,9 @@
 - **完整執行**（`engine/run.py`）：小資料整份讀進記憶體、每步 `collect()`（`eager`）；大資料整條 lazy 查詢用串流引擎寫成暫存 Parquet，再寫出最後結果（`stream`）。試跑（`validate --run`、錯誤報告）在大資料時用樣本（`sample`）。
   - 警告：步驟用 `warning_checks()` 宣告「輸出上哪些列要警告」，可以引用自己留下的 `__w_<步驟id>_*` 暫存欄位。eager / sample 模式每一步收集一次；stream 模式暫存欄位一路保留到最後才收集，所以**只算最後還留著的列**。遇到彙總類的步驟（`reshapes = True`）或「合併來源檔」時，引擎在這一步之前先算好之前步驟的警告：彙總之後列的意義變了，合併之後來源檔與行號變了，在這裡先算才會指到原本的列。做法是把前面的結果串流寫成一段暫存 Parquet（跟階段之間的暫存檔一樣分檔寫、有進度，「執行（串流，第 1 / 2 段）」），警告從這份暫存檔算，後面的步驟也從它接著跑：原始檔只讀一次。前面沒有要算的警告就不切。對輸入檢查的警告（結合沒對到的列）也在套用那一步之前、從同一段暫存檔算。每項檢查一次查詢（列數和前幾筆一起算）；不只一項時進度顯示「檢查警告 2 / 3 項」。之前是每項檢查都從原始檔把整條流程重跑兩次：2 個 2 GB 的 cp950 檔、3 項檢查，光檢查警告就要 87 秒，整個匯出 119 秒、峰值 2.9 GB；改成分段後 40 秒、1.3 GB。
   - **合併來源檔留下原始位置**：合併後 `__source_file` 是合併的名稱、`__line_no` 從 1 重編（群組彙總、樞紐靠遞增的行號排順序），原本的來源檔、行號、工作表、階段存到 `__orig_source_file`、`__orig_line_no`、`__orig_sheet`、`__orig_stage`（再合併一次時保留最早的；群組彙總、樞紐取每組第一筆的）。警告與處理紀錄同時寫原始位置，例如「合併 第 37 行（原始：@文字明細／明細_02.csv 第 12 行）」。
-  - **多個階段**：依序執行。eager / sample 模式每個階段的結果留在記憶體；stream 模式每個中間階段串流寫成暫存 Parquet（每一列多一個暫存的 part 編號，下一個階段讀回來時依它分開，每個來源各自處理），之前步驟的警告從這份暫存結果算（階段的結尾也是警告的邊界），執行完（不管成功或失敗）都刪掉。進度每個階段一段（「階段「X」：執行（串流）」；階段裡切了段時是「第 1 / 2 段」），讀前面階段的結果時位置用列號算。暫存 Parquet 的 row group 是 8,192 列（`STAGED_ROW_GROUP`）：預設一個檔只有一個 row group，串流讀回來時每條執行緒一次解開一整個，範例資料 530 萬列讀回來接成一份要 3.2 GB；改小後 1.4 GB，速度一樣。
+  - **多個階段**：依序執行。eager / sample 模式每個階段的結果留在記憶體；stream 模式每個中間階段串流寫成暫存 Parquet（每一列多一個暫存的 part 編號，下一個階段讀回來時依它分開，每個來源各自處理），之前步驟的警告從這份暫存結果算（階段的結尾也是警告的邊界），執行完（不管成功或失敗）都刪掉。進度每個階段一段（「階段「X」：執行（串流）」；階段裡切了段時是「第 1 / 2 段」），讀前面階段的結果時位置用列號算。暫存 Parquet 的 row group 是 8,192 列（`STAGED_ROW_GROUP`）：預設一個檔只有一個 row group，串流讀回來時每條執行緒一次解開一整個，2 × 1 GB 的範例資料（範例 Recipe 最後加「合併來源檔」）峰值 3.2 GB；改小後 1.4 GB（2 × 150 MB 時 0.8 GB），速度一樣（improve.md 第 1 項、docs/improve-plan.md 第 1 批）。
   - stream 模式不提供每一步的列數（要多跑好幾遍資料）；每一步的列數看預覽或試跑。
-  - **進度**（`engine/progress.py`）：Polars 的串流引擎執行中不會告訴 Python 做到哪裡。所以讀檔時每一列多一個暫存的位置欄（在所有輸入裡是第幾行），暫存結果用 `pl.PartitionBy(max_rows_per_file=…)` 分成大約 100 個檔寫（每 1% 一個），另一條執行緒每 0.2 秒看哪些檔寫完了、讀出位置欄，每個來源檔取看過的最大位置加起來，就是處理到第幾行（合併來源檔改了順序也算得對）。資料流裡完全沒有 Python：執行緒慢了只會讓進度更新得少一點。不用 `sink_batches` 把資料交回 Python：實測 Python 每批只要慢 1 毫秒，整個執行就慢一倍、記憶體從 1.4 GB 變成 5 GB 以上。實測（2 GB、3,678 萬列）：分檔寫與寫成一個檔一樣快（5.6 秒）、記憶體相同，約 85 次更新、間隔最多 0.3 秒，輸出逐列相同；位置欄約多 2% 的時間。進度視窗另外顯示這次動作已經過的時間；「寫出 Parquet」這一段（約占 15%）沒有百分比。
+  - **進度**（`engine/progress.py`）：Polars 的串流引擎執行中不會告訴 Python 做到哪裡。所以讀檔時每一列多一個暫存的位置欄（在所有輸入裡是第幾行），暫存結果用 `pl.PartitionBy(max_rows_per_file=…)` 分成大約 100 個檔寫（每 1% 一個），另一條執行緒每 0.2 秒看哪些檔寫完了、讀出位置欄，每個來源檔取看過的最大位置加起來，就是處理到第幾行（合併來源檔改了順序也算得對）。資料流裡完全沒有 Python：執行緒慢了只會讓進度更新得少一點。不用 `sink_batches` 把資料交回 Python：實測 Python 每批只要慢 1 毫秒，整個執行就慢一倍、記憶體從 1.4 GB 變成 5 GB 以上。實測（2 GB、3,678 萬列）：分檔寫與寫成一個檔一樣快（5.6 秒）、記憶體相同，約 85 次更新、間隔最多 0.3 秒，輸出逐列相同；位置欄約多 2% 的時間。進度視窗另外顯示這次動作已經過的時間；「寫出 Parquet」（或「寫出 CSV」）這一段（約占 15%）沒有百分比。
   - 實測（macOS arm64）：5 GB UTF-8 文字檔（8,560 萬行）開啟並產生預覽 20 秒、峰值記憶體 1.9 GB；串流匯出 62 秒、峰值 2.5 GB（各檔分開處理之前測的）。各檔分開處理後（範例 Recipe、串流執行）：2 個 1.5 GB 的檔 29 秒、峰值 2.4 GB（之前 51 秒、3.2 GB）；200 個 10 MB 的檔 23 秒（之前 57 秒）；1000 個 100 KB 的檔 15 秒（之前 106 秒）；19 個 10 MB 的檔合併並改順序 2 秒（之前 31 秒）。很多個檔時峰值記憶體略高（200 個檔 1.3 GB，之前 1.1 GB），約 100 個檔以上就持平。2 GB cp950 檔轉碼：單核心 9 秒（約 230 MB/秒），平行轉碼（10 核心、8 個工作程序）3 秒；記憶體主程序約 70 MB、每個工作程序約 70 MB，不隨檔案大小成長（改成 1 MB 分塊之前：單核心 1.5 GB、平行時每個工作程序 800 MB）。改寫前 1 GB 檔就要 10 GB 記憶體。
 - **錯誤與警告**：轉型失敗、段數超出預期、新出現的欄位等等，集中顯示在 UI 的警告區，每一則都附上來源檔名和行號。
 
@@ -298,6 +326,7 @@
 
 每個輸出檔 `output/xxx.parquet`（或 `xxx.csv`）各寫一份 `log/xxx.manifest.json`（處理紀錄，`export/manifest.py`；`output.format` 記格式）。「輸出資料」設定可以關掉（Recipe 的 `output.manifest`，預設開）；只試跑、不寫出檔案時不寫。
 每一份只記跟這個輸出檔有關的：寫出它的階段，加上它往上讀到、結合到的階段（輸入檔、步驟、警告），單獨拿一個檔也查得到來源；`recipe.content` 仍是完整的 Recipe。
+欄位名稱固定是英文；步驟說明（`steps[].description`，`describe()` 的結果）與警告訊息是匯出當時畫面的語言（下面的例子是中文畫面），同一份 Recipe 在中文、英文畫面匯出的處理紀錄，這兩項不一樣。
 
 ```json
 {
@@ -320,7 +349,9 @@
 - `recipe.sha256` 是 `recipe.content` 以排序過的緊湊 JSON 算出來的；完整的 Recipe 一起放進去，日後可以重跑。
 - `inputs[].sha256` 讀檔時就算好了（和檢查編碼同一次讀取）；`output.sha256` 寫完後再讀一次輸出檔算。
 - 串流執行沒有每一步的列數（`rows` 是 `null`）；警告沿用執行報告（每項檢查最多 100 則），`count` 是總數。
-- 先寫暫存檔再改名，不會留下半個檔案。自我檢測的「完整執行範例 Recipe」也檢查 manifest 的 SHA-256。
+- `inputs[].rows` 是讀進來的資料列數：逐行讀取（`text_lines`）是行數；CSV 不含標題列（7 行的檔是 6）；Excel、Parquet 是列數。
+- `output.columns` 只列資料欄：輸出檔保留了系統欄位（`__source_file`、`__line_no`…，「保留系統欄位」開著）時也不列在這裡。
+- 處理紀錄也先寫暫存檔，和輸出檔一起改名（§6）：不會留下半個檔案，改名到一半失敗時一起還原。自我檢測的「完整執行範例 Recipe」也檢查 manifest 的 SHA-256。
 - 有好幾個階段時：`stage` 記寫出這個檔的階段，`inputs[].stage`、`steps[].stage` 記是哪個階段的，`stages` 記它往上用到的階段的結果（列數、欄位；暫存檔會刪掉，不記雜湊）。
   警告從前面的階段讀進來時帶 `from_stage`，合併來源檔之後帶 `original`（合併前的來源檔、行號、工作表、階段）。
 - 輸入檔的 SHA-256 加上 recipe 雜湊，可以證明「這份輸出是用這份 recipe，從這些原始檔產生的」。
@@ -334,6 +365,7 @@
   - 單一執行檔每次啟動會先解壓縮到暫存資料夾（Windows 的 `%TEMP%\_MEI…`），可能比較慢、可能被防毒軟體誤判，也可能被 AppLocker 擋。
   - 實測參考：Linux 上 Python 3.13 + Polars 2.1 的最小 onefile 約 64MB，啟動約 0.9 秒。加上 pywebview、fastexcel 和前端後，預估 70 到 100MB。
 - 前端 build 好的 `frontend/dist/index.html` 以 `datas` 打包；程式內用 `sys._MEIPASS` 取得路徑。
+- `examples/*.recipe.json` 全部打包（`tablade.spec` 用 glob 找，`gui --smoke` 與 AI skill 的 `references/examples/` 用；`scripts/build.py` 檢查 skill 裡每個範例都在），`recipe/validator.py` 原始碼另外打包（§17.7）。
 - Windows：pywebview 使用 Edge WebView2（Win10/11 通常已內建）。
 - macOS：未簽章，第一次開啟要按右鍵 →「打開」，或執行 `xattr -dr com.apple.quarantine`。PyInstaller 不支援 macOS 的 onefile `.app`，所以 macOS 只發布 `Tablade.app`（onedir 包成 App）。
 - **發布的產物**：Windows 只發 onefile（`tablade.exe`），macOS 只發 `Tablade.app`，另外附 AI skill 的 zip。Windows 的 onedir 不發布，onefile 被擋時用 `scripts/build.py onedir` 另外打包。
@@ -349,7 +381,7 @@
 
 本 repo **從第一天就是公開的**，所以以下規則沒有例外。
 
-1. **`.gitignore`** 預設排除所有資料檔：
+1. **`.gitignore`** 預設排除所有資料檔（資料檔的部分；完整內容見 `.gitignore`）：
    ```gitignore
    *.csv
    *.tsv
@@ -357,14 +389,36 @@
    *.xlsx
    *.xls
    *.xlsm
+   *.xlsb
+   *.ods
+   *.numbers
    *.parquet
+   *.feather
+   *.arrow
+   *.ipc
    *.db
    *.sqlite
+   *.sqlite3
    *.duckdb
+   *.accdb
+   *.mdb
+   *.sav
+   *.dta
+   *.sas7bdat
+   *.pdf
+   *.doc
+   *.docx
+   *.zip
+   *.7z
+   *.rar
    *.manifest.json
+   *.recipe.json
    recipes/
    data/
    output/
+   log/
+   tmp/
+   .tablade-denylist
    # 例外：只允許範例 recipe 與文件
    !examples/**/*.recipe.json
    !docs/**/*.txt
@@ -376,7 +430,12 @@
    - 疑似身分證字號（`[A-Z][12]\d{8}` 且通過檢查碼驗證）、疑似統一編號（8 碼數字並出現在「統編」附近）的內容
    - 本機私有封鎖清單 `.tablade-denylist`（不進版控）裡列出的字詞，例如人名、公司名稱、專案代號
 3. **測試資料一律由程式產生**：`scripts/gen_fixtures.py` 在測試時產生假資料，產生出來的檔案不 commit。
-4. **程式不得有其他對外連線**（不做遙測、不自動更新、不下載擴充）。唯一例外是 `src/tablade/update.py`：啟動時對 GitHub API 發一個 GET，只讀最新 release 的版號；有新版時在起始頁顯示下載網址，不下載、不自動更新，不送出任何使用者資料；設定 `TABLADE_NO_UPDATE_CHECK=1` 就完全不連線。CI 加一道檢查（`scripts/check_code_policy.py`），除了這個檔案以外禁止 import `requests`、`urllib.request`、`httpx` 等網路套件，也禁止 `eval` / `exec`。
+4. **程式不得有其他對外連線**（不做遙測、不自動更新、不下載擴充）。唯一例外是 `src/tablade/update.py`：啟動時對 GitHub API 發一個 GET，只讀最新 release 的版號；有新版時在起始頁顯示下載網址，不下載、不自動更新，不送出任何使用者資料；設定 `TABLADE_NO_UPDATE_CHECK=1` 就完全不連線。CI 加一道檢查（`scripts/check_code_policy.py`，用 AST 分析 `src/`）：
+   - 除了這個檔案以外禁止 import `socket`、`http`、`urllib`、`requests`、`httpx` 等網路模組。
+   - 禁止 `eval` / `exec` / `compile` / `__import__` / `importlib.import_module`（呼叫、取別名、從 `builtins` 取都算）。
+   - 呼叫外部程式（`subprocess`、`os.system`、`os.startfile` 等）只有 `src/tablade/desktop.py` 可以（用系統的程式開啟本機資料夾）。
+   - Polars 的 `read_*` / `scan_*` 不能讀網址（字串裡有 `://`）或雲端（`storage_options`）。
+   - 這是把關的工具、不是沙箱：刻意繞過（例如拼字串再 `getattr`）擋不住，也不檢查第三方套件。
 5. README 明確寫出：「本 repo 不含、也不得含任何真實資料」。
 6. issue、PR、commit 訊息同樣不得貼上真實資料或真實檔名；回報問題時用 `gen_fixtures.py` 產生的假資料重現。
 
@@ -384,86 +443,45 @@
 
 ## 12. Repo 結構
 
+只列資料夾與主要的檔（細到每個檔的清單很容易過時；兩份 README 的「程式架構」是同一份的精簡版）。
+
 ```
 tablade/
-├── README.md                # 英文；README.zh-TW.md 為繁體中文
-├── DESIGN.md                  # 本文件
-├── docs/                      # 進行中的計畫（例如 join-plan.md），完成後整理進本文件
-├── CLAUDE.md                  # 給 AI coding 的規則（見 §14）
-├── LICENSE                    # MIT
-├── pyproject.toml             # 固定版本：polars==2.1.*、pywebview、fastexcel、pydantic
-├── uv.lock
-├── .gitignore
-├── .pre-commit-config.yaml
+├── README.md / README.zh-TW.md   # 英文／繁體中文（內容同步）
+├── DESIGN.md                     # 本文件
+├── CLAUDE.md                     # 給 AI coding 的規則（見 §14）
+├── improve.md                    # 討論過的改進（已完成的留作紀錄）
+├── docs/                         # 各功能的實作計畫（完成後整理進本文件）、審查紀錄
+├── LICENSE                       # MIT
+├── pyproject.toml / uv.lock      # 固定版本：polars==2.1.*、pywebview、fastexcel、pydantic
+├── .gitignore / .pre-commit-config.yaml
+├── tablade.spec                  # PyInstaller 設定
 ├── src/tablade/
-│   ├── __init__.py
-│   ├── app.py                 # pywebview 進入點
-│   ├── api.py                 # JS bridge
-│   ├── cli.py                 # tablade run recipe.json
-│   ├── fixtures.py            # 假資料產生器（測試、selftest 共用）
-│   ├── recipe/
-│   │   ├── schema.py          # pydantic models、RECIPE_VERSION、步驟的 discriminated union
-│   │   ├── validator.py       # 只用標準函式庫的驗證器（Tablade 與 AI skill 共用）
-│   │   ├── spec.py            # 從 registry 產生步驟規格；schema lock
-│   │   └── recipe-schema.lock.json
-│   ├── ingest/
-│   │   ├── encoding.py
-│   │   ├── text_lines.py
-│   │   ├── csv_reader.py
-│   │   ├── sources.py         # glob、轉碼、讀取、多檔合併
-│   │   ├── transcode.py       # 轉碼核心（只用標準函式庫，平行轉碼的工作程序也用）
-│   │   └── excel.py           # 讀 Excel 工作表（fastexcel）
-│   ├── engine/
-│   │   ├── run.py             # 依序套用步驟、每步列數、附行號的警告、寫出 Parquet
-│   │   ├── progress.py        # 串流執行的進度：位置欄、分檔寫暫存、看寫完幾個檔
-│   │   ├── check.py           # 驗證器 → pydantic → 選擇性試跑
-│   │   └── preview.py         # M2：head + 快取
-│   ├── steps/                 # 每類步驟一個模組，以 @register 登錄；steps/__init__.py 的匯入順序就是顯示順序
-│   │   ├── base.py            # Step 基底類別、Example、WarningCheck、欄位型別
-│   │   ├── registry.py
-│   │   ├── remove_rows.py     # remove_top_rows、remove_bottom_rows、remove_blank_rows
-│   │   ├── split.py           # split_delimited、split_column
-│   │   ├── headers.py         # promote_headers
-│   │   ├── fill_down.py
-│   │   ├── filter.py
-│   │   ├── report.py          # 將列進行分類、用正規表示式擷取、依固定位置拆欄
-│   │   ├── parse_tw.py        # M3：民國日期、括號負數、全形半形
-│   │   └── ...
-│   └── export/
-│       ├── parquet.py
-│       ├── outputs.py         # 輸出檔的位置（output/、log/）與檔名檢查
-│       └── manifest.py
-├── frontend/                  # Vite + React + TypeScript + shadcn/ui（見 §16）
-│   ├── package.json / package-lock.json
-│   ├── vite.config.ts         # 單一檔案輸出、build 時注入 CSP
-│   ├── components.json        # shadcn/ui 設定
-│   └── src/
-│       ├── main.tsx / App.tsx
-│       ├── bridge.ts          # 與 api.py 對應的型別與取得方式
-│       ├── mock.ts            # 開發用的假 API（只在 dev 載入）
-│       ├── components/ui/     # shadcn/ui 元件（npx shadcn@latest add 產生）
-│       └── styles/shadcn-tailwind.css
-├── assets/
-│   └── icon.svg               # 圖示原始檔（置中表格＋🔪）；icon.ico / icon.icns / icon.png 由 make_icons.py 產生
-├── examples/
-│   ├── sales_detail.recipe.json  # M1：凌亂的匯出檔（用到 8 種步驟）
-│   ├── sales_report.recipe.json  # M4：分段報表
-│   └── sales_excel.recipe.json   # M4：Excel 工作表
-├── scripts/
-│   ├── gen_fixtures.py
-│   ├── check_no_data.py
-│   ├── check_code_policy.py
-│   ├── build.py               # 打包 + 自我檢測 + 壓縮（本機與 CI 共用）
-│   ├── update_schema_lock.py  # 升 RECIPE_VERSION 後更新 schema lock
-│   └── make_icons.py          # assets/icon.svg → ico / icns / png
-├── tests/
-│   ├── test_ingest.py
-│   ├── test_steps_*.py
-│   └── test_golden.py         # recipe + 假資料 → 預期輸出
-├── tablade.spec               # PyInstaller 設定
-└── .github/workflows/
-    ├── test.yml
-    └── build.yml
+│   ├── __main__.py / app.py      # 進入點（打包後的工作程序靠 freeze_support）；pywebview 視窗
+│   ├── api.py                    # JS bridge：參數轉換、檔案對話框、錯誤包裝
+│   ├── session.py                # 編輯中的 Recipe：畫面狀態、每一步的快取、undo / redo
+│   ├── cli.py                    # 命令列（§17.7）
+│   ├── skill.py / profile.py     # AI skill 產生器；給 AI 助理看的資料檔摘要
+│   ├── i18n.py / dtypes.py       # 畫面的語言（t()、en()）；型別的中英文名稱
+│   ├── selftest.py / fixtures.py # 自我檢測；假資料產生器（測試、自我檢測、範例共用）
+│   ├── usage.py / desktop.py     # 記憶體與暫存資料夾用量；開啟本機資料夾
+│   ├── update.py                 # 啟動時查最新版號（唯一的對外連線，§11）
+│   ├── recipe/                   # schema.py（pydantic、RECIPE_VERSION）、validator.py（只用標準函式庫）、spec.py、recipe-schema.lock.json
+│   ├── ingest/                   # encoding、text_lines、csv_reader、excel、sources（glob、轉碼、讀取、對齊欄位）、transcode（平行轉碼）
+│   ├── engine/                   # run.py（依序套用步驟、警告、寫出 Parquet / CSV）、progress.py（串流的進度）、check.py（驗證＋試跑）
+│   ├── steps/                    # base.py、registry.py，每類步驟一個模組；__init__.py 的匯入順序就是顯示順序
+│   └── export/                   # outputs.py（輸出位置與檔名檢查）、manifest.py（處理紀錄）、parquet.py
+├── frontend/                     # Vite + React + TypeScript + shadcn/ui（見 §16）
+│   ├── vite.config.ts            # 單一檔案輸出、build 時注入 CSP
+│   └── src/                      # App.tsx、bridge.ts（與 api.py 對應）、i18n.ts、mock.ts（只在 dev 載入）、
+│                                 # components/（含 form/ 與 shadcn/ui 的 ui/）、lib/、styles/shadcn-tailwind.css
+├── assets/                       # icon.svg（原始檔）；icon.ico / icon.icns / icon.png 由 make_icons.py 產生
+├── examples/                     # 範例 recipe（搭配 gen_fixtures.py 的假資料）：sales_detail、sales_report、sales_excel、sales_combined
+├── scripts/                      # gen_fixtures、gen_frontend_dev_data、check_no_data、check_code_policy、check_i18n、
+│                                 # check_release、update_schema_lock、build（打包＋自我檢測＋壓縮）、make_icons
+├── tests/                        # pytest：test_steps.py（步驟）、test_large.py（stream＝eager）、test_golden.py（範例的預期輸出）、
+│                                 # test_session.py、test_i18n*.py…
+└── .github/workflows/            # test.yml、build.yml
 ```
 
 ---
@@ -484,16 +502,9 @@ tablade/
 
 ---
 
-## 14. 給 AI coding 的規則（放進 CLAUDE.md）
+## 14. 給 AI coding 的規則
 
-- **永遠不要建立、commit 或要求任何真實資料**；測試資料只能由 `scripts/gen_fixtures.py` 產生。
-- 使用 Polars **2.x 的 Python API**。不使用已移除的 API（例如 `melt` 改用 `unpivot`）；不確定時先查官方文件。
-- 新增步驟時，必須同時完成 §7.3 的五件事（參數 model、apply、describe、infer_schema 視需要、測試）。
-- 步驟 `apply()` 必須是純函式：不讀寫檔案、不 print、不碰 UI。
-- 依賴列順序的操作，一律先依 `__source_file, __line_no` 排序。
-- 不使用 `eval` / `exec`；除了 `update.py` 查版號以外，不加入任何網路連線程式碼。
-- 依賴版本固定在 `pyproject.toml`，不要擅自升級。
-- 每次修改都要跑 `pytest` 和 `scripts/check_no_data.py`。
+規則只放在 [CLAUDE.md](CLAUDE.md)（公開 repo 規則、新增步驟、串流規則、前端規則、每次修改要跑的檢查），這裡不另外留一份。
 
 ---
 
@@ -530,19 +541,30 @@ tablade/
 
 ### 16.3 載入方式
 
-- 正式版：`npm run build` → `frontend/dist/index.html`（JS、CSS、圖示全部內嵌，目前約 300 KB）→ PyInstaller 打包 → `app.py` 讀成字串交給 `create_window(html=...)`。
+- 正式版：`npm run build` → `frontend/dist/index.html`（JS、CSS、圖示全部內嵌，目前約 700 KB、gzip 後約 200 KB；上限 2 MB）→ PyInstaller 打包 → `app.py` 讀成字串交給 `create_window(html=...)`。
 - CSP 只在 build 時注入（`vite.config.ts`），dev server 才能用 HMR。
 - 開發：`npm --prefix frontend run dev` 啟動 Vite，再用 `TABLADE_DEV_URL=http://localhost:5173 uv run tablade` 讓視窗載入 dev server（只接受 localhost）。也可以直接用一般瀏覽器打開 dev server，`bridge.ts` 會在找不到 pywebview 時改用 `mock.ts` 的假 API。
 
 ### 16.4 狀態與溝通（M1 起）
 
 - **狀態放在 Python**：recipe、目前選到的步驟、預覽快取、警告、undo / redo 都由 Python 的 session 管理。前端呼叫指令（`add_step`、`update_step`、`move_step`、`toggle_step`、`delete_step`、`select_step`），每次拿回一份新的畫面狀態：步驟清單（含 `describe()`、列數變化、警告數）與目前步驟的參數。
-- **最新的結果才算數**：pywebview 每次 JS 呼叫都在新的 thread 執行。每個預覽請求帶流水號，Python 只回傳最新一次的結果，前端也丟掉過時的回應。
-- **表格分頁取資料**：`get_rows(step_id, offset, limit)` 只回傳畫面看得到的那一段，用欄式陣列（`{columns, data: [[...], ...]}`）傳輸。
-- **長時間工作**：完整匯出、掃描大檔在 Python 背景執行，進度寫進 pywebview 的 `window.state`，前端監聽 `pywebview.state` 的 `change` 事件。
-- **檔案只用代號**：開檔對話框由 Python 開啟，前端只拿到檔案代號，不能要求 Python 讀任意路徑。
+- **會改變狀態的呼叫依序送**：pywebview 每次 JS 呼叫都在新的 thread 執行，所以前端把改變狀態的呼叫排成一列、一個一個送（Python 收到的順序就是按的順序，例如 ⌘S 一定在名稱送出之後；`App.tsx` 的 `call`）。
+  - 送其他指令（刪除、移動、切換、復原、存檔…）之前，先送步驟表單還沒送出的草稿，草稿才不會寫到刪除、移動後遞補上來的步驟（§16.5）。
+  - `update_step(index, values)` 的 `values` 帶著步驟的 `id`，和第 index 步現在的 id 不同時 Python 拒絕。
+  - 會改變 Recipe 或畫面狀態的方法都直接回傳新的 `state`（匯出 `export_parquet` 也是），前端一次呼叫就能更新畫面。
+- **最新的結果才算數**：`state.preview.key` 是預覽內容的指紋，`rows()`、`column_info()` 回傳同一個 `key`，可以比對是不是同一份內容。
+  前端換步驟或 key 變了時丟掉快取、世代編號加一，還在路上的舊回應回來時編號不同就丟掉（`PreviewGrid.tsx`）。
+- **表格分頁取資料**：`rows(step, offset, limit)`（`step` 是第幾步，-1 是這個階段的輸入；一次最多 1,000 列）只回傳畫面看得到的那一段，
+  回傳 `{offset, total, columns, rows, key}`，`rows` 是一列一個陣列。
+  - 取資料失敗的那一頁不自動重試（避免一直失敗一直要），表格上面寫原因、可以按「重試」。
+  - 列數太多時分段顯示：一段最多 50 萬列（瀏覽器對單一元素的高度有上限），上面切換是哪一段。
+- **長時間工作**：完整匯出、掃描大檔在 Python 背景執行，進度寫進 pywebview 的 `window.state`（`progress`、`run`、`usage`），前端監聽 `pywebview.state` 的 `change` 事件。
+- **檔案的路徑**：開檔、存檔的對話框由 Python 開；檔案清單也可以手動輸入路徑（`add_file_entry`，§5.3），`state` 裡也直接有完整路徑（`recipe.path`、`base_dir`、檔案清單），所以前端可以指定任意路徑。
+  頁面不載入任何外部內容（CSP 是 `default-src 'none'`，§16.1），能呼叫這些方法的只有 Tablade 自己的前端。
+- **錯誤報告**：「檢查並複製錯誤報告」的報告文字與問題清單由 `error_report()` 回傳（同一次檢查、畫面目前的語言），不放在 `state` 裡。
+- **警告數**：`state.preview.warnings` 最多列 200 則，實際的數量是 `state.preview.warning_count`。
 - **M2 實作**（`src/tablade/session.py`）：
-  - 步驟以原始 dict 保存，參數還不合法的步驟也能留在清單裡；計算到第一個錯誤的步驟為止，預覽顯示它之前最後一個算得出來的結果（`preview.step` ≠ `preview.requested`）。
+  - 步驟以原始 dict 保存，參數還不合法的步驟也能留在清單裡；計算到第一個錯誤的步驟為止；選的那一步算不出來時不拿前面步驟的結果充數，改寫原因（§16.6 的「算不出來的步驟」）。
   - 每一步的結果依「input ＋ 到這一步為止的步驟」的雜湊快取；改第 k 步時，前面的步驟直接沿用。
   - 新增步驟時，各步驟的 `suggest(frame, context)` 依目前的資料給建議參數：判斷分隔符號（會處理引號）、從第一列抓欄名、帶入右鍵點選的欄位或值。
   - 存檔時去掉跟預設值相同的參數；另存到別的資料夾時，檔案清單依新位置重新決定相對或絕對路徑。
@@ -567,13 +589,17 @@ tablade/
 | `type: boolean` | Switch |
 | `enum`（來自 `Literal[...]`） | Select；選項文字用 `ui_labels`，選到的選項有 `ui_option_hints` 時顯示在下面（例如日期樣式的正規表示式） |
 | `type: array` + `items: string` | 可增減的標籤輸入 |
+| `ui: "new_columns"` | 新欄名的標籤輸入（`NewColumns`，至少一個） |
+| `ui: "int_list"` | 整數清單的文字框，用逗號或空白分隔（例如固定位置拆欄的開始位置）；還沒打完的值不會被蓋掉 |
 | `ui: "column"` / `ui: "columns"` | 欄位選擇器（單選 / 多選），選項是上一步的輸出欄位 |
 | `ui: "column_positions"` | 依位置勾選欄位（顯示「2 門市」，存的是第幾欄） |
 | `ui: "column_order"` | 保留和排序：上面是保留的欄（上下移、移除），下面是沒保留的欄（勾選加到最後） |
 | `ui: "rename_map"` | 改欄名：每個欄位一列，旁邊填新名稱（空白代表不改），存成 `{舊名: 新名}` |
 | `type: array` + `items` 是物件的 `$ref` | 每一項一個框，依子 schema 畫欄位，可以新增、移除（例如取代文字的「找 → 換成」） |
-| `ui: "regex"` | 正規表示式輸入框＋即時測試 |
+| `ui: "regex"` | 正規表示式的文字框（有範例提示；沒有即時測試，錯誤在 Python 驗證後顯示） |
 | `oneOf` + `discriminator` | 先選類型，再顯示對應的子表單（例如篩選條件「等於 / 包含 / 數值比較」） |
+| `ui: "option_cards"` | 選項卡片：每個選項一張，上面是小圖、標題、說明（`ui_option_icons`、`ui_option_hints`；例如結合的方式） |
+| `ui: "source_files"` | 來源檔的順序（合併來源檔）：列出目前的來源檔，上下移；不知道有哪些來源檔時改成標籤輸入 |
 | `ui: "stage"` | 選前面的階段（結合的右表），旁邊有「前往」；右表是樣本時有「完整跑一次」 |
 | `ui: "right_column"` / `ui: "right_columns"` | 欄位選擇器，選項是選到的那個階段的結果欄位 |
 | `ui: "data_values"` + `ui_from` | 從資料讀出的值（樞紐要變成欄的值）：預設收起來只顯示一行，旁邊「重新從資料讀取」「修改」；`ui_from` 指定的參數改了、值沒手動改過時，session 自動重新讀 |
@@ -581,6 +607,9 @@ tablade/
 3. 欄位標題用 `Field(title=...)`、說明用 `Field(description=...)`、預設值用 Python 的預設值；`ui`、`ui_labels` 等提示放在 `json_schema_extra`。`ui_show_if: {"by": "position"}` 表示其他參數是這個值（值是陣列時是其中之一）才顯示這個欄位（例如刪除欄的名稱／位置、只有小數才有的小數位數）；因為修改而隱藏的欄位回到預設值。
 4. **驗證只在 Python 做**：前端送出原始值，pydantic 驗證；錯誤的 `loc`（例如 `["delimiter"]`）對應回表單欄位顯示。前端不重複寫驗證規則。
 5. 驗證通過後，Python 重算預覽並回傳 `describe()` 的一句話說明，步驟清單即時更新。
+6. **草稿**（`StepForm.tsx`）：編輯先存在表單的草稿，停止輸入 350ms 後送出。
+   - 送出的修改還沒收到回應時，不拿 Python 回傳的參數蓋掉輸入框（較慢的回應不會把剛打的字改回去）；收到回應後才換成 Python 的值。
+   - 草稿排到要送出時，才用步驟的 `id` 找它現在的位置（中間刪除、移動了步驟也不會寫錯；換了階段或那一步已經刪除就不送），Python 也核對 `id`（§16.4）。
 
 新增一種步驟只要寫 Python（參數 model、`apply()`、`describe()`、測試），表單自動出現。
 
@@ -595,7 +624,8 @@ tablade/
   只跑那個階段和它往上讀到、結合到的階段，前面沒用到的階段不跑（進度視窗也只列這些階段）。一定是載入之後才能按：載入時已經把整個檔轉碼好、留在暫存資料夾，所以完整跑一次不會再轉碼；載入後檔案被換掉（大小或修改時間變了）時要先重新載入。
 - 中間：預覽表格。滑鼠停在欄標題上顯示型別；新增步驟用步驟面板的「新增步驟」選單（欄標題沒有右鍵選單）。欄寬自動依內容決定，也可以拖曳欄標題的右邊界調整、雙擊回到自動寬度；調過的寬度依欄名記住（只在這次開著的期間，不寫進 Recipe）。
 - **抽樣模式／完整模式**：資料 pane 標題列標明預覽是哪一種（`state.preview.mode`）。
-  - **抽樣模式**（黃）：大檔只用每個檔的前 10 萬行＋最後 1,000 行，標「抽樣模式」（滑鼠移上去寫細節：只用前幾行、列數加總可能不正確）。選的那一步之前（含）有要看整個來源檔的步驟（移除重複、群組彙總、樞紐：`Step.whole_source`）時，多一個紅色的「警告：預覽結果可能不正確」，滑鼠移上去列出每一個這種步驟（「第 16 步「移除重複」」；往上讀到、結合到的階段結果也是樣本時，它的這種步驟也列出來：「階段「文字明細」第 3 步「群組彙總」」，已經「完整跑一次」的階段不算；`state.preview.sampled_steps`）。
+  - **抽樣模式**（黃）：大檔只用每個檔的前 10 萬行＋最後 1,000 行，標「抽樣模式」（滑鼠移上去寫細節：只用前幾行、列數加總可能不正確）。
+    這個階段的輸入不是樣本，但到選的那一步為止有結合、而另一張表是樣本（往上讀到的階段是大檔）時，也是抽樣模式：對不到的鍵在完整的另一張表裡可能有；這些結合列在 `state.preview.sampled_refs`（「完整跑一次」那個階段之後就不算）。選的那一步之前（含）有要看整個來源檔的步驟（移除重複、群組彙總、樞紐：`Step.whole_source`）時，多一個紅色的「警告：預覽結果可能不正確」，滑鼠移上去列出每一個這種步驟（「第 16 步「移除重複」」；往上讀到、結合到的階段結果也是樣本時，它的這種步驟也列出來：「階段「文字明細」第 3 步「群組彙總」」，已經「完整跑一次」的階段不算；`state.preview.sampled_steps`）。
   - **完整模式**（綠）：資料本來就全部讀進來（20 萬行以內）時標「完整模式」（滑鼠移上去：資料共 N 行，全部讀進來）。按「處理並匯出資料」之後，「輸出資料」改成讀剛匯出的檔（表格捲到哪讀到哪、型別分頁一次串流查詢、點警告找列都是 lazy，不整份讀進記憶體），一樣標「完整模式」（滑鼠移上去：已處理全部 N 行（11/18 14:32 匯出）），警告分頁顯示匯出時的警告（「匯出時共 N 則警告」）。中間的步驟維持抽樣模式。
   - 匯出時記下這個階段和它往上用到的階段的設定、輸出設定、讀到的檔（位置、大小、修改時間）的指紋；之後只要有一樣變了就回到抽樣模式。只記在這次 App 開著的期間（關掉重開後要再匯出一次）。
 - **算不出來的步驟**：選的那一步算不出來（它自己或前面的步驟有錯、用到的前面階段還沒有結果）時**不顯示資料**（不拿前面步驟的結果充數）。資料表的位置改寫原因與按鈕：「第 9 步算不出來」「第 6 步「向下填滿」有錯：欄位不存在：…」［前往第 6 步］（`state.preview.blocked`）；標題旁的紅色標籤寫「第 9 步算不出來：第 6 步有錯」。還沒有資料時，標題旁是灰色的說明（跟階段面板的說明一樣：「還沒載入資料」「還沒有加入資料檔」…）；讀的（或結合的）前面階段有錯時改成紅色「讀的「文字明細」有錯，還算不出來」，資料表的位置寫「讀的「文字明細」第 6 步有錯，先修正那個階段。」［前往 @文字明細］。資料表標題就寫顯示的是什麼（「品項對照・讀取資料」，後面灰字「6 列 × 3 欄」），抽樣／完整模式的標籤只寫「抽樣模式」「完整模式」，細節在滑鼠移上去的說明。步驟清單上，出錯的那一步是紅色，後面被它擋住的步驟文字變淡，滑鼠移上去寫「前面第 6 步有錯，這一步算不出來」（`steps[].blocked_by`／`blocked_stage`）。
@@ -637,7 +667,8 @@ tablade/
   - `recipe/validator.py` 不能 import tablade，自己有 `LANG` 與 `t()`；`i18n.set_lang()` 一起設，命令列（AI skill）維持中文。
   - 進度視窗的「準備檔案」「試跑」用代碼（`prepare`、`trial`）辨認，畫面上的字另外產生。
   - 不翻：會變成資料的字串（程式產生的欄名、來源檔名稱、參數預設值），那一行標 `# i18n-ignore`。
-  - Recipe 檔、AI skill（下載時用 `i18n.using("zh")`）、CLI 維持中文；處理紀錄的欄位名稱是中文，裡面的警告是匯出當時畫面的語言。
+  - Recipe 檔、AI skill（下載時用 `i18n.using("zh")`）、CLI 維持中文。
+  - 處理紀錄（manifest）的欄位名稱固定是英文（`tablade_manifest`、`inputs`、`steps`…）；步驟說明（`steps[].description`）與警告是匯出當時畫面的語言（§9）。
   - `tests/test_i18n.py`：前端與 Python 的中文都要在 `tr()`／`t()` 的第一個參數（步驟檔只看函式裡），每種步驟都有英文名稱、說明與表單文字。
 
 ## 17. AI skill：讓 AI 助理撰寫 recipe
@@ -647,20 +678,23 @@ tablade/
 使用者在 AI 助理裡描述要怎麼整理資料，AI 讀資料、寫出 recipe，並用 skill 內的驗證器自我檢查；使用者再把 recipe 匯入 Tablade，由 Tablade 做最終驗證與試跑。
 
 - 目標環境：**Microsoft 365 Copilot 的 Agent Builder**。skill 採開放的 Agent Skills 格式（`SKILL.md`），GitHub Copilot、Claude 等也能使用同一個套件。
-- 資料：AI 服務若已獲准處理這些資料，可以直接讀取原始檔。大檔或 Big5 檔建議先用 `tablade profile` 產生精簡摘要（UTF-8：偵測到的編碼、行數、前 N 行原文、欄位與簡單統計）再上傳；`--mask` 可把數字與文字遮罩成 `9` / `a` / `〇`。
+- 資料：AI 服務若已獲准處理這些資料，可以直接讀取原始檔。大檔或 Big5 檔建議先用 `tablade profile` 產生精簡摘要再上傳（`profile.py`，Markdown、UTF-8）：
+  - 內容：大小與 SHA-256（前 16 碼）、偵測到的編碼、行數與空白行數、換行方式、推測的分隔符號與各行拆出的欄數、最長一行、前 N 行與最後幾行原文。
+  - 檔案一塊一塊讀（和讀檔一樣一次 1 MB），只留開頭與結尾幾行，幾 GB 的檔也只用固定的記憶體；很長的一行只留前 10 萬字。
+  - `--mask` 只保留版面：數字換成 `9`、英文字母換成 `a`，空白與標點以外的其他字（中文、全形符號、㈱、㎡ 這類）換成 `〇`；檔名也一樣遮（副檔名保留）。
 
 ```
 使用者描述 ＋ 上傳資料（或 tablade profile 摘要）
         ▼
 Copilot（載入 Tablade skill）── 寫 recipe ──► scripts/validate_recipe.py（在沙箱內自我檢查）
         ▼ 使用者下載 recipe
-Tablade 匯入 → 完整驗證 ＋ 用真實資料試跑 → 有問題就「複製錯誤報告」，貼回 Copilot 修正
+Tablade 匯入 → 完整驗證 ＋ 用真實資料試跑 → 有問題就用「Copilot → 檢查並複製錯誤報告」，貼回 Copilot 修正
 ```
 
 ### 17.2 skill 內容（build 時從 registry 自動產生）
 
 ```
-tablade-recipe-skill-v1.4.zip
+tablade-recipe-skill-v1.0.zip       # 版本號＝recipe 版本（目前 1.0）
 ├── SKILL.md                     # frontmatter：name、description（含版本）；工作流程與規則
 ├── references/
 │   ├── steps.md                 # 步驟目錄：用途、參數表、範例（自動產生）
@@ -691,13 +725,18 @@ tablade-recipe-skill-v1.4.zip
 
 ### 17.4 驗證器
 
-- **一份程式碼，兩個地方用**：`src/tablade/recipe/validator.py`（只用標準函式庫）同時給 Tablade（`tablade validate`、匯入 recipe）與 skill 使用；build 時把它和從 registry 產生的步驟規格（JSON）合併成單一檔案。
-- **三層檢查**：
-  1. 結構：版本號、步驟類型是否存在、參數型別 / 必填 / 列舉（依內嵌的 JSON Schema）
-  2. 語意：步驟 id 不重複、欄位引用存在（依各步驟的欄位效果一步步推算）、需要寫死欄名的步驟有寫、`only_row_types` 引用的類型有定義
-  3. 試跑（只在 Tablade）：用真實資料跑一次，回報每一步的列數、欄名、警告與行號
-- **給 AI 看的輸出**：JSON，每個錯誤含 `path`（例如 `steps[3].params.column`）、`error`、`hint`（例如相近的欄位名稱）。
-- **與 pydantic 一致**：測試用一組正確與錯誤的 recipe，確認 pydantic 與驗證器的結論相同。
+- **一份程式碼，兩個地方用**：`src/tablade/recipe/validator.py`（只用標準函式庫）同時給 Tablade（`tablade validate`、匯入 recipe、錯誤報告）與 skill 使用；build 時把它和從 registry 產生的步驟規格（JSON）合併成單一檔案。
+- **檢查的層次**：
+  1. 結構：版本號、JSON Schema（步驟類型、參數型別、必填、列舉…）。
+  2. 階段之間：階段名稱不重複、只能引用前面的階段、步驟 id 整份 Recipe 不重複、輸出檔名（§6）；沒被用到、也不寫檔的中間階段給提醒。
+  3. 語意：依各步驟的欄位效果一步步推算欄位，檢查欄位引用存在、新欄名不衝突、欄位數相符；系統欄位只能用在條件裡（§5.1）。
+     - 讀實際檔的階段，Tablade 每個檔只讀標題列、欄位取聯集（引擎讀多個檔時也是對齊成同一組欄位）；檔案太多（超過 100 個檔，Excel 超過 20 個）時不檢查那個階段的欄位引用（`ingest/sources.py` 的 `peek_columns`）。skill 裡的驗證器用 `--data` 給的 CSV 標題列（當成第一個階段的欄位）。
+  4. 步驟自己的規則（`step_rules`）：pydantic 的 `field_validator` 也在驗證器裡寫一份（`tests/test_review_recipe.py` 檢查每個 field_validator 都有對應的檢查）。
+     - 正規表示式只檢查兩邊確定一樣的部分：環顧（look-around）、反向參照、括號不成對，以及群組數（例如用正規表示式擷取的新欄名數量）。Tablade 用的是 Rust 的正規表示式（Polars），語法和 Python 的 `re` 不同，不能用 `re.compile` 判斷；其他語法錯誤以 Tablade 的驗證與試跑為準。
+  5. 試跑（只在 Tablade）：用真實資料跑一次，回報每一步的列數、欄名、警告與行號。
+- 所以驗證器通過不保證 Tablade 一定接受：Tablade 匯入時另外用 pydantic 驗證（`engine/check.py`），可以再用真實資料試跑。
+- `tablade validate` 知道 Recipe 的位置，所以也檢查輸出檔的規劃：檔名重複（含最後一個階段沒填、用 Recipe 名稱時）、寫出的位置是輸入檔（§6）。
+- **給 AI 看的輸出**：JSON，每個問題含 `path`（例如 `stages[1].steps[0].columns[0]`）、`error`、`hint`（例如相近的欄位名稱）、`severity`（`error` 或 `warning`）。
 
 ### 17.5 欄位效果宣告
 
@@ -706,32 +745,33 @@ tablade-recipe-skill-v1.4.zip
 | 形式 | 例子 |
 |---|---|
 | 不變 | `remove_top_rows`、`filter`、`fill_down` |
-| 新增 | `classify_rows` 新增「類型」欄（`names` 可以只寫一個名稱） |
-| 拆分 | `split_column`：移除 `column`，新增 `names` |
-| 整組換掉 | `split_delimited`、`promote_headers`：換成參數裡寫死的欄名 |
+| 新增（`add`） | `classify_rows` 新增「類型」欄、`conditional_copy` 新增 `name`（`names` 可以只寫一個名稱），接在最後 |
+| 拆分（`split`） | `split_delimited`、`split_column`、`extract_regex`、`split_fixed_width`：移除 `column`（`keep_source` 時保留），在原本的位置換成新的欄名 |
+| 換資料欄的名稱（`rename_data`） | `promote_headers`：資料欄依序換成參數裡寫死的欄名，數量要一樣（不一樣是錯誤） |
+| 整組換掉（`replace_data`） | 換成參數裡寫死的欄名（之前的資料欄都不保留）；目前沒有步驟用 |
 | 刪除 / 選取 / 改名 | `remove_columns`（`drop`）、`select_columns`（`select`）、`rename_columns`（`rename`） |
 | 取消樞紐 | `unpivot`：沒攤開的欄保留，後面接名稱欄與值欄 |
 | 分組 | `group_by`（`group`）：分組欄＋每個彙總的新欄名＋筆數欄；之前的其他欄都不保留，所以就算之前不知道有哪些欄，之後也知道 |
 | 樞紐 | `pivot`：「每一列依的欄」＋要變成欄的值 |
 | 結合 | `join`：左連接、內連接時新增 `columns`；只留沒對到／有對到的欄位不變。驗證器依序推算每個階段的輸出欄位，所以會檢查右表的鍵與要帶的欄存在 |
 
-Tablade 的 `output_columns()` 與驗證器都從這份宣告推算，所以不需要資料就能檢查「第 5 步引用的欄位在那之前存在嗎」。
+沒宣告的步驟就是「不變」（`keep`）。Tablade 的 `Step.output_order()`（彙總類的步驟是 `reshape_order()`）與驗證器的 `apply_effect()` 都從這份宣告推算，所以不需要資料就能檢查「第 5 步引用的欄位在那之前存在嗎」。
 
 ### 17.6 版本號
 
 - recipe：`"tablade_recipe": "MAJOR.MINOR"`。
   - minor：相容的變更（新增步驟、新增選用參數）
-  - major：不相容的變更，附自動升級舊 recipe 的程式
-- **skill 版本 = recipe 版本**（zip 檔名、SKILL.md、驗證器常數都標示）。App 版本另外計算，例如 Tablade 0.3.0 支援 recipe 1.4。
-- **由 CI 把關**：repo 存一份 `recipe-schema.lock.json`（完整 schema 快照），測試重新產生後比對；步驟定義變了但版本沒升，CI 就失敗並提示該升 minor 還是 major。
-- Tablade 開啟 recipe：版本比 App 新 → 提示更新 Tablade；比較舊 → 自動升級。
+  - major：不相容的變更。升級舊 recipe 的程式等之後真的有 major 變更時再做；目前不同 major 的 recipe 直接報「不相容的 Recipe 版本」
+- **skill 版本 = recipe 版本**（zip 檔名、SKILL.md、驗證器常數都標示）。App 版本另外計算（例如 Tablade 0.3.0 可以支援 recipe 1.4；目前是 Tablade 0.1.0、recipe 1.0）。
+- **由 CI 把關**：repo 存一份 `recipe-schema.lock.json`（schema 結構的快照，不含標題、說明、選項文字），測試重新產生後比對；步驟定義變了但版本沒升，CI 就失敗並提示該升 minor 還是 major。只改說明文字不用升。
+- Tablade 開啟 recipe：版本比 App 新 → 提示更新 Tablade；同一個 major、比較舊的 minor → 照常開啟（minor 都相容）；不同 major → 報不相容。
 - 驗證器遇到不同 major 或比自己新的 minor → 提示改用對應版本的 skill。
 
 ### 17.7 下載與命令列
 
 - `tablade skill [--out x.zip]`：產生 skill；`tablade skill --probe`：產生 probe skill（只回報 Python 版本、可用套件、看得到的檔名與大小，不讀檔案內容）。
-- `tablade profile 檔案… [--lines N] [--mask]`：給 AI 助理看的資料檔摘要。
+- `tablade profile 檔案… [--lines N] [--mask] [--out 檔案]`：給 AI 助理看的資料檔摘要（§17.1）。
 - 打包後的 App 只有編譯過的模組，所以 `validator.py` 原始碼另外以資料檔打包（`tablade.spec`）；`scripts/build.py` 會用打包後的 App 實際產生一次 skill 確認。
 
-- 前端的說明選單提供「下載 Copilot skill（v1.4）」：Python 依目前的 registry 當場產生 zip，再開存檔對話框，所以下載到的 skill 一定與 App 版本一致。
+- 工具列的「Copilot」選單與起始頁的「⋯」選單有「下載 Copilot skill（v1.0）」：Python 依目前的 registry 當場產生 zip，再開存檔對話框，所以下載到的 skill 一定與 App 版本一致。
 - CI 也把 skill zip 附到 Release。

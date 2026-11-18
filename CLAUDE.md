@@ -15,19 +15,24 @@ Tablade：本機執行、Power Query 式的資料清洗工具（Python + Polars 
 
 - 使用 Polars **2.x 的 Python API**。不使用已移除的 API（例如 `melt` 改用 `unpivot`）；不確定時先查官方文件或實際跑一次。
 - 新增步驟（DESIGN.md §7.3、§17.5）：
-  1. 在 `src/tablade/steps/` 寫一個 `Step` 子類別並加上 `@register`：`type: Literal[...]`、參數欄位（`title`、引用欄位用 `ColumnRef` / `ColumnRefs`、新欄名用 `NewColumns`）、`label`、`category`、docstring、`ai_notes`、`effect`（欄位效果）、至少一個 `examples`（同時是測試）。畫面的英文：`label_en`、`doc_en`（docstring 的英文），每個欄位的 `Field(title=…, json_schema_extra=en("English"))`（`tablade/i18n.py` 的 `en()`；選項文字用 `en(…, ui_labels=…_EN)`），`describe()`、警告、錯誤訊息用 `t("中文", "English")`；`ai_notes` 與 `examples` 維持中文（`tests/test_i18n.py` 會檢查）。
-  2. 實作 `apply()`（純函式）、`describe()`，需要時加 `warning_checks()` 與建立步驟時用的 `suggest_*()`。
+  1. 在 `src/tablade/steps/` 寫一個 `Step` 子類別並加上 `@register`：`type: Literal[...]`、參數欄位（`title`、引用欄位用 `ColumnRef` / `ColumnRefs`、新欄名用 `NewColumns`）、`label`、`category`、docstring、`ai_notes`、`effect`（欄位效果）、至少一個 `examples`（同時是測試）。畫面的英文：`label_en`、`doc_en`（docstring 的英文），每個欄位的 `Field(title=…, json_schema_extra=en("English"))`（`tablade/i18n.py` 的 `en()`；選項文字用 `en(…, ui_labels=…_EN)`），`describe()`、警告、錯誤訊息用 `t("中文", "English")`；`ai_notes` 與 `examples` 是給 AI skill 的，維持中文（`tests/test_i18n.py` 只檢查英文有沒有寫齊，不檢查這兩項）。
+     - `@register` 登錄時會擋下：類型重複、缺 `label` 或 `category`、`category` 不在 `steps/base.py` 的 `CATEGORY_EN`（新的分類先在那裡加英文）、缺 docstring、缺 `label_en` 或 `doc_en`、有 `scope_note` 卻沒有 `scope_note_en`、缺 `ai_notes`、沒有 `examples`、`effect` 的種類不對。
+     - 沒宣告 `effect` 就當成「不變」（`keep`），不會被擋：欄位有變的步驟一定要宣告；欄位的 `title` 與 `en()` 由 `tests/test_i18n.py` 檢查。
+  2. 實作 `apply()`（純函式）、`describe()`，需要時加 `warning_checks()` 與建立步驟時給建議參數的 `suggest()`。
+     參數加了 pydantic 的 `field_validator` 時，`recipe/validator.py` 的 `step_rules` 也要補上同樣的檢查（AI skill 只有驗證器；`tests/test_review_recipe.py` 會檢查）。
   3. 新模組要加進 `steps/__init__.py`（匯入順序＝顯示順序），並在 `tests/test_steps.py` 補邊界情況的測試。
   4. 結構有變（新增步驟或參數、改預設值）就升 `RECIPE_VERSION`（相容升 minor），再執行 `uv run python scripts/update_schema_lock.py`；只改說明文字不用升。
   5. 要用其他階段的結果（例如結合的右表）時，參數標 `json_schema_extra={"ui": "stage"}`、`stage_refs()` 回傳要用的階段，`apply()` 裡用 `self.table(名稱)` 取得（引擎套用前用 `bind()` 交給步驟，步驟不讀檔）。
 - `src/tablade/recipe/validator.py` 只能用 Python 標準函式庫、不能 import tablade（它會原封不動放進 AI skill），有測試檢查。
 - 步驟 `apply()` 必須是純函式：不讀寫檔案、不 print、不碰 UI。
 - **串流規則**（DESIGN.md §8；幾 GB 的檔案要在固定記憶體內跑完）：
-  - **各檔分開處理**：引擎讓每個來源檔各自跑步驟，到「合併來源檔」或寫出前才接起來。`per_file = True` 的步驟 `apply()` 一次只會收到一個來源檔（或合併後的那一份），需要整檔資訊（例如列數）時用 `collect_small()` 做一次小聚合；要看整個來源檔的步驟（群組彙總、移除重複、樞紐）也是 `per_file = True`（合併來源檔之前每個檔各自處理，合併之後就是整份）；輸出的列不再一對一對應輸入時加 `reshapes = True`、用 `reshape_order()` 排欄位；要接多個輸入的步驟（join、附加查詢）才做成 `combines = True` 的合併型步驟。
+  - **各檔分開處理**：引擎讓每個來源檔各自跑步驟，到「合併來源檔」或寫出前才接起來。`per_file = True` 的步驟 `apply()` 一次只會收到一個來源檔（或合併後的那一份），需要整檔資訊（例如列數）時用 `collect_small()` 做一次小聚合；要看整個來源檔的步驟（群組彙總、移除重複、樞紐）也是 `per_file = True`（合併來源檔之前每個檔各自處理，合併之後就是整份）；輸出的列不再一對一對應輸入時加 `reshapes = True`、用 `reshape_order()` 排欄位；`combines = True`（`combine(parts)`）只給把同一個階段的來源檔接起來的步驟（合併來源檔）。結合是 `combines = False`，用 `bind()`／`table()` 取另一個階段的結果（上面第 5 點）；附加查詢是讀好幾個前面的階段再合併來源檔。
   - 每個來源檔已依 `__line_no` 排好，步驟**不要 sort**（只有彙總後的少量結果可以排序）。
   - 不用 window 函式（`.over()`）、`replace_strict`、`map_batches` 呼叫 Python：串流引擎不支援，會把整份資料放進記憶體。
   - 改了步驟後，用 `tests/test_large.py` 的 stream ＝ eager 測試確認結果一致；大改時用幾 GB 的假資料量一次記憶體。
-- 不使用 `eval` / `exec`；不加入任何網路連線程式碼（`scripts/check_code_policy.py` 會檢查 `src/`）。唯一例外是 `src/tablade/update.py`：啟動時向 GitHub 查最新版號，只讀版號，不送出資料、不下載、不自動更新（`TABLADE_NO_UPDATE_CHECK=1` 可關閉）。
+- 不使用 `eval` / `exec`；不加入任何網路連線程式碼；不呼叫外部程式；Polars 的 `read_*` / `scan_*` 不讀網址或雲端（`storage_options`）。`scripts/check_code_policy.py` 會檢查 `src/`；它是把關的工具、不是沙箱，刻意繞過擋不住，所以不要找繞過的寫法。
+  - 網路的唯一例外是 `src/tablade/update.py`：啟動時向 GitHub 查最新版號，只讀版號，不送出資料、不下載、不自動更新（`TABLADE_NO_UPDATE_CHECK=1` 可關閉）。
+  - 外部程式的唯一例外是 `src/tablade/desktop.py`：用系統的程式（檔案總管／Finder）開啟本機資料夾。
 - 依賴版本固定在 `pyproject.toml` 與 `uv.lock`，不要擅自升級。
 - `api.py`（JS bridge）只做參數轉換與錯誤包裝，邏輯放在引擎。
 - pywebview 視窗不開 HTTP server：前端 build 成單一 HTML（`frontend/dist/index.html`），以字串載入（見 `app.py`）。不要改成用網址或相對路徑載入；整份 HTML 必須小於 2 MB。
