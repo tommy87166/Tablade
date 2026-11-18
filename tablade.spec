@@ -8,6 +8,7 @@
 - macOS：PyInstaller 不支援 onefile 的 .app，所以 onefile 是命令列執行檔，視窗版用 onedir 的 Tablade.app。
 """
 
+import glob
 import os
 import sys
 
@@ -16,6 +17,10 @@ if MODE not in ("onefile", "onedir"):
     raise SystemExit(f"TABLADE_BUILD 必須是 onefile 或 onedir，收到 {MODE!r}")
 IS_MAC = sys.platform == "darwin"
 ICON = "assets/icon.icns" if IS_MAC else "assets/icon.ico"
+# 範例 recipe 全部打包（AI skill 的 references/examples/ 要和 Release 附的一樣；scripts/build.py 會檢查）
+EXAMPLES = sorted(glob.glob(os.path.join(SPECPATH, "examples", "*.recipe.json")))
+if not EXAMPLES:
+    raise SystemExit("找不到 examples/*.recipe.json")
 
 a = Analysis(
     ["src/tablade/__main__.py"],
@@ -24,7 +29,7 @@ a = Analysis(
     # 範例 recipe：--smoke 走完整流程、AI skill 的範例；validator.py 原始碼：放進 AI skill
     datas=[
         ("frontend/dist/index.html", "frontend/dist"),
-        ("examples/sales_detail.recipe.json", "examples"),
+        *[(path, "examples") for path in EXAMPLES],
         ("src/tablade/recipe/validator.py", "skill"),
     ],
     hiddenimports=[],

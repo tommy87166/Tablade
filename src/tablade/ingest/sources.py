@@ -1,7 +1,7 @@
 """解析 recipe 的 inputs：glob 找檔案、轉碼、lazy 掃描、多檔合併（DESIGN.md §5、§8）。
 
 幾 GB 的檔案也要在固定記憶體內處理：
-- **不把整個檔案讀進記憶體。** 以 16 MB 為單位分塊讀取，同時算 SHA-256、檢查是不是 UTF-8。
+- **不把整個檔案讀進記憶體。** 以 1 MB 為單位分塊讀取（``transcode.CHUNK``），同時算 SHA-256、檢查是不是 UTF-8。
 - UTF-8 檔直接交給 Polars 的 ``scan_lines`` / ``scan_csv``（lazy、可串流）。
 - 其他編碼（cp950 等）或有單獨 ``\\r`` 換行的檔案，先分塊轉成 UTF-8 暫存檔再掃描。
   暫存檔放在暫存資料夾，依「路徑＋大小＋修改時間＋編碼」快取，關閉視窗或程式結束時刪除；
@@ -200,15 +200,22 @@ def clear_staging() -> None:
 
 
 def is_glob(entry: str) -> bool:
+    """有 ``*``、``?``、``[`` 時可能是 glob（``expand`` 會先看這個路徑本身是不是檔案）。"""
     return any(c in entry for c in "*?[")
 
 
 def expand(entry: str, base_dir: Path) -> list[Path]:
-    """檔案清單的一項找到的檔：相對路徑以 recipe 資料夾為基準；有 * 才當成 glob（依路徑排序）。"""
+    """檔案清單的一項找到的檔：相對路徑以 recipe 資料夾為基準。
+
+    這個路徑本身就是檔案時直接用（檔名、資料夾名稱可以有 ``[``、``?``，例如「明細[1].csv」）；
+    不是檔案、又有 ``*``、``?``、``[`` 時才當成 glob（依路徑排序）。
+    """
     full = Path(entry) if Path(entry).is_absolute() else base_dir / entry
+    if full.is_file():
+        return [full]
     if is_glob(entry):
         return sorted(Path(p) for p in glob.glob(str(full), recursive=True) if Path(p).is_file())
-    return [full] if full.is_file() else []
+    return []
 
 
 def check_entries(entries: list[str], base_dir: Path) -> list[dict[str, Any]]:
@@ -402,6 +409,13 @@ def _transcode_single(path: Path, encoding: str, target: Path, progress: Progres
     return digest.hexdigest()
 
 
+class PoolUnavailable(RuntimeError):
+    """開不了工作程序（例如權限受管控的電腦不讓開新程序），或工作程序意外結束：改用單核心轉碼。
+
+    讀寫檔的錯誤（暫存碟空間不足、檔案被鎖住…）不是這種，照原樣往外丟。
+    """
+
+
 def _transcode_parallel(
     path: Path,
     encoding: str,
@@ -413,6 +427,7 @@ def _transcode_parallel(
     """在換行處切段、多個程序同時轉碼，再依序接起來；切不出兩段時回傳 None（改用單核心）。
 
     ``pool`` 預設是共用的工作程序；自我檢測會傳自己開的（不管核心數多少都實際開程序）。
+    開不了工作程序、工作程序意外結束時丟出 ``PoolUnavailable``；其他錯誤（例如讀寫檔失敗）照原樣丟出。
     """
     total = path.stat().st_size
     cuts = segment_bounds(str(path), total, segment)
@@ -434,15 +449,20 @@ def _transcode_parallel(
 
     hasher = threading.Thread(target=hash_file, daemon=True)
     hasher.start()
+    futures: list[Any] = []
     try:
-        workers = pool or _get_pool()
-        futures = [workers.submit(transcode_segment, job) for job in jobs]
+        try:
+            workers = pool or _get_pool()
+            futures = [workers.submit(transcode_segment, job) for job in jobs]
+        except (OSError, RuntimeError, BrokenProcessPool) as err:  # 開不了工作程序
+            raise PoolUnavailable(str(err)) from err
         done = 0
         for i, future in enumerate(futures):  # 依序等：第一個失敗的就是檔案裡最前面的錯誤
-            failure = future.result()
+            try:
+                failure = future.result()
+            except BrokenProcessPool as err:  # 工作程序意外結束（例如被系統擋掉）
+                raise PoolUnavailable(str(err)) from err
             if failure is not None:
-                for rest in futures[i + 1 :]:
-                    rest.cancel()
                 raise _decode_error(path, encoding, failure)
             done += cuts[i + 1] - cuts[i]
             _report(progress, t("轉碼", "Transcoding"), path.name, done, total)
@@ -452,8 +472,11 @@ def _transcode_parallel(
                     shutil.copyfileobj(f, out, CHUNK)
                 part.unlink()
     finally:
+        for rest in futures:  # 失敗時還沒開始的段不用做了
+            rest.cancel()
         for part in parts:
-            part.unlink(missing_ok=True)
+            with contextlib.suppress(OSError):  # 還在寫的段（Windows 上刪不掉）留給暫存資料夾清
+                part.unlink(missing_ok=True)
         hasher.join()
     return digest.hexdigest()
 
@@ -469,7 +492,8 @@ def _transcode(
 ) -> str:
     """轉成 UTF-8 暫存檔；回傳原檔的 sha256。解碼失敗丟出 DecodeError。
 
-    大檔用多個程序同時轉（結果和單核心完全相同）；開不了工作程序時改用單核心。
+    大檔用多個程序同時轉（結果和單核心完全相同）；開不了工作程序時改用單核心，這次開著的期間都不再試。
+    讀寫檔的錯誤（暫存碟空間不足之類）照原樣丟出，不算「開不了工作程序」。
     \r\n 原樣保留（scan_lines 會處理），只有單獨的 \r 換行才改成 \n。
     """
     minimum = PARALLEL_MIN if parallel_min is None else parallel_min
@@ -478,7 +502,7 @@ def _transcode(
             digest = _transcode_parallel(path, encoding, target, progress, segment or SEGMENT)
             if digest is not None:
                 return digest
-        except (OSError, RuntimeError, BrokenProcessPool):  # 例如公司電腦不讓開新程序
+        except PoolUnavailable:  # 例如公司電腦不讓開新程序
             global _pool_failed
             _pool_failed = True
             _shutdown_pool()
@@ -816,30 +840,54 @@ def sample(
     return concat(kept).collect(engine="streaming")
 
 
+PEEK_MAX_FILES = 100
+"""檔案清單找到超過這麼多個檔時，``peek_columns`` 不看欄位（回傳 None，驗證器不檢查欄位引用）。"""
+PEEK_MAX_EXCEL = 20
+"""Excel 檔要打開整個活頁簿才知道有幾欄（比較慢），超過這麼多個就不看。"""
+PEEK_BYTES = 1 << 16
+"""CSV 只讀開頭這麼多 bytes 找標題列。"""
+_FIRST_LINE = re.compile(rb"\r\n|\r|\n")
+
+
 def peek_columns(
     entries: str | list[str], reader: str, encoding: str, base_dir: Path, sheet: str = ""
 ) -> list[str] | None:
-    """不讀整個檔案，只取得 input 的資料欄位（給驗證器檢查欄位引用）。"""
-    first = resolve(entries, base_dir)[0]  # 找不到檔案時丟出 InputError
+    """不讀整個檔案，只取得 input 的資料欄位（給驗證器檢查欄位引用）。
+
+    每個檔都看（只讀標題列），欄位取聯集、依第一次出現的順序：引擎讀多個檔時也是對齊成同一組欄位，
+    缺的欄是空值（DESIGN.md §5.3）。檔案太多（``PEEK_MAX_FILES``、Excel 是 ``PEEK_MAX_EXCEL``）時
+    回傳 None（不檢查欄位引用）。
+    """
+    paths = resolve(entries, base_dir)  # 找不到檔案時丟出 InputError
     if reader == "text_lines":
         return ["line"]
+    if len(paths) > (PEEK_MAX_EXCEL if reader == "excel" else PEEK_MAX_FILES):
+        return None
+    seen: dict[str, None] = {}
+    for path in paths:
+        seen.update(dict.fromkeys(_peek_one(path, reader, encoding, sheet)))
+    return list(seen)
+
+
+def _peek_one(path: Path, reader: str, encoding: str, sheet: str) -> list[str]:
+    """一個檔的資料欄位（只讀標題列）。"""
     if reader == "parquet":
         try:
-            names = list(parquet_names(pl.read_parquet_schema(first).keys()).values())
+            return list(parquet_names(pl.read_parquet_schema(path).keys()).values())
         except (OSError, pl.exceptions.PolarsError) as err:
             raise InputError(
                 t(
-                    f"「{first.name}」讀不了（不是 Parquet 檔？）：{err}",
-                    f'Cannot read "{first.name}" (not a Parquet file?): {err}',
+                    f"「{path.name}」讀不了（不是 Parquet 檔？）：{err}",
+                    f'Cannot read "{path.name}" (not a Parquet file?): {err}',
                 )
             ) from None
-        return names
     if reader == "excel":
         try:
-            return excel.peek_columns(first, sheet)
+            return excel.peek_columns(path, sheet)
         except excel.ExcelError as err:
             raise InputError(str(err)) from None
-    head = first.read_bytes()[: 1 << 16].split(b"\n", 1)[0].rstrip(b"\r")
+    with path.open("rb") as f:  # 只讀開頭（幾 GB 的檔也不整個讀進記憶體）
+        head = _FIRST_LINE.split(f.read(PEEK_BYTES), maxsplit=1)[0]
     text = _lenient(head) if encoding == "auto" else head.decode(encoding, errors="replace")
     text = text.removeprefix("﻿")
     return pl.read_csv(io.StringIO(text + "\n"), infer_schema=False).columns if text else []

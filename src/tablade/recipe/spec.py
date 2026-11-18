@@ -13,7 +13,17 @@ from .schema import READERS, RECIPE_VERSION, Recipe
 from .validator import SYSTEM_COLUMNS
 
 LOCK_PATH = Path(__file__).with_name("recipe-schema.lock.json")
-_HUMAN_KEYS = {"title", "description", "ui_labels", "label", "category", "examples", "ai_notes"}
+_HUMAN_KEYS = {
+    "title",
+    "description",
+    "ui_labels",
+    "ui_option_hints",
+    "label",
+    "category",
+    "examples",
+    "ai_notes",
+}
+"""純說明用的欄位：schema lock 不記（只改這些文字不用升 RECIPE_VERSION）。"""
 
 
 def build_spec() -> dict[str, Any]:
@@ -27,6 +37,7 @@ def build_spec() -> dict[str, Any]:
             "description": cls.summary(),
             "effect": cls.effect,
             "schema_ref": cls.__name__,
+            **({"combines": True} if cls.combines else {}),  # 合併來源檔：之後多 __orig_* 系統欄位
         }
     return {
         "recipe_version": RECIPE_VERSION,
@@ -34,7 +45,15 @@ def build_spec() -> dict[str, Any]:
         "steps": steps,
         "readers": READERS,
         "system_columns": list(SYSTEM_COLUMNS),
+        "system_column_defs": condition_defs(),
     }
+
+
+def condition_defs() -> list[str]:
+    """條件（篩選、將列進行分類、依條件複製欄位共用）的 schema 名稱：只有這裡面可以引用系統欄位。"""
+    from tablade.steps.filter import Condition
+
+    return [member.__name__ for member in Condition.__origin__.__args__]  # type: ignore[attr-defined]
 
 
 def structural(value: Any) -> Any:

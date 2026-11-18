@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import secrets
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -91,9 +89,13 @@ def _warning(w: Any) -> dict[str, Any]:
     return item
 
 
-def build_manifest(recipe: Recipe, report: RunReport, out: OutputReport) -> dict[str, Any]:
+def build_manifest(
+    recipe: Recipe, report: RunReport, out: OutputReport, written: Path | None = None
+) -> dict[str, Any]:
+    """``written`` 是輸出檔實際內容所在的檔（還沒改名的暫存檔；預設是 ``out.path``）。"""
     content = recipe_content(recipe)
     output = Path(out.path)
+    data = written or output
     keep = set(upstream(recipe, out.stage))
     steps = [s for s in report.steps if s.stage in keep]
     warnings = [_warning(w) for s in steps for w in s.warnings]
@@ -151,24 +153,18 @@ def build_manifest(recipe: Recipe, report: RunReport, out: OutputReport) -> dict
             "format": out.format,
             "rows": out.rows,
             "columns": out.columns,
-            "bytes": output.stat().st_size,
-            "sha256": file_sha256(output),
+            "bytes": data.stat().st_size,
+            "sha256": file_sha256(data),
         },
     }
 
 
-def write_manifest(
-    recipe: Recipe, report: RunReport, out: OutputReport, folder: Path | None = None
-) -> Path:
-    """寫到 ``folder``（預設是輸出檔所在資料夾底下的 log/）；先寫暫存檔再改名，避免中途失敗留下半個檔案。"""
-    target = manifest_path(Path(out.path), folder)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(build_manifest(recipe, report, out), ensure_ascii=False, indent=2)
-    tmp = target.with_name(f".{target.name}.{secrets.token_hex(4)}.tmp")
-    try:
-        tmp.write_text(text + "\n", encoding="utf-8")
-        os.replace(tmp, target)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
-    return target
+def manifest_text(
+    recipe: Recipe, report: RunReport, out: OutputReport, written: Path | None = None
+) -> str:
+    """處理紀錄的內容（JSON）。引擎把它寫成暫存檔，和輸出檔一起改名（``engine/run.py`` 的 ``_Writes``）：
+    改名到一半失敗時，輸出檔和處理紀錄都維持上一次的內容。"""
+    return (
+        json.dumps(build_manifest(recipe, report, out, written), ensure_ascii=False, indent=2)
+        + "\n"
+    )

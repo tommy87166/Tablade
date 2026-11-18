@@ -130,7 +130,7 @@ def test_dev_url_only_accepts_localhost(monkeypatch):
 
 def test_bridge_wraps_errors():
     res = Api().update_step(5, {})
-    assert res == {"ok": False, "error": "SessionError: 沒有第 5 步"}
+    assert res == {"ok": False, "error": "SessionError: 沒有第 6 步"}
 
 
 def test_ready_reports_versions_and_catalog():

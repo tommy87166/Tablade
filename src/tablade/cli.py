@@ -10,6 +10,17 @@ from pathlib import Path
 from .ingest.encoding import SUPPORTED
 
 
+def _count(text: str) -> int:
+    """不能小於 0 的整數（``tablade profile --lines``）。"""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"要是整數：{text}") from None
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"不能小於 0：{text}")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tablade", description="本機執行的資料清洗工具")
     sub = parser.add_subparsers(dest="command")
@@ -29,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     convert.add_argument("output", type=Path)
     convert.add_argument("--encoding", default="auto", choices=SUPPORTED)
 
-    run = sub.add_parser("run", help="執行 Recipe，輸出 Parquet")
+    run = sub.add_parser("run", help="執行 Recipe，輸出 Parquet 或 CSV（每個階段的 output_format）")
     run.add_argument("recipe", type=Path)
     run.add_argument(
         "--out-dir",
@@ -57,8 +68,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     prof = sub.add_parser("profile", help="把資料檔整理成給 AI 助理看的摘要（Markdown）")
     prof.add_argument("files", type=Path, nargs="+")
-    prof.add_argument("--lines", type=int, default=30, help="列出前幾行（預設 30）")
-    prof.add_argument("--mask", action="store_true", help="把數字、英文字母、文字遮罩成 9 / a / 〇")
+    prof.add_argument("--lines", type=_count, default=30, help="列出前幾行（預設 30）")
+    prof.add_argument(
+        "--mask",
+        action="store_true",
+        help="只保留版面：數字、英文字母、其他文字與符號遮罩成 9 / a / 〇（空白與標點保留），檔名也遮",
+    )
     prof.add_argument("--out", type=Path, help="寫到檔案（預設印出）")
 
     sub.add_parser("version", help="顯示版本")
@@ -70,11 +85,14 @@ def _print_json(data: object) -> None:
 
 
 def _check(args: argparse.Namespace, *, dry_run: bool) -> int:
-    from .engine.check import check_recipe_file, format_issues, format_report
+    from .engine.check import _step_path, check_recipe_file, format_issues, format_report
     from .engine.run import RunError, execute
     from .export.outputs import OutputError, default_output_name, log_dir, resolve_outputs
+    from .ingest.encoding import DecodeError
+    from .ingest.excel import ExcelError
+    from .ingest.sources import InputError
 
-    result = check_recipe_file(args.recipe, dry_run=dry_run)
+    result = check_recipe_file(args.recipe, dry_run=dry_run, out_dir=getattr(args, "out_dir", None))
     writing = args.command == "run" and result.ok and result.recipe is not None
     if writing:
         base = args.recipe.parent
@@ -87,8 +105,11 @@ def _check(args: argparse.Namespace, *, dry_run: bool) -> int:
             )
         except OutputError as err:
             result.issues.append({"path": "stages", "error": str(err), "severity": "error"})
-        except RunError as err:
-            result.issues.append({"path": "steps", "error": str(err), "severity": "error"})
+        except RunError as err:  # 跟 validate --run 一樣指到那一步（stages[k].steps[i]）
+            path = _step_path(result.recipe, err.step_id)
+            result.issues.append({"path": path, "error": str(err), "severity": "error"})
+        except (InputError, DecodeError, ExcelError, OSError) as err:  # 找不到檔、編碼、寫不進去
+            result.issues.append({"path": "stages", "error": str(err), "severity": "error"})
     if args.json:
         _print_json(
             {

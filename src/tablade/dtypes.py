@@ -1,4 +1,4 @@
-"""型別的中文名稱（型別分頁、錯誤訊息共用）。"""
+"""型別的名稱（型別分頁、錯誤訊息共用）：中文或英文，跟著畫面的語言。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from .i18n import plural, t
 
 
 def type_label(dtype: pl.DataType) -> str:
-    """型別的中文名稱。"""
+    """型別的名稱（畫面是英文時是英文）。"""
     if dtype == pl.String:
         return t("文字", "Text")
     if isinstance(dtype, pl.Decimal):

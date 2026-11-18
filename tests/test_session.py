@@ -204,7 +204,7 @@ def test_load_recipe_with_problems_and_error_report(data):
     assert s.state()["steps"][5]["status"] == "waiting"  # 還沒載入資料
     s.load_data()
     state = s.state()
-    assert state["selected"] == 7 and state["issues"] == issues
+    assert state["selected"] == 7 and s.report()["issues"] == issues
     assert state["steps"][5]["status"] == "error"
 
     report = s.error_report()
@@ -790,7 +790,7 @@ def test_stage_add_rename_move_delete(data):
     assert last["input"]["stages"] == ["文字", "Excel明細"]
     assert s.state()["stages"][-1]["status"] == "ok"  # 改名不需要重新載入
     # 會弄壞引用的刪除、移動都擋下來
-    with pytest.raises(SessionError, match="不能刪除「品項」：「預設階段」的j1（結合）用到它"):
+    with pytest.raises(SessionError, match="不能刪除「品項」：「預設階段」的第 2 步「結合」用到它"):
         s.delete_stage(0)
     with pytest.raises(SessionError, match="不能這樣排"):
         s.move_stage(0, 4)

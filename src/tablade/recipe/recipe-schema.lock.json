@@ -534,12 +534,6 @@
               ],
               "type": "string",
               "ui": "option_cards",
-              "ui_option_hints": {
-                "anti": "以這一張表為準，只留沒對到另一張表的列。",
-                "inner": "取交集，只留下兩張表都有的列，加入另一張表的欄。",
-                "left": "以這一張表為準，保留這一張表每一列，加入另一張表的欄。",
-                "semi": "以這一張表為準，只留有對到另一張表的列。"
-              },
               "ui_option_icons": {
                 "anti": "venn_left_only",
                 "inner": "venn_inner",
@@ -726,15 +720,7 @@
                 "compact",
                 "custom"
               ],
-              "type": "string",
-              "ui_option_hints": {
-                "chinese": "正規表示式：^(\\d{1,4})\\s*年\\s*(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*日$",
-                "compact": "正規表示式：^(\\d{1,4})(\\d{2})(\\d{2})$",
-                "custom": "在下面輸入正規表示式，要有三個群組，依序是年、月、日",
-                "dash": "正規表示式：^(\\d{1,4})-(\\d{1,2})-(\\d{1,2})$",
-                "dot": "正規表示式：^(\\d{1,4})\\.(\\d{1,2})\\.(\\d{1,2})$",
-                "slash": "正規表示式：^(\\d{1,4})/(\\d{1,2})/(\\d{1,2})$"
-              }
+              "type": "string"
             },
             "regex": {
               "default": "",
@@ -1750,7 +1736,7 @@
           "type": "array"
         },
         "tablade_recipe": {
-          "pattern": "^\\d+\\.\\d+$",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
           "type": "string"
         }
       },
@@ -1823,6 +1809,7 @@
         "schema_ref": "Join"
       },
       "merge_files": {
+        "combines": true,
         "effect": {
           "kind": "keep"
         },
@@ -1947,6 +1934,12 @@
         "schema_ref": "Unpivot"
       }
     },
+    "system_column_defs": [
+      "TextCondition",
+      "RegexCondition",
+      "EmptyCondition",
+      "NumberCondition"
+    ],
     "system_columns": [
       "__source_file",
       "__line_no",
@@ -1955,8 +1948,7 @@
       "__orig_source_file",
       "__orig_line_no",
       "__orig_sheet",
-      "__orig_stage",
-      "__row_type"
+      "__orig_stage"
     ]
   }
 }

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from tablade.recipe.validator import EFFECT_KINDS
 
-from .base import Step
+from .base import CATEGORY_EN, Step
 
 _STEPS: dict[str, type[Step]] = {}
 
@@ -15,12 +15,19 @@ def register(cls: type[Step]) -> type[Step]:
         raise ValueError(f"步驟類型重複登錄：{name}")
     if not cls.label or not cls.category:
         raise ValueError(f"{name} 缺少 label 或 category")
+    if cls.category not in CATEGORY_EN:
+        raise ValueError(
+            f"{name} 的 category「{cls.category}」不在 CATEGORY_EN（steps/base.py）裡；"
+            "新的分類要在那裡加上英文"
+        )
     if not cls.__doc__:
         raise ValueError(f"{name} 缺少說明（docstring）")
     if not cls.label_en or not cls.doc_en:
         raise ValueError(f"{name} 缺少英文的名稱或說明（label_en、doc_en；docs/i18n-plan.md）")
     if cls.scope_note and not cls.scope_note_en:
         raise ValueError(f"{name} 缺少 scope_note_en")
+    if not cls.ai_notes:
+        raise ValueError(f"{name} 缺少 ai_notes（給 AI skill 的注意事項，中文）")
     if not cls.examples:
         raise ValueError(f"{name} 至少要有一個範例（同時是單元測試）")
     if cls.effect.get("kind") not in EFFECT_KINDS:

@@ -23,6 +23,7 @@ import csv
 import json
 import re
 import sys
+import unicodedata
 from difflib import get_close_matches
 from pathlib import Path
 from typing import Any
@@ -54,9 +55,22 @@ SYSTEM_COLUMNS = (
     "__orig_line_no",
     "__orig_sheet",
     "__orig_stage",
-    "__row_type",
 )
-VERSION_RE = re.compile(r"^(\d+)\.(\d+)$")
+"""所有的系統欄位。每個階段實際有哪些，依讀取方式與步驟而定（``_semantic``）：
+一律有 __source_file、__line_no；讀 Excel 全部工作表（sheet 是 ``*``）多 __sheet；
+讀前面階段的輸出多 __stage（也帶著那些階段的系統欄位）；合併來源檔（spec 裡 ``combines`` 的步驟）
+之後多 __orig_*（合併前有的才有）。系統欄位只能在條件裡引用（spec 的 ``system_column_defs``）。"""
+BASE_SYSTEM = ("__source_file", "__line_no")
+"""每個階段一定有的系統欄位。"""
+ORIGINAL_COLUMNS = {
+    "__source_file": "__orig_source_file",
+    "__line_no": "__orig_line_no",
+    "__sheet": "__orig_sheet",
+    "__stage": "__orig_stage",
+}
+"""合併來源檔時，原本的來源檔、行號、工作表、階段存到這些系統欄位（tablade/steps/base.py 的 ORIGINAL）。"""
+VERSION_RE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+"""版本號「主版本.次版本」：只能是半形數字、不能有多的 0（"1.00"、"01.0" 都不行）；用 fullmatch。"""
 EFFECT_KINDS = (
     "keep",
     "add",
@@ -439,10 +453,21 @@ _TYPE_LABELS_EN = {
 """``_TYPE_LABELS`` 的英文（模組最上層不能用 t() 算好，用到時才依 ``LANG`` 選）。"""
 
 
+def _rust_pattern(pattern: str) -> str:
+    """JSON Schema 的 ``pattern`` 照 Rust（pydantic）的意思換成 Python 的寫法：結尾的 ``$`` 是字串結尾。
+
+    Python 的 ``$`` 也會比對到「結尾的換行之前」，``"s1\\n"`` 會通過 ``^[A-Za-z0-9_-]+$``，pydantic 不會。"""
+    if pattern.endswith("$") and not pattern.endswith("\\$"):
+        return pattern[:-1] + r"\Z"
+    return pattern
+
+
 class _Schema:
-    def __init__(self, root: dict[str, Any]) -> None:
+    def __init__(self, root: dict[str, Any], system_defs: list[str] | None = None) -> None:
         self.defs = root.get("$defs", {})
         self.root = root
+        self.system_defs = set(system_defs or [])
+        """這些物件裡的欄位引用可以是系統欄位（篩選等步驟的條件）。"""
 
     def resolve(self, schema: dict[str, Any]) -> dict[str, Any]:
         while "$ref" in schema:
@@ -468,6 +493,16 @@ class _Schema:
                 tag = value.get(prop)
                 if tag is None:
                     return issues + [_issue(path + [prop], t(f"缺少 {prop}", f"Missing {prop}"))]
+                if not isinstance(tag, str):  # 例如 ["filter"]：清單、物件不能拿來查表
+                    return issues + [
+                        _issue(
+                            path + [prop],
+                            t("型別錯誤：應該是文字", "Wrong type: should be text"),
+                            _close(tag[0], list(mapping))
+                            if isinstance(tag, list) and len(tag) == 1
+                            else None,
+                        )
+                    ]
                 if tag not in mapping:
                     hint = _close(tag, list(mapping))
                     allowed = t("、", ", ").join(mapping)
@@ -545,7 +580,7 @@ class _Schema:
                         ),
                     )
                 )
-            if "pattern" in schema and not re.search(schema["pattern"], value):
+            if "pattern" in schema and not re.search(_rust_pattern(schema["pattern"]), value):
                 issues.append(
                     _issue(
                         path,
@@ -648,32 +683,260 @@ class _Schema:
         return issues
 
     def column_refs(
-        self, value: Any, schema: dict[str, Any], path: list[str | int]
-    ) -> list[tuple[list[str | int], str]]:
-        """找出參數裡標記為 ``ui: column`` / ``ui: columns`` 的欄位引用。"""
+        self, value: Any, schema: dict[str, Any], path: list[str | int], system: bool = False
+    ) -> list[tuple[list[str | int], str, bool]]:
+        """找出參數裡標記為 ``ui: column`` / ``ui: columns`` 的欄位引用：（路徑, 欄名, 可不可以是系統欄位）。
+
+        只有 ``system_defs`` 列的物件（條件）裡的引用可以是系統欄位；其他參數只能是資料欄位。
+        """
+        if "$ref" in schema:
+            system = system or schema["$ref"].rsplit("/", 1)[-1] in self.system_defs
         schema = self.resolve(schema)
         ui = schema.get("ui")
         if ui == "column" and isinstance(value, str):
-            return [(path, value)]
+            return [(path, value, system)]
         if ui in ("columns", "column_order") and isinstance(value, list):
-            return [(path + [i], v) for i, v in enumerate(value) if isinstance(v, str)]
+            return [(path + [i], v, system) for i, v in enumerate(value) if isinstance(v, str)]
         if ui == "rename_map" and isinstance(value, dict):
-            return [(path + [k], k) for k in value if isinstance(k, str)]
-        refs: list[tuple[list[str | int], str]] = []
+            return [(path + [k], k, system) for k in value if isinstance(k, str)]
+        refs: list[tuple[list[str | int], str, bool]] = []
         disc = schema.get("discriminator")
-        if disc and isinstance(value, dict) and value.get(disc["propertyName"]) in disc["mapping"]:
-            ref = disc["mapping"][value[disc["propertyName"]]]
-            return self.column_refs(value, {"$ref": ref}, path)
+        if disc and isinstance(value, dict):
+            tag = value.get(disc["propertyName"])
+            if isinstance(tag, str) and tag in disc["mapping"]:
+                return self.column_refs(value, {"$ref": disc["mapping"][tag]}, path, system)
         for sub in schema.get("anyOf", []) + schema.get("allOf", []):
-            refs += self.column_refs(value, sub, path)
+            refs += self.column_refs(value, sub, path, system)
         if isinstance(value, list) and "items" in schema:
             for i, item in enumerate(value):
-                refs += self.column_refs(item, schema["items"], path + [i])
+                refs += self.column_refs(item, schema["items"], path + [i], system)
         if isinstance(value, dict):
             for name, sub in schema.get("properties", {}).items():
                 if name in value:
-                    refs += self.column_refs(value[name], sub, path + [name])
+                    refs += self.column_refs(value[name], sub, path + [name], system)
         return refs
+
+    def regex_fields(
+        self,
+        value: Any,
+        schema: dict[str, Any],
+        path: list[str | int],
+        owner: dict[str, Any] | None = None,
+    ) -> list[tuple[list[str | int], str]]:
+        """找出參數裡標記為 ``ui: regex`` 的正規表示式。
+
+        ``ui_show_if``（看同一個物件裡的其他參數）不成立的不算：那時不會用到，例如日期樣式不是自訂時的 regex。
+        """
+        schema = self.resolve(schema)
+        if schema.get("ui") == "regex":
+            context = owner or {}
+            shown = all(
+                (context.get(k) in v) if isinstance(v, list) else context.get(k) == v
+                for k, v in (schema.get("ui_show_if") or {}).items()
+            )
+            return [(path, value)] if shown and isinstance(value, str) else []
+        found: list[tuple[list[str | int], str]] = []
+        disc = schema.get("discriminator")
+        if disc and isinstance(value, dict):
+            tag = value.get(disc["propertyName"])
+            if isinstance(tag, str) and tag in disc["mapping"]:
+                return self.regex_fields(value, {"$ref": disc["mapping"][tag]}, path, owner)
+        for sub in schema.get("anyOf", []) + schema.get("allOf", []):
+            found += self.regex_fields(value, sub, path, owner)
+        if isinstance(value, list) and "items" in schema:
+            for i, item in enumerate(value):
+                found += self.regex_fields(item, schema["items"], path + [i], owner)
+        if isinstance(value, dict):
+            for name, sub in schema.get("properties", {}).items():
+                if name in value:
+                    found += self.regex_fields(value[name], sub, path + [name], value)
+        return found
+
+
+# ── 正規表示式與步驟自己的規則 ────────────────────────────────────
+
+
+class RegexScan:
+    """不編譯、只掃一遍正規表示式：群組數，以及 Tablade 一定不接受的寫法。
+
+    Tablade 用的是 Rust 的正規表示式（Polars），Python 的 ``re`` 語法不一樣（例如 Rust 的 ``\\p{Han}``、
+    ``(?<名稱>…)`` Python 不認得），不能用 ``re.compile`` 判斷對錯。這裡只抓兩邊確定一樣的：
+    環顧（look-around）、反向參照、括號不成對；其他語法錯誤以 Tablade 試跑的結果為準。
+    """
+
+    def __init__(self, pattern: str) -> None:
+        self.groups = 0
+        self.error: str | None = None
+        self._scan(pattern)
+
+    def _scan(self, p: str) -> None:
+        depth, klass, i, n = 0, 0, 0, len(p)
+        while i < n:
+            c = p[i]
+            if c == "\\":
+                if p[i + 1 : i + 2].isdigit():  # Rust 在 [ ] 裡也不接受
+                    self.error = t(
+                        f"Tablade 的正規表示式不支援反向參照（{p[i : i + 2]}）",
+                        f"Tablade's regular expressions don't support backreferences ({p[i : i + 2]})",
+                    )
+                    return
+                i += 2
+                continue
+            if klass:
+                if p.startswith("[:", i):  # [[:alpha:]] 這種 POSIX 類別
+                    end = p.find(":]", i + 2)
+                    i = end + 2 if end >= 0 else i + 1
+                    continue
+                if c == "[":
+                    klass += 1
+                    i = self._class_start(p, i + 1)
+                    continue
+                if c == "]":
+                    klass -= 1
+                i += 1
+                continue
+            if c == "[":
+                klass = 1
+                i = self._class_start(p, i + 1)
+                continue
+            if c == "(":
+                depth += 1
+                if p.startswith(("(?=", "(?!", "(?<=", "(?<!"), i):
+                    self.error = t(
+                        "Tablade 的正規表示式不支援環顧（look-ahead／look-behind，例如 (?=…)、(?<!…)）",
+                        "Tablade's regular expressions don't support look-around "
+                        "(look-ahead / look-behind such as (?=…) or (?<!…))",
+                    )
+                    return
+                if not p.startswith("(?", i) or p.startswith(("(?P<", "(?<"), i):
+                    self.groups += 1  # 一般的群組、具名群組；(?:…)、(?i) 這些不算
+            elif c == ")":
+                depth -= 1
+                if depth < 0:
+                    self.error = t("括號不成對：多了一個 )", "Unbalanced parentheses: an extra )")
+                    return
+            i += 1
+        if klass:
+            self.error = t("[ ] 不成對：少了 ]", "Unbalanced brackets: a ] is missing")
+        elif depth:
+            self.error = t("括號不成對：少了 )", "Unbalanced parentheses: a ) is missing")
+
+    @staticmethod
+    def _class_start(p: str, i: int) -> int:
+        """[ 後面的位置：開頭的 ^ 與緊接著的 ]（字面上的 ]）略過。"""
+        if p.startswith("^", i):
+            i += 1
+        return i + 1 if p.startswith("]", i) else i
+
+
+def step_rules(
+    step: dict[str, Any], step_schema: dict[str, Any], schema: _Schema, path: list[str | int]
+) -> list[Issue]:
+    """步驟自己的規則（pydantic 的 field_validator；tests/test_review_recipe.py 確認兩邊一致）。
+
+    結構正確的步驟才檢查。正規表示式只檢查 ``RegexScan`` 做得到的部分。
+    """
+    issues: list[Issue] = []
+    kind = step.get("type")
+    regexes = schema.regex_fields(step, step_schema, path, step)
+    if kind == "replace_values" and step.get("match") == "regex":
+        regexes += [
+            (path + ["replacements", k, "find"], item.get("find"))
+            for k, item in enumerate(step.get("replacements") or [])
+            if isinstance(item, dict) and isinstance(item.get("find"), str)
+        ]
+    scans: dict[str, RegexScan] = {}
+    for where, pattern in regexes:
+        scans[_fmt(where)] = scan = RegexScan(pattern)
+        if scan.error:
+            issues.append(
+                _issue(
+                    where,
+                    scan.error,
+                    t(
+                        "Tablade 用 Rust 的正規表示式語法；其他語法錯誤要用 Tablade 開啟才查得到",
+                        "Tablade uses Rust regular expression syntax; other syntax errors show "
+                        "up when the Recipe is opened in Tablade",
+                    ),
+                )
+            )
+    if kind == "extract_regex":
+        scan = scans.get(_fmt(path + ["pattern"]))
+        names = step.get("names")
+        if scan and not scan.error and isinstance(names, list):
+            if scan.groups == 0:
+                issues.append(
+                    _issue(
+                        path + ["names"],
+                        t(
+                            "正規表示式沒有括號群組：要擷取的部分請用 ( ) 括起來",
+                            "The regular expression has no groups: put the part to extract in ( )",
+                        ),
+                    )
+                )
+            elif scan.groups != len(names):
+                issues.append(
+                    _issue(
+                        path + ["names"],
+                        t(
+                            f"正規表示式有 {scan.groups} 個群組，但列了 {len(names)} 個新欄名",
+                            f"The regular expression has {_plural(scan.groups, 'group', 'groups')}, "
+                            f"but {_plural(len(names), 'new column name is', 'new column names are')} "
+                            "given",
+                        ),
+                    )
+                )
+    elif kind == "split_fixed_width":
+        starts = step.get("starts")
+        if isinstance(starts, list) and all(_is_type(p, "integer") for p in starts):
+            if any(p < 1 for p in starts):
+                issues.append(
+                    _issue(path + ["starts"], t("開始位置從 1 起算", "Start positions begin at 1"))
+                )
+            elif any(starts[k] <= starts[k - 1] for k in range(1, len(starts))):
+                issues.append(
+                    _issue(
+                        path + ["starts"],
+                        t("開始位置要由小到大", "Start positions must be in increasing order"),
+                    )
+                )
+            names = step.get("names")
+            if isinstance(names, list) and len(names) != len(starts):
+                issues.append(
+                    _issue(
+                        path + ["names"],
+                        t(
+                            f"有 {len(starts)} 個開始位置，但列了 {len(names)} 個欄名",
+                            f"{_plural(len(starts), 'start position', 'start positions')}, "
+                            f"but {_plural(len(names), 'column name', 'column names')} given",
+                        ),
+                    )
+                )
+    elif kind == "parse_date" and step.get("pattern") == "custom":
+        regex = step.get("regex", "")
+        scan = scans.get(_fmt(path + ["regex"]))
+        if isinstance(regex, str) and not regex.strip():
+            issues.append(
+                _issue(
+                    path + ["regex"],
+                    t(
+                        "選「自訂正規表示式」時要輸入正規表示式",
+                        'Enter a regular expression when "Custom regular expression" is selected',
+                    ),
+                )
+            )
+        elif scan and not scan.error and scan.groups != 3:
+            issues.append(
+                _issue(
+                    path + ["regex"],
+                    t(
+                        f"要剛好三個群組（年、月、日），這個正規表示式有 {scan.groups} 個",
+                        "Needs exactly three groups (year, month, day); this regular expression "
+                        f"has {scan.groups}",
+                    ),
+                )
+            )
+    return issues
 
 
 # ── 驗證 ─────────────────────────────────────────────────────────
@@ -681,7 +944,7 @@ class _Schema:
 
 def check_version(value: Any, current: str) -> Issue | None:
     path = ["tablade_recipe"]
-    if not isinstance(value, str) or not VERSION_RE.match(value):
+    if not isinstance(value, str) or not VERSION_RE.fullmatch(value):
         return _issue(
             path,
             t(
@@ -690,8 +953,8 @@ def check_version(value: Any, current: str) -> Issue | None:
             ),
             t(f'目前的版本是 "{current}"', f'The current version is "{current}"'),
         )
-    major, minor = (int(x) for x in VERSION_RE.match(value).groups())
-    cur_major, cur_minor = (int(x) for x in VERSION_RE.match(current).groups())
+    major, minor = (int(x) for x in VERSION_RE.fullmatch(value).groups())
+    cur_major, cur_minor = (int(x) for x in VERSION_RE.fullmatch(current).groups())
     if major != cur_major:
         return _issue(
             path,
@@ -724,7 +987,32 @@ def validate(
     """驗證 recipe，回傳問題清單（空清單代表通過）。
 
     ``input_columns`` 可提供各 input 的欄位（例如從 CSV 標題列讀到的），用來檢查欄位引用。
+    沒預期到的寫法讓檢查本身出錯時，也回報成一個問題（AI 一定拿得到 ``path`` 與 ``error``）。
     """
+    try:
+        return _validate(recipe, spec, input_columns)
+    except Exception as err:  # 驗證器不能自己當掉，要回報成問題
+        return [
+            _issue(
+                [],
+                t(
+                    f"驗證器無法檢查這份 Recipe（{type(err).__name__}: {err}）",
+                    f"The validator could not check this Recipe ({type(err).__name__}: {err})",
+                ),
+                t(
+                    "請確認每個欄位的型別（文字、數字、清單、物件）和步驟目錄寫的一樣",
+                    "Check that every field has the type the step catalog lists "
+                    "(text, number, list, object)",
+                ),
+            )
+        ]
+
+
+def _validate(
+    recipe: Any,
+    spec: dict[str, Any],
+    input_columns: dict[str, list[str]] | None = None,
+) -> list[Issue]:
     if not isinstance(recipe, dict):
         return [_issue([], t("Recipe 必須是 JSON 物件", "The Recipe must be a JSON object"))]
     issues: list[Issue] = []
@@ -742,15 +1030,17 @@ def validate(
                 ),
                 t(
                     'stages 的每一項是一個階段：{"name": "預設階段", "input": {原本 inputs[0]，去掉 id}, '
-                    '"steps": [原本的 steps]}；output 留在最外層',
+                    '"steps": [原本的 steps], "output_format": "parquet"}（output_format 必填，'
+                    '也可以是 "csv"）；output 留在最外層',
                     'Each item in stages is a stage: {"name": "Stage 1", '
-                    '"input": {the old inputs[0] without id}, "steps": [the old steps]}; '
-                    "output stays at the top level",
+                    '"input": {the old inputs[0] without id}, "steps": [the old steps], '
+                    '"output_format": "parquet"} (output_format is required; it can also be '
+                    '"csv"); output stays at the top level',
                 ),
             )
         )
         return issues
-    schema = _Schema(spec["schema"])
+    schema = _Schema(spec["schema"], spec.get("system_column_defs"))
     structural = [
         i for i in schema.check(recipe, spec["schema"], []) if i["path"] != "tablade_recipe"
     ]
@@ -788,7 +1078,19 @@ def _stage_hint(ref: str, earlier: list[str], later: list[str]) -> str | None:
 
 
 BAD_FILENAME_CHARS = '/\\:*?"<>|'
-"""輸出檔名不能有的字元（Windows 不允許，也不能指到別的資料夾）。"""
+"""輸出檔名不能有的字元（Windows 不允許，也不能指到別的資料夾）；控制字元（含 \\x7f）也不行。"""
+RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+"""Windows 的保留名稱（不分大小寫；CON.parquet 也算：看第一個「.」之前、去掉結尾空白）。"""
+MAX_STEM_BYTES = 200
+"""主檔名最多幾個位元組（UTF-8）。檔名上限一般是 255 個位元組，處理紀錄的暫存檔
+（.主檔名.manifest.json.xxxxxxxx.tmp）會多 28 個，再留一點餘裕。"""
 
 
 OUTPUT_EXTENSIONS = {"parquet": ".parquet", "csv": ".csv"}
@@ -832,7 +1134,8 @@ def output_issues(recipe: dict[str, Any], default: str | None = None) -> list[Is
                 continue
             raw = default
         fmt = stage.get("output_format")
-        fmt = fmt if fmt in OUTPUT_EXTENSIONS else "parquet"  # 沒填或填錯由 schema 報
+        # 沒填或填錯（也可能是清單）由 schema 報
+        fmt = fmt if isinstance(fmt, str) and fmt in OUTPUT_EXTENSIONS else "parquet"
         path = ["stages", si, "output_file"]
         other_ext = [
             e for f, e in OUTPUT_EXTENSIONS.items() if f != fmt and raw.strip().lower().endswith(e)
@@ -854,7 +1157,7 @@ def output_issues(recipe: dict[str, Any], default: str | None = None) -> list[Is
             continue
         name = output_name(raw, fmt)
         if (
-            any(c in BAD_FILENAME_CHARS or ord(c) < 32 for c in name)
+            any(c in BAD_FILENAME_CHARS or ord(c) < 32 or ord(c) == 127 for c in name)
             or name.startswith(".")
             or not output_stem(name).strip()
         ):
@@ -866,10 +1169,50 @@ def output_issues(recipe: dict[str, Any], default: str | None = None) -> list[Is
                         f'Output file name "{raw.strip()}" cannot contain / \\ : * ? " < > | '
                         'or start with "."',
                     ),
+                    t(
+                        "控制字元（例如換行、\\x7f）也不行",
+                        "Control characters (such as line breaks or \\x7f) are not allowed either",
+                    )
+                    if any(ord(c) < 32 or ord(c) == 127 for c in name)
+                    else None,
                 )
             )
             continue
-        key = output_stem(name).casefold()  # 主檔名不能重複：處理紀錄是 log/主檔名.manifest.json
+        if name.split(".")[0].rstrip(" ").upper() in RESERVED_NAMES:
+            issues.append(
+                _issue(
+                    path,
+                    t(
+                        f"輸出檔名「{raw.strip()}」是 Windows 的保留名稱，不能當檔名",
+                        f'Output file name "{raw.strip()}" is a reserved name on Windows',
+                    ),
+                    t(
+                        "CON、PRN、AUX、NUL、COM1～COM9、LPT1～LPT9（不分大小寫）都不行",
+                        "CON, PRN, AUX, NUL, COM1–COM9 and LPT1–LPT9 (any case) are not allowed",
+                    ),
+                )
+            )
+            continue
+        size = len(output_stem(name).encode("utf-8"))
+        if size > MAX_STEM_BYTES:
+            issues.append(
+                _issue(
+                    path,
+                    t(
+                        f"輸出檔名「{raw.strip()[:20]}…」太長（{size} 個位元組）",
+                        f'Output file name "{raw.strip()[:20]}…" is too long ({size} bytes)',
+                    ),
+                    t(
+                        f"主檔名最多 {MAX_STEM_BYTES} 個位元組（UTF-8：中文字一個字 3 個位元組，"
+                        f"大約 {MAX_STEM_BYTES // 3} 個字）",
+                        f"The name can have at most {MAX_STEM_BYTES} bytes (UTF-8: a Chinese "
+                        f"character takes 3 bytes, so about {MAX_STEM_BYTES // 3} characters)",
+                    ),
+                )
+            )
+            continue
+        # 主檔名不能重複（處理紀錄是 log/主檔名.manifest.json）：不分大小寫，NFC／NFD 寫法不同的同一個字也算重複
+        key = unicodedata.normalize("NFC", output_stem(name)).casefold()
         if key in seen:
             other = stages[seen[key]].get("name") if isinstance(stages[seen[key]], dict) else None
             where = (
@@ -997,7 +1340,8 @@ def link_issues(recipe: dict[str, Any], ref_fields: dict[str, list[str]]) -> lis
                         )
                     )
                 step_ids.setdefault(sid, _fmt(path))
-            for field in ref_fields.get(step.get("type"), []):
+            kind = step.get("type")
+            for field in ref_fields.get(kind, []) if isinstance(kind, str) else []:
                 ref = step.get(field)
                 if not isinstance(ref, str):
                     continue
@@ -1054,70 +1398,140 @@ def _semantic(
             broken.add((int(match[1]), int(match[2])))
     step_schema = schema.root["$defs"]
     outputs: dict[str, list[str] | None] = {}
+    systems: dict[str, list[str] | None] = {}
     for si, stage in enumerate(stages):
         if not isinstance(stage, dict):
             continue
         name = stage.get("name")
         source = stage.get("input") if isinstance(stage.get("input"), dict) else {}
         reader = source.get("reader", "text_lines")
+        reader = reader if isinstance(reader, str) else None  # 型別錯誤由 schema 報
         if reader == "stages":
             listed = source.get("stages") if isinstance(source.get("stages"), list) else []
             columns = _union([outputs.get(n) if isinstance(n, str) else None for n in listed])
+            # 前面階段的系統欄位都帶過來，再加上 __stage
+            from_stages = [systems.get(n, list(BASE_SYSTEM)) for n in listed if isinstance(n, str)]
+            system = _union([*from_stages, ["__stage"]])
         else:
             known = input_columns.get(name) if isinstance(name, str) else None
             columns = known or spec.get("readers", {}).get(reader, {}).get("columns")
+            all_sheets = reader == "excel" and source.get("sheet") == "*"
+            system = list(BASE_SYSTEM) + (["__sheet"] if all_sheets else [])
         columns = list(columns) if columns is not None else None
         steps = stage.get("steps") if isinstance(stage.get("steps"), list) else []
         for i, raw_step in enumerate(steps):
             if not isinstance(raw_step, dict) or raw_step.get("enabled", True) is False:
                 continue
-            if (si, i) in broken or raw_step.get("type") not in spec["steps"]:
-                columns = None  # 這一步有結構問題，之後的欄位無法推算
+            kind = raw_step.get("type")
+            if (si, i) in broken or not isinstance(kind, str) or kind not in spec["steps"]:
+                columns = system = None  # 這一步有結構問題，之後的欄位無法推算
                 continue
-            info = spec["steps"][raw_step["type"]]
+            info = spec["steps"][kind]
             ref_schema = step_schema[info["schema_ref"]]
             step = _with_defaults(raw_step, ref_schema)
             path: list[str | int] = ["stages", si, "steps", i]
             before = len(issues)
-            if columns is not None:
-                for ref_path, ref in schema.column_refs(step, ref_schema, path):
-                    if ref.startswith("__"):
-                        if ref not in SYSTEM_COLUMNS:
-                            issues.append(
-                                _issue(
-                                    ref_path,
-                                    t(f"沒有系統欄位「{ref}」", f'No system column "{ref}"'),
-                                    t(
-                                        f"系統欄位有：{'、'.join(SYSTEM_COLUMNS)}",
-                                        f"System columns: {', '.join(SYSTEM_COLUMNS)}",
-                                    ),
-                                )
-                            )
-                    elif ref not in columns:
-                        hint = _close(ref, columns) or ""
-                        issues.append(
-                            _issue(
-                                ref_path,
-                                t(
-                                    f"欄位「{ref}」在這一步之前不存在",
-                                    f'Column "{ref}" does not exist before this step',
-                                ),
-                                t(
-                                    f"目前的欄位：{'、'.join(columns)}。{hint}".rstrip("。"),
-                                    f"Current columns: {', '.join(columns)}"
-                                    + (f". {hint}" if hint else ""),
-                                ),
-                            )
+            issues += step_rules(step, ref_schema, schema, path)
+            for ref_path, ref, in_condition in schema.column_refs(step, ref_schema, path):
+                if ref.startswith("__"):
+                    issues += _system_ref_issues(ref_path, ref, in_condition, system)
+                elif columns is not None and ref not in columns:
+                    hint = _close(ref, columns) or ""
+                    issues.append(
+                        _issue(
+                            ref_path,
+                            t(
+                                f"欄位「{ref}」在這一步之前不存在",
+                                f'Column "{ref}" does not exist before this step',
+                            ),
+                            t(
+                                f"目前的欄位：{'、'.join(columns)}。{hint}".rstrip("。"),
+                                f"Current columns: {', '.join(columns)}"
+                                + (f". {hint}" if hint else ""),
+                            ),
                         )
+                    )
             try:
                 columns = apply_effect(columns, resolve_effect(info["effect"], step), outputs)
             except EffectError as err:
                 if len(issues) == before:  # 欄位引用已經報過錯時，不要再報一次同樣的問題
                     issues.append(_issue(path, str(err)))
                 columns = None
+            if info.get("combines") and system is not None:  # 合併來源檔：原本的位置留在 __orig_*
+                system = system + [
+                    orig
+                    for col, orig in ORIGINAL_COLUMNS.items()
+                    if col in system and orig not in system
+                ]
         if isinstance(name, str):
             outputs.setdefault(name, columns)
+            systems.setdefault(name, system)
     return issues
+
+
+def _system_ref_issues(
+    path: list[str | int], ref: str, in_condition: bool, system: list[str] | None
+) -> list[Issue]:
+    """引用系統欄位的檢查：有沒有這個系統欄位、能不能用在這個參數、這一步之前有沒有。
+
+    ``system`` 是這一步之前有的系統欄位（``None``：前面有結構問題，不知道）。
+    """
+    if ref not in SYSTEM_COLUMNS:
+        return [
+            _issue(
+                path,
+                t(f"沒有系統欄位「{ref}」", f'No system column "{ref}"'),
+                t(
+                    f"系統欄位有：{'、'.join(SYSTEM_COLUMNS)}",
+                    f"System columns: {', '.join(SYSTEM_COLUMNS)}",
+                ),
+            )
+        ]
+    if not in_condition:
+        return [
+            _issue(
+                path,
+                t(
+                    f"系統欄位「{ref}」只能用在條件裡（例如篩選的 conditions）",
+                    f'System column "{ref}" can only be used in conditions '
+                    "(for example the conditions of a filter)",
+                ),
+                t("其他參數只能引用資料欄位", "Other parameters can only refer to data columns"),
+            )
+        ]
+    if system is None or ref in system:
+        return []
+    if ref == "__sheet":
+        why = t(
+            '只有讀 Excel 全部工作表（"sheet": "*"）的階段才有',
+            'Only stages that read every Excel worksheet ("sheet": "*") have it',
+        )
+    elif ref == "__stage":
+        why = t(
+            '只有讀前面階段的輸出（"reader": "stages"）的階段才有',
+            'Only stages that read the output of earlier stages ("reader": "stages") have it',
+        )
+    else:
+        base = next(col for col, orig in ORIGINAL_COLUMNS.items() if orig == ref)
+        why = t(
+            f"合併來源檔（merge_files）之後才有，而且合併前要有 {base}",
+            f"It exists only after combining source files (merge_files), and only if {base} "
+            "existed before",
+        )
+    return [
+        _issue(
+            path,
+            t(
+                f"這一步之前沒有系統欄位「{ref}」",
+                f'System column "{ref}" does not exist before this step',
+            ),
+            why
+            + t(
+                f"。目前的系統欄位：{'、'.join(system)}",
+                f". Current system columns: {', '.join(system)}",
+            ),
+        )
+    ]
 
 
 def _union(lists: list[list[str] | None]) -> list[str] | None:

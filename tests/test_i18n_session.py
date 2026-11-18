@@ -116,7 +116,7 @@ def test_stage_errors(data):
         s.select_stage(8)
     with pytest.raises(
         SessionError,
-        match=r'^Cannot delete "品項對照": it is used by step j1 \(.+\) in "預設階段"\. Remove',
+        match=r'^Cannot delete "品項對照": it is used by step 2 "Join" in "預設階段"\. Remove',
     ):
         s.delete_stage(0)
     with pytest.raises(SessionError) as err:

@@ -1,7 +1,8 @@
 """畫面的語言：Python 產生、畫面上看得到的文字寫成 ``t("中文", "English")``（docs/i18n-plan.md）。
 
 - 語言是模組層級的設定（桌面 App 只有一個使用者），由 ``Session.set_language`` 切換。
-- 預設中文：CLI、AI skill、處理紀錄（manifest）不切換，維持中文。
+- 預設中文：CLI、AI skill 不切換，維持中文。處理紀錄（manifest）的欄位名稱固定是英文，
+  步驟說明與警告是匯出當時畫面的語言（DESIGN.md §9）。
 - 兩種語言放在一起，好對照也不會漏翻；``tests/test_i18n.py``（``scripts/check_i18n.py``）檢查
   列在 ``PY_MODULES`` 的檔案裡，中文只出現在 ``t()`` 的第一個參數（docstring 與註解不算）。
 - 不能在模組最上層用 ``t()`` 算好常數（會停在載入時的語言），要寫成函式或在用到時才算。

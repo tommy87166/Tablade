@@ -9,6 +9,12 @@ import pytest
 from tablade import __version__, update
 
 
+@pytest.fixture(autouse=True)
+def update_check_on(monkeypatch):
+    """F-076：開發用的電腦可能在系統裡設了 TABLADE_NO_UPDATE_CHECK；測試一律從「有檢查」開始。"""
+    monkeypatch.delenv("TABLADE_NO_UPDATE_CHECK", raising=False)
+
+
 class FakeResponse(io.BytesIO):
     def __enter__(self):
         return self
@@ -44,6 +50,8 @@ def test_newer_release(monkeypatch):
         "newer": True,
         "url": url,
         "error": None,
+        "error_code": None,
+        "http_status": None,
     }
 
 

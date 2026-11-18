@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Annotated, Any, Literal, Union
 
@@ -80,7 +81,8 @@ class Input(_Model):
         title="要讀的階段",
         description=(
             "讀取方式是「前面階段的輸出」時用：依序讀這些階段的結果，每個來源檔各自是一個來源"
-            "（名稱是「@階段／檔名」，系統欄位 __stage 記階段名稱）"
+            "（名稱是「@階段／檔名」，系統欄位 __stage 記階段名稱；名稱一樣的算同一個來源，"
+            "依第一次出現的位置接起來）"
         ),
         json_schema_extra={"ui": "stages"},
     )
@@ -127,7 +129,7 @@ class Output(_Model):
 
 
 class Recipe(_Model):
-    tablade_recipe: str = Field(title="Recipe 版本", pattern=r"^\d+\.\d+$")
+    tablade_recipe: str = Field(title="Recipe 版本", pattern=r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
     name: str = Field(default="", title="名稱")
     description: str = Field(default="", title="說明")
     stages: list[Stage] = Field(
@@ -182,6 +184,9 @@ _MESSAGES = {
     "bool_type": "應該是 true / false",
     "list_type": "應該是清單",
     "dict_type": "應該是物件",
+    "model_type": "應該是物件",
+    "model_attributes_type": "應該是物件",
+    "float_type": "應該是數字",
     "string_pattern_mismatch": "格式不符",
 }
 _MESSAGES_EN = {
@@ -192,6 +197,9 @@ _MESSAGES_EN = {
     "bool_type": "Should be true / false",
     "list_type": "Should be a list",
     "dict_type": "Should be an object",
+    "model_type": "Should be an object",
+    "model_attributes_type": "Should be an object",
+    "float_type": "Should be a number",
     "string_pattern_mismatch": "Invalid format",
 }
 """``_MESSAGES`` 的英文（模組最上層不能用 t() 算好，用到時才依語言選）。"""
@@ -227,13 +235,42 @@ def _message(error: Any) -> str:
             f"At most {plural(ctx.get('max_length'), 'item', 'items')}",
         )
     if kind == "literal_error":
+        allowed = _choices(str(ctx.get("expected", "")))
         return t(
-            f"不支援的值（可用：{ctx.get('expected')}）",
-            f"Unsupported value (allowed: {ctx.get('expected')})",
+            f"不支援的值（可用：{'、'.join(allowed)}）",
+            f"Unsupported value (allowed: {', '.join(allowed)})",
+        )
+    if kind == "union_tag_not_found":  # 例如條件沒有 op、步驟沒有 type
+        name = _choices(str(ctx.get("discriminator", "")))[0]
+        return t(f"缺少 {name}", f"Missing {name}")
+    if kind == "union_tag_invalid":
+        name = _choices(str(ctx.get("discriminator", "")))[0]
+        allowed = _choices(str(ctx.get("expected_tags", "")))
+        tag = ctx.get("tag")
+        return t(
+            f"不支援的 {name}：{tag}（可用：{'、'.join(allowed)}）",
+            f"Unsupported {name}: {tag} (allowed: {', '.join(allowed)})",
         )
     if kind == "greater_than_equal":
         return t(f"不能小於 {ctx.get('ge')}", f"Cannot be less than {ctx.get('ge')}")
+    if kind == "greater_than":
+        return t(f"必須大於 {ctx.get('gt')}", f"Must be greater than {ctx.get('gt')}")
+    if kind == "less_than_equal":
+        return t(f"不能大於 {ctx.get('le')}", f"Cannot be greater than {ctx.get('le')}")
+    if kind == "less_than":
+        return t(f"必須小於 {ctx.get('lt')}", f"Must be less than {ctx.get('lt')}")
     return str(error["msg"]).removeprefix("Value error, ")
+
+
+_QUOTED = re.compile(r"'((?:[^'\\]|\\.)*)'")
+
+
+def _choices(text: str) -> list[str]:
+    """pydantic 列選項的文字（``'a', 'b' or 'c'``）→ ``["a", "b", "c"]``；中文用「、」重新接起來。"""
+    quoted = _QUOTED.findall(text)
+    if quoted:
+        return quoted
+    return [part.strip() for part in re.split(r",| or ", text) if part.strip()] or [text]
 
 
 def _union_tags() -> set[str]:

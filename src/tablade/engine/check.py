@@ -9,9 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from tablade.export.outputs import default_output_name, plan_outputs
 from tablade.i18n import plural, t
-from tablade.ingest.encoding import DecodeError
-from tablade.ingest.sources import InputError, peek_columns
+from tablade.ingest.encoding import SUPPORTED, DecodeError
+from tablade.ingest.sources import InputError, peek_columns, release_workers
 from tablade.recipe.schema import Recipe, RecipeError, load_json, parse_recipe
 from tablade.recipe.spec import build_spec
 from tablade.recipe.validator import validate
@@ -37,7 +38,7 @@ def _issue(path: str, error: str, severity: str = "error") -> dict[str, Any]:
 def _peek_stages(
     data: dict[str, Any], base_dir: Path, dry_run: bool
 ) -> tuple[dict[str, list[str]], list[dict[str, Any]]]:
-    """每個讀實際檔的階段，先看第一個檔有哪些欄位（不讀整個檔，給驗證器檢查欄位引用）。"""
+    """每個讀實際檔的階段有哪些欄位（每個檔只讀標題列、取聯集，給驗證器檢查欄位引用）。"""
     columns: dict[str, list[str]] = {}
     extra: list[dict[str, Any]] = []
     stages = data.get("stages")
@@ -48,11 +49,14 @@ def _peek_stages(
         files = source.get("files")
         if not (isinstance(files, list) and files and all(isinstance(f, str) and f for f in files)):
             continue
+        encoding = source.get("encoding", "auto")
+        if encoding not in SUPPORTED:
+            continue  # 編碼寫錯由驗證器報（不要再多一則 Python 的 LookupError 原文）
         try:
             found = peek_columns(
                 files,
                 source.get("reader", "text_lines"),
-                source.get("encoding", "auto"),
+                encoding,
                 base_dir,
                 source.get("sheet", "") if isinstance(source.get("sheet"), str) else "",
             )
@@ -91,15 +95,59 @@ def check_recipe(data: dict[str, Any], base_dir: Path, *, dry_run: bool = False)
             result.issues.append(_issue(_step_path(result.recipe, err.step_id), str(err)))
         except (InputError, DecodeError) as err:
             result.issues.append(_issue("stages", str(err)))
+        finally:
+            release_workers()  # 試跑用到的平行轉碼工作程序：跑完就關掉，不用時不佔記憶體
     return result
 
 
-def check_recipe_file(path: Path, *, dry_run: bool = False) -> CheckResult:
+def output_plan_issues(
+    data: dict[str, Any], base_dir: Path, default: str, out_dir: Path | None = None
+) -> list[dict[str, Any]]:
+    """輸出檔的規劃（``plan_outputs``）有問題的階段：檔名重複（含最後一個階段沒填、用 Recipe 名稱時）、
+    寫出的位置是輸入檔。"""
+    issues = []
+    for k, planned in enumerate(plan_outputs(data, base_dir, default, out_dir)):
+        if planned is not None and planned.error:
+            issues.append(_issue(f"stages[{k}].output_file", planned.error))
+    return issues
+
+
+def check_recipe_file(
+    path: Path, *, dry_run: bool = False, out_dir: Path | None = None
+) -> CheckResult:
+    """檢查 Recipe 檔。知道 Recipe 的位置，所以也檢查輸出檔的規劃（``tablade run`` 會寫到哪裡）；
+    ``out_dir`` 是 ``tablade run --out-dir``（預設是 Recipe 所在的資料夾）。"""
     try:
         data = load_json(path)
     except RecipeError as err:
         return CheckResult(err.issues)
-    return check_recipe(data, path.parent, dry_run=dry_run)
+    except OSError as err:  # 找不到、是資料夾、沒有權限
+        if isinstance(err, FileNotFoundError):
+            reason = t("找不到這個檔", "file not found")
+        elif isinstance(err, IsADirectoryError):
+            reason = t("這是資料夾，不是檔案", "this is a folder, not a file")
+        else:
+            reason = err.strerror or str(err)
+        return CheckResult(
+            [
+                _issue(
+                    "(Recipe)",
+                    t(
+                        f"讀不到 Recipe「{path}」：{reason}",
+                        f'Can\'t read Recipe "{path}": {reason}',
+                    ),
+                )
+            ]
+        )
+    result = check_recipe(data, path.parent, dry_run=dry_run)
+    seen = {(i["path"], i["error"]) for i in result.issues}
+    extra = [
+        i
+        for i in output_plan_issues(data, path.parent, default_output_name(path), out_dir)
+        if (i["path"], i["error"]) not in seen
+    ]
+    result.issues += extra
+    return result
 
 
 def format_issues(issues: list[dict[str, Any]]) -> str:

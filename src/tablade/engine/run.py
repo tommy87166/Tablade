@@ -19,6 +19,7 @@ Recipe 由好幾個階段組成，依序執行：每個階段讀實際檔或前�
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import uuid
@@ -29,7 +30,8 @@ from typing import Any, Literal
 import polars as pl
 
 from tablade.engine.progress import Watcher, rows_per_file, with_positions, with_row_positions
-from tablade.export.manifest import write_manifest
+from tablade.export.manifest import manifest_path, manifest_text
+from tablade.export.outputs import OutputError, input_files, overwrites_input
 from tablade.i18n import plural, t
 from tablade.ingest.sources import (
     Part,
@@ -67,11 +69,11 @@ SAMPLE_THRESHOLD = 200_000
 SAMPLE_HEAD = 100_000
 SAMPLE_TAIL = 1_000
 PART = f"{TEMP_PREFIX}part"
+"""串流執行時，中間階段的暫存結果裡每一列屬於第幾個 part（下一個階段讀回來時依它分開）。"""
 STAGED_ROW_GROUP = 8_192
 """暫存 Parquet 每個 row group 最多幾列。串流讀回來時每條執行緒一次解開一個 row group：
-預設的 row group 很大（一個檔一個），範例資料 530 萬列讀回來接成一份要 3.2 GB；
-改成 8,192 列約 0.8 GB，速度差不多（實測記錄在 improve.md 第 1 項）。"""
-"""串流執行時，中間階段的暫存結果裡每一列屬於第幾個 part（下一個階段讀回來時依它分開）。"""
+預設的 row group 很大（一個檔一個），2 × 1 GB 的範例資料峰值 3.2 GB；
+改成 8,192 列後 1.4 GB（2 × 150 MB 時 0.8 GB），速度差不多（實測記錄在 improve.md 第 1 項）。"""
 
 Mode = Literal["auto", "eager", "sample", "stream"]
 
@@ -363,6 +365,18 @@ def concat_parts(parts: list[Part], step: Step | None = None) -> pl.LazyFrame:
         raise RunError(step, str(err)) from None
 
 
+def _unique_names(step: Step, parts: list[Part]) -> None:
+    """part 的名稱要不重複（合併型步驟依名稱排順序）：重複時報錯，不要默默算錯。"""
+    names = [name for name, _ in parts]
+    repeated = sorted({n for n in names if names.count(n) > 1})
+    if repeated:
+        shown = t("、", ", ").join(repeated)
+        raise RunError(
+            step,
+            t(f"來源的名稱重複：{shown}", f"Duplicate source names: {shown}"),
+        )
+
+
 def apply_parts(step: Step, parts: list[Part]) -> list[Part]:
     """套用一個步驟：合併型步驟接起所有 part，其他步驟每個 part 各自套用。
 
@@ -370,6 +384,7 @@ def apply_parts(step: Step, parts: list[Part]) -> list[Part]:
     真正花時間的是後面「執行（串流）」那一段。
     """
     if step.combines:
+        _unique_names(step, parts)
         try:
             return step.combine(parts)
         except (StepError, EffectError, PartsMismatch) as err:
@@ -393,6 +408,22 @@ def _checks(step: Step, on_input: bool = False) -> list[Any]:
 
 Found = dict[str, tuple[int, list[RowWarning]]]
 """每一步的（警告總數、前幾則警告）；對輸入檢查的鍵是「步驟 id:input」。"""
+
+PLACEHOLDER = "{}"
+"""警告訊息裡要換成那一列的值的位置（``WarningCheck.message``）。"""
+
+
+def fill_message(message: str, value: Any) -> str:
+    """把警告訊息的 ``{}`` 換成那一列的值。
+
+    不用 ``str.format()``：訊息裡有欄名、階段名稱（使用者的資料），欄名有 ``{``、``}`` 時
+    ``format()`` 會丟出例外。只有一個 ``{}`` 時就是它；欄名本身也有 ``{}`` 時分不出哪個是位置，
+    換最後一個（中文訊息多半是「「欄名」…{}」）。
+    """
+    if PLACEHOLDER not in message:
+        return message
+    before, _, after = message.rpartition(PLACEHOLDER)
+    return f"{before}{value}{after}"
 
 
 def collect_warnings(
@@ -428,23 +459,26 @@ def collect_warnings(
         report(i)
         detail = check.detail if check.detail is not None else pl.lit(None)
         hits = lazy.filter(check.condition.fill_null(False))
-        count, rows = pl.collect_all(
-            [
-                hits.select(pl.len()),
-                hits.select(
-                    pl.col(SOURCE_FILE)
-                    if SOURCE_FILE in names
-                    else pl.lit(None).alias(SOURCE_FILE),
-                    pl.col(LINE_NO) if LINE_NO in names else pl.lit(None).alias(LINE_NO),
-                    detail.alias("__detail"),
-                    *[pl.col(c) if c in names else pl.lit(None).alias(c) for c in _WHERE],
-                ).head(limit),
-            ],
-            engine="streaming",
-        )
+        try:
+            count, rows = pl.collect_all(
+                [
+                    hits.select(pl.len()),
+                    hits.select(
+                        pl.col(SOURCE_FILE)
+                        if SOURCE_FILE in names
+                        else pl.lit(None).alias(SOURCE_FILE),
+                        pl.col(LINE_NO) if LINE_NO in names else pl.lit(None).alias(LINE_NO),
+                        detail.alias("__detail"),
+                        *[pl.col(c) if c in names else pl.lit(None).alias(c) for c in _WHERE],
+                    ).head(limit),
+                ],
+                engine="streaming",
+            )
+        except pl.exceptions.PolarsError as err:
+            raise RunError(step, f"{type(err).__name__}: {err}") from None
         total, found = out[key]
         for source_file, line_no, value, *where in rows.iter_rows():
-            message = check.message.format(value) if "{}" in check.message else check.message
+            message = fill_message(check.message, value)
             found.append(RowWarning(step.id, message, source_file, line_no, *where))
         out[key] = (total + count.item(), found)
     if jobs:
@@ -474,12 +508,17 @@ def apply_step(
     ``tables`` 是前面階段的結果（結合的右表）。
     """
     step = step.bind(tables)
-    before = _warnings(step, frame, limit, on_input=True)
+    # 先排好這一步（還不處理資料）：參數對不上（例如欄位不存在）時報步驟自己的錯誤，
+    # 不會先在對輸入檢查的警告那裡出現 Polars 的原文
     try:
         if step.per_file or step.combines:
             lf = concat_parts(apply_parts(step, split_parts(frame)), step)
         else:
             lf = _apply(step, frame.lazy())
+    except pl.exceptions.PolarsError as err:
+        raise RunError(step, f"{type(err).__name__}: {err}") from None
+    before = _warnings(step, frame, limit, on_input=True)
+    try:
         out = lf.collect(engine="streaming")
     except pl.exceptions.PolarsError as err:
         raise RunError(step, f"{type(err).__name__}: {err}") from None
@@ -491,19 +530,30 @@ def apply_step(
 def stage_parts(names: list[str], results: dict[str, list[Part]]) -> list[Part]:
     """讀前面階段的結果：每個來源各自是一個 part，名稱加上「@階段／」、系統欄位 __stage 記階段。
 
+    來源是看得到的名稱（``__stage``、``__source_file``、``__sheet``）：前面的階段自己也讀了好幾個階段、
+    裡面有同名的來源檔時（例如兩個階段讀同一個檔），去掉「@階段／」後名稱一樣，在這裡算同一個來源
+    （依第一次出現的位置接起來）。資料在記憶體裡（``split_parts`` 依名稱切）或串流都是同一種切法，
+    名稱也不會重複。
+
     欄位對齊成同一組（缺的欄是空值）；同名欄的型別不一樣時丟出 ``InputError``。
     """
-    parts = []
+    groups: dict[str, list[pl.LazyFrame]] = {}
     for name in names:
         for base, lf in results[name]:
             staged = lf.with_columns(pl.lit(name, dtype=pl.String).alias(STAGE))
             source = f"@{name}／{base}"  # i18n-ignore：來源檔的名稱是資料（__source_file）
-            parts.append((source, staged))
+            groups.setdefault(source, []).append(staged)
+    # 同一個階段的 parts 欄位一定一樣（那個階段寫出前接過一次）
+    parts = [
+        (source, frames[0] if len(frames) == 1 else pl.concat(frames, how="vertical"))
+        for source, frames in groups.items()
+    ]
     return align(parts)
 
 
 def stage_frame(names: list[str], frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
-    """讀前面階段的結果（資料在記憶體裡時）。"""
+    """讀前面階段的結果（資料在記憶體裡時）。同一個來源的列排在一起（``stage_parts``），
+    之後依名稱切開（``split_parts``）就和串流的 parts 一樣。"""
     results = {n: split_parts(frames[n], with_stage=False) for n in names}
     return concat(stage_parts(names, results)).collect(engine="streaming")
 
@@ -567,35 +617,84 @@ def choose_mode(files: list[SourceFile], write_output: bool, mode: Mode) -> Mode
     return "stream" if write_output else "sample"
 
 
-class _Writes:
-    """要寫出的檔：先寫成同一個資料夾裡的暫存檔，整個執行成功才一起改名成正式的檔。
+CHECK_LOCKS = os.name == "nt"
+"""改名前先試著開啟已經存在的輸出檔：只有 Windows 會因為別的程式開著檔案而鎖住（macOS、Linux 不會，
+唯讀的檔也照樣可以用新的檔取代，不要擋下）。"""
 
-    執行到一半失敗時，之前的輸出檔維持原樣（不會有的換成新的、有的還是舊的）。
+
+def _locked(target: Path) -> RuntimeError:
+    return RuntimeError(
+        t(
+            f"「{target.name}」寫不進去：可能被別的程式開著，關掉後再試一次",
+            f'Can\'t write "{target.name}": it may be open in another program. Close it and try again',
+        )
+    )
+
+
+class _Writes:
+    """要寫出的檔（輸出檔與處理紀錄）：先寫成同一個資料夾裡的暫存檔，整個執行成功才一起改名成正式的檔。
+
+    執行到一半失敗、或改名到一半失敗（例如 Windows 上某個輸出檔還開在 Excel 裡）時，
+    之前的檔全部維持原樣：不會有的換成新的、有的還是舊的，輸出檔也不會配到別次的處理紀錄。
     """
 
     def __init__(self) -> None:
-        self.items: list[tuple[Path, Path, OutputReport]] = []
+        self.items: list[tuple[Path, Path, OutputReport | None]] = []
 
     @staticmethod
     def tmp(target: Path) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         return target.with_name(f".{target.name}.{uuid.uuid4().hex[:8]}.tmp")
 
-    def add(self, tmp: Path, target: Path, report: OutputReport) -> None:
+    def add(self, tmp: Path, target: Path, report: OutputReport | None) -> None:
+        """``report`` 是輸出檔的資訊；處理紀錄是 None。"""
         self.items.append((tmp, target, report))
 
-    def commit(self) -> list[OutputReport]:
-        for tmp, target, _ in self.items:
-            try:
+    def outputs(self) -> list[tuple[Path, OutputReport]]:
+        """要寫的輸出檔：（暫存檔、資訊）。"""
+        return [(tmp, report) for tmp, _, report in self.items if report is not None]
+
+    def commit(self) -> None:
+        """全部改名成正式的檔。已經存在的檔先改名成備份，全部成功才刪備份；中途失敗時全部還原。
+
+        Windows 上先確認每個已經存在的檔都沒有被別的程式鎖住（例如開在 Excel 裡），有一個不行就都不動。
+        """
+        for _, target, _ in self.items if CHECK_LOCKS else []:
+            if target.exists():
+                try:
+                    with target.open("r+b"):
+                        pass
+                except PermissionError:
+                    raise _locked(target) from None
+        done: list[tuple[Path, Path | None]] = []
+        current: Path | None = None
+        try:
+            for tmp, target, _ in self.items:
+                current, backup = target, None
+                if target.exists():
+                    backup = target.with_name(f".{target.name}.{uuid.uuid4().hex[:8]}.bak")
+                    os.replace(target, backup)
+                done.append((target, backup))
                 os.replace(tmp, target)
-            except PermissionError:
-                raise RuntimeError(
-                    t(
-                        f"「{target.name}」寫不進去：可能被別的程式開著，關掉後再試一次",
-                        f'Can\'t write "{target.name}": it may be open in another program. Close it and try again',
-                    )
-                ) from None
-        return [report for _, _, report in self.items]
+        except BaseException as err:
+            self._rollback(done)
+            if isinstance(err, PermissionError) and current is not None:
+                raise _locked(current) from None
+            raise
+        for _, backup in done:
+            if backup is not None:
+                with contextlib.suppress(OSError):
+                    backup.unlink()
+
+    @staticmethod
+    def _rollback(done: list[tuple[Path, Path | None]]) -> None:
+        """改名到一半失敗：已經換成新的檔改回原本的（原本沒有的刪掉）。"""
+        for target, backup in reversed(done):
+            with contextlib.suppress(OSError):
+                if backup is None:
+                    target.unlink(missing_ok=True)
+                elif backup.exists():
+                    os.replace(backup, target)
 
     def discard(self) -> None:
         for tmp, _, _ in self.items:
@@ -656,6 +755,7 @@ def execute(
     if unknown:
         names = t("、", ", ").join(sorted(unknown))
         raise ValueError(t(f"沒有這些階段：{names}", f"No such stages: {names}"))
+    _protect_inputs(recipe, base_dir, targets, log_dir)
     if tracker is None:
         tracker = StageTracker([s.name for s in recipe.stages], progress)
     writes = _Writes()
@@ -665,16 +765,37 @@ def execute(
         )
         if phase is not None:
             tracker.end(phase, t("沒有錯誤", "No errors"))
-        report.outputs = writes.commit()
+        report.outputs = [out for _, out in writes.outputs()]
+        last = recipe.stages[-1].name
+        final = next((o for o in report.outputs if o.stage == last), None)
+        report.output = final.path if final else None
+        _stage_manifests(recipe, report, log_dir, writes)
+        writes.commit()
     except BaseException:
         tracker.fail()
         raise
     finally:
         writes.discard()
-    last = recipe.stages[-1].name
-    final = next((o for o in report.outputs if o.stage == last), None)
-    report.output = final.path if final else None
-    return frame, _with_manifest(recipe, report, log_dir)
+    return frame, report
+
+
+def _protect_inputs(
+    recipe: Recipe, base_dir: Path, targets: dict[str, Path], folder: Path | None
+) -> None:
+    """寫出的位置（輸出檔、處理紀錄）不能是任何一個階段的輸入檔（``plan_outputs`` 已經檢查過；
+    這裡在動到任何檔之前再確認一次，例如命令列直接指定的位置）。"""
+    if not targets:
+        return
+    inputs = input_files(recipe.model_dump(mode="json"), base_dir)
+    for stage, target in targets.items():
+        paths = [target] + ([manifest_path(target, folder)] if recipe.output.manifest else [])
+        for path in paths:
+            owner = inputs.owner(path)
+            if owner is not None:
+                raise OutputError(
+                    t(f"階段「{stage}」：", f'Stage "{stage}": ')
+                    + overwrites_input(owner, path.name)
+                )
 
 
 def _execute(
@@ -782,14 +903,22 @@ def _execute(
     return frame, report
 
 
-def _with_manifest(recipe: Recipe, report: RunReport, folder: Path | None) -> RunReport:
-    """每個寫出的檔各寫一份處理紀錄（Recipe 的輸出設定可以關掉）。"""
+def _stage_manifests(
+    recipe: Recipe, report: RunReport, folder: Path | None, writes: _Writes
+) -> None:
+    """每個要寫的檔各寫一份處理紀錄的暫存檔（Recipe 的輸出設定可以關掉），和輸出檔一起改名。
+
+    輸出檔的大小與 SHA-256 從它的暫存檔算（內容和改名後的檔一樣）。
+    """
     if recipe.output.manifest:
-        for out in report.outputs:
-            out.manifest = write_manifest(recipe, report, out, folder).as_posix()
+        for written, out in writes.outputs():
+            target = manifest_path(Path(out.path), folder)
+            staged = writes.tmp(target)
+            staged.write_text(manifest_text(recipe, report, out, written), encoding="utf-8")
+            writes.add(staged, target, None)
+            out.manifest = target.as_posix()
     last = recipe.stages[-1].name
     report.manifest = next((o.manifest for o in report.outputs if o.stage == last), None)
-    return report
 
 
 def _strip_stage(name: str, stages: list[str]) -> str:
@@ -839,12 +968,15 @@ def _stream_steps(
     for bound, cut_here in zip(steps, _cuts(steps), strict=True):
         if cut_here:
             parts, staged = cut(parts, last)
+        # 每個檔各自一條流水線；暫存欄位（__w_）一路保留到最後，才能取出警告。
+        # 先排好這一步（還不處理資料）再算對輸入的警告：參數對不上時報步驟自己的錯誤
+        applied = apply_parts(bound, parts)
+        if cut_here:
             items = [(done.id, done, False) for done in pending]
             items.append((f"{bound.id}:input", bound, True))
             found.update(collect_warnings(items, staged, limit, progress))
             pending = []
-        # 每個檔各自一條流水線；暫存欄位（__w_）一路保留到最後，才能取出警告
-        parts = apply_parts(bound, parts)
+        parts = applied
         pending.append(bound)
         last = bound
     return parts, found, pending, last

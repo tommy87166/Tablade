@@ -1,7 +1,7 @@
-"""乾淨 CSV 的讀取（DESIGN.md §5.1 的 ``csv`` 模式）。
+"""整檔讀進記憶體的簡單 CSV 讀取：``tablade convert`` 與自我檢測用。
 
-M0 版本：轉碼後整檔交給 Polars，全部欄位保留為文字，不猜型別。
-``__source_file`` / ``__line_no`` 系統欄位在 M1 加入。
+轉碼後整檔交給 Polars，全部欄位保留為文字，不猜型別，也沒有系統欄位。
+Recipe 的 ``csv`` 讀取方式（DESIGN.md §5.1：串流、帶 ``__source_file`` / ``__line_no``）在 ``sources.py``。
 """
 
 from __future__ import annotations

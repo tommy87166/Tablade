@@ -18,10 +18,12 @@ import contextlib
 import copy
 import hashlib
 import json
+import math
 import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
+from difflib import get_close_matches
 from pathlib import Path
 from typing import Any
 
@@ -102,12 +104,16 @@ class SessionError(ValueError):
     pass
 
 
-class TrialError(SessionError):
-    """匯出前的試跑出錯：指到哪個階段的第幾步（畫面上「前往這一步」）。"""
+class StepError(SessionError):
+    """匯出時某一步出錯：指到哪個階段的第幾步（畫面上「前往這一步」）。"""
 
     def __init__(self, message: str, stage: int | None, step: int | None) -> None:
         super().__init__(message)
         self.stage, self.step = stage, step
+
+
+class TrialError(StepError):
+    """匯出前的試跑出錯（只看每個檔的前幾行）。"""
 
 
 def load_hint() -> str:
@@ -126,6 +132,8 @@ class _Computed:
     warnings: list[RowWarning] = field(default_factory=list)
     errors: list[dict[str, Any]] = field(default_factory=list)
     run_error: str | None = None
+    sampled: bool = False
+    """結果用到樣本：這個階段的輸入是樣本，或這一步（含）之前結合的另一張表是樣本。"""
 
 
 def _digest(value: Any) -> str:
@@ -164,7 +172,10 @@ def _file_count(frame: pl.DataFrame) -> int:
 
 
 def _new_stage(name: str) -> dict[str, Any]:
-    """畫面上的一個階段：名稱、讀取資料、步驟，加上選取的步驟（不寫進 Recipe）。"""
+    """畫面上的一個階段：名稱、讀取資料、步驟，加上選取的步驟與代號（這兩個不寫進 Recipe）。
+
+    代號（``uid``）不會變：載入的資料、算好的結果都用它當 key，改名、復原、重做都對得上。
+    """
     return {
         "name": name,
         "input": copy.deepcopy(DEFAULT_INPUT),
@@ -172,6 +183,7 @@ def _new_stage(name: str) -> dict[str, Any]:
         "output_file": "",
         "output_format": DEFAULT_FORMAT,
         "selected": -1,
+        "uid": uuid.uuid4().hex,
     }
 
 
@@ -192,8 +204,14 @@ def ref_fields() -> dict[str, list[str]]:
     return _REF_FIELDS
 
 
+def step_ref_fields(raw: dict[str, Any]) -> list[str]:
+    """這一步引用其他階段的參數（type 寫錯、不是文字時是空的）。"""
+    type_name = raw.get("type")
+    return ref_fields().get(type_name, []) if isinstance(type_name, str) else []
+
+
 def stage_refs(stage: dict[str, Any]) -> list[tuple[str, str]]:
-    """這個階段用到哪些其他階段：（階段名稱, 用在哪裡）。"""
+    """這個階段用到哪些其他階段：（階段名稱, 用在哪裡）；「用在哪裡」是畫面上的說法（第幾步、步驟名稱）。"""
     out = []
     source = stage["input"]
     if source.get("reader") == "stages":
@@ -202,18 +220,19 @@ def stage_refs(stage: dict[str, Any]) -> list[tuple[str, str]]:
             for n in source.get("stages") or []
             if isinstance(n, str)
         ]
-    for step in stage["steps"]:
+    for number, step in enumerate(stage["steps"], start=1):
         if step.get("enabled", True) is False:
             continue
-        for name in ref_fields().get(step.get("type"), []):
+        for name in step_ref_fields(step):
             ref = step.get(name)
             if isinstance(ref, str):
+                label = _label(step.get("type"))
                 out.append(
                     (
                         ref,
                         t(
-                            f"{step.get('id')}（{_label(step.get('type'))}）",
-                            f"step {step.get('id')} ({_label(step.get('type'))})",
+                            f"第 {number} 步「{label}」",
+                            f'step {number} "{label}"',
                         ),
                     )
                 )
@@ -222,10 +241,10 @@ def stage_refs(stage: dict[str, Any]) -> list[tuple[str, str]]:
 
 def data_value_fields(type_name: Any) -> dict[str, str]:
     """這種步驟「從資料讀出」的參數（schema 標了 ``ui: data_values``）：{參數: 從哪個參數指定的欄讀}。"""
-    try:
-        props = get(type_name).model_json_schema().get("properties", {})
-    except KeyError:
+    cls = _safe_get(type_name)
+    if cls is None:
         return {}
+    props = cls.model_json_schema().get("properties", {})
     return {
         name: prop["ui_from"]
         for name, prop in props.items()
@@ -234,15 +253,58 @@ def data_value_fields(type_name: Any) -> dict[str, str]:
 
 
 def _label(type_name: Any) -> str:
-    try:
-        return get(type_name).display_label()
-    except KeyError:
-        return str(type_name)
+    cls = _safe_get(type_name)
+    return cls.display_label() if cls else str(type_name)
+
+
+def _step_label(raw: dict[str, Any]) -> str:
+    """步驟清單上的名稱：不支援的類型直接寫 type；沒寫 type 時是「不明的步驟」。"""
+    cls = _safe_get(raw.get("type"))
+    if cls is not None:
+        return cls.display_label()
+    type_name = raw.get("type")
+    return (
+        type_name if isinstance(type_name, str) and type_name else t("不明的步驟", "Unknown step")
+    )
+
+
+def _type_issue(type_name: Any) -> dict[str, Any]:
+    """步驟類型沒寫或不支援時的錯誤；打錯字時附上最接近的類型（「是不是「filter」？」）。"""
+    if type_name is None or type_name == "":
+        error = t("沒有寫步驟類型（type）", "Step type (type) is missing")
+        return {"path": "type", "error": error, "severity": "error"}
+    text = type_name if isinstance(type_name, str) else json.dumps(type_name, ensure_ascii=False)
+    issue = {
+        "path": "type",
+        "error": t(f"不支援的步驟類型：{text}", f"Unsupported step type: {text}"),
+        "severity": "error",
+    }
+    if isinstance(type_name, str):
+        types = [cls.type_name() for cls in all_steps()]
+        match = get_close_matches(type_name, types, n=1, cutoff=0.5)
+        if match:
+            issue["hint"] = t(f"是不是「{match[0]}」？", f'Did you mean "{match[0]}"?')
+    return issue
+
+
+MAX_SAFE_INTEGER = 2**53 - 1
+"""JS 的數字能精確表示的最大整數；超過的整數送給畫面時改成文字。"""
 
 
 def _jsonable(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
+    """資料的值交給畫面（pywebview 用 JSON 送給 JS）：JSON 表示不了或 JS 會算錯的值改成文字。
+
+    - 超過 2^53 的整數（長的單號）：JS 會失去精確度，改成文字（表格照樣顯示每一位數）
+    - NaN、Infinity 不是合法的 JSON（JS 的 ``JSON.parse`` 會失敗），改成文字 ``NaN``、``inf``、``-inf``
+    """
+    if value is None or isinstance(value, (str, bool)):
         return value
+    if isinstance(value, int):
+        return value if abs(value) <= MAX_SAFE_INTEGER else str(value)
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return value
+        return "NaN" if math.isnan(value) else ("inf" if value > 0 else "-inf")
     return str(value)
 
 
@@ -304,10 +366,10 @@ class Session:
         self.current = 0
         """畫面上正在編輯的階段。"""
         self.dirty = False
-        self.issues: list[dict[str, Any]] = []
         self._undo: list[dict[str, Any]] = []
         self._redo: list[dict[str, Any]] = []
         self._sheets: dict[tuple[str, int, int], list[str]] = {}
+        # 下面這些快取都用階段的代號（uid）當 key：改名、復原、重做都對得上（``_prune`` 放掉不在的階段）
         self._sources: dict[str, tuple[str, pl.DataFrame, list[SourceFile]]] = {}
         """每個讀實際檔的階段按「載入資料及預覽」讀進來的資料（設定指紋、資料、來源檔）；不會自動讀檔。"""
         self._stale: set[str] = set()
@@ -372,6 +434,7 @@ class Session:
         del self._undo[:-MAX_UNDO]
         self._redo.clear()
         self.dirty = True
+        self._prune()
 
     def undo(self) -> None:
         with self._lock:
@@ -379,6 +442,7 @@ class Session:
                 self._redo.append(self._snapshot())
                 self._restore(self._undo.pop())
                 self.dirty = True
+                self._prune()
 
     def redo(self) -> None:
         with self._lock:
@@ -386,6 +450,20 @@ class Session:
                 self._undo.append(self._snapshot())
                 self._restore(self._redo.pop())
                 self.dirty = True
+                self._prune()
+
+    def _prune(self) -> None:
+        """放掉已經不在的階段（刪除的、復原掉的新增）的資料與算好的結果。
+
+        上一個快照、下一個快照裡還有的階段先留著：刪除後馬上復原不用重新載入；再做別的修改就放掉。
+        """
+        keep = {st["uid"] for st in self.stages}
+        for snap in self._undo[-1:] + self._redo[-1:]:
+            keep |= {st["uid"] for st in snap["stages"]}
+        for cache in (self._sources, self._computed, self._inputs, self._full, self._exports):
+            for uid in [uid for uid in cache if uid not in keep]:
+                del cache[uid]  # type: ignore[attr-defined]
+        self._stale &= keep
 
     # ── recipe 的組成與載入 ────────────────────────────────────
 
@@ -502,7 +580,7 @@ class Session:
                 **DEFAULT_OUTPUT,
                 **(data.get("output") if isinstance(data.get("output"), dict) else {}),
             }
-            self.issues = result.issues
+            # 開啟當下的問題只回傳一次（畫面開對話框）；之後的問題由 report() 當場重算
             return result.issues
 
     def save_recipe(self, path: Path | None = None) -> Path:
@@ -577,15 +655,10 @@ class Session:
                 source = stage["input"]
                 source["stages"] = [new if n == old else n for n in source.get("stages") or []]
                 for step in stage["steps"]:
-                    for field_name in ref_fields().get(step.get("type"), []):
+                    for field_name in step_ref_fields(step):
                         if step.get(field_name) == old:
                             step[field_name] = new
-            for cache in (self._sources, self._computed, self._inputs, self._full):
-                if old in cache:
-                    cache[new] = cache.pop(old)  # type: ignore[attr-defined]
-            if old in self._stale:
-                self._stale.discard(old)
-                self._stale.add(new)
+            # 快取用階段的代號當 key：名稱改了不用搬（復原、重做也對得上）
 
     def _order_problems(self, stages: list[dict[str, Any]]) -> list[str]:
         """每個階段只能引用前面的階段：回傳違反的地方。"""
@@ -646,6 +719,7 @@ class Session:
             del self.stages[index]
             if self.current > index or self.current >= len(self.stages):
                 self.current = max(0, self.current - 1)
+            self._prune()
 
     def select_stage(self, index: int) -> None:
         with self._lock:
@@ -805,8 +879,14 @@ class Session:
             return position
 
     def update_step(self, index: int, values: dict[str, Any]) -> None:
+        """改第 index 步的參數。
+
+        ``values`` 帶著 ``id`` 時（前端的表單一直帶著）要和第 index 步現在的 id 一樣：表單的修改會延後送出，
+        這段時間裡步驟可能被刪除、移動或換了階段，對不上就拒絕，不會把修改寫到別的步驟。
+        """
         with self._lock:
             self._check_index(index)
+            self._check_step_id(index, values)
             old = self.steps[index]
             step = {"id": old.get("id"), "type": old.get("type")}
             step.update({k: v for k, v in values.items() if k not in ("id", "type")})
@@ -861,9 +941,14 @@ class Session:
     def refresh_values(
         self, index: int, field_name: str, values: dict[str, Any] | None = None
     ) -> list[str]:
-        """「重新從資料讀取」：依目前的參數（``values`` 是表單上還沒送出的版本）重新讀出值。"""
+        """「重新從資料讀取」：依目前的參數（``values`` 是表單上還沒送出的版本）重新讀出值。
+
+        ``values`` 帶著 ``id`` 時要和第 index 步現在的 id 一樣（同 ``update_step``）。
+        """
         with self._lock:
             self._check_index(index)
+            if values is not None:
+                self._check_step_id(index, values)
             old = self.steps[index]
             step = dict(old) if values is None else {"id": old.get("id"), "type": old.get("type")}
             if values is not None:
@@ -884,9 +969,12 @@ class Session:
 
     def _normalize(self, step: dict[str, Any]) -> dict[str, Any]:
         """參數合法時去掉跟預設值相同的欄位，recipe 比較好讀；不合法就原樣保留。"""
+        cls = _safe_get(step.get("type"))
+        if cls is None:
+            return step
         try:
-            model = get(step["type"]).model_validate(step)
-        except (ValidationError, KeyError):
+            model = cls.model_validate(step)
+        except ValidationError:
             return step
         dumped = model.model_dump(mode="json", exclude_defaults=True)
         return {
@@ -933,7 +1021,17 @@ class Session:
 
     def _check_index(self, index: int) -> None:
         if not 0 <= index < len(self.steps):
-            raise SessionError(t(f"沒有第 {index} 步", f"There is no step {index}"))
+            raise SessionError(t(f"沒有第 {index + 1} 步", f"There is no step {index + 1}"))
+
+    def _check_step_id(self, index: int, values: dict[str, Any]) -> None:
+        """表單送來的 ``values`` 帶著 ``id`` 時，要是第 index 步現在的 id（沒帶 id 時不檢查）。"""
+        if "id" in values and values["id"] != self.steps[index].get("id"):
+            raise SessionError(
+                t(
+                    f"第 {index + 1} 步已經不是這個表單的步驟（可能已經刪除、移動或切換了階段），修改沒有套用",
+                    f"Step {index + 1} is no longer the step in this form (it may have been deleted, moved, or you switched stages); the change wasn't applied",
+                )
+            )
 
     # ── 載入資料 ─────────────────────────────────────────────
 
@@ -1024,12 +1122,12 @@ class Session:
         self, stage: dict[str, Any], base: Path, multi: bool, tracker: StageTracker
     ) -> None:
         """讀一個階段的檔（已經載入、檔案沒變就沿用）；進度視窗上這個階段寫出已處理幾個檔。"""
-        name, source = stage["name"], stage["input"]
+        name, uid, source = stage["name"], stage["uid"], stage["input"]
         key = self._source_key(stage)
-        if name in self._sources and self._sources[name][0] == key:
+        if uid in self._sources and self._sources[uid][0] == key:
             return
-        self._sources.pop(name, None)
-        self._stale.discard(name)
+        self._sources.pop(uid, None)
+        self._stale.discard(uid)
         try:
             total = len(resolve(source["files"], base))
             parts, files = scan_parts(
@@ -1050,12 +1148,12 @@ class Session:
         except (InputError, DecodeError, LookupError, pl.exceptions.PolarsError) as err:
             where = t(f"階段「{name}」：", f'Stage "{name}": ') if multi else ""
             raise SessionError(f"{where}{err}") from None
-        self._sources[name] = (key, frame, files)
+        self._sources[uid] = (key, frame, files)
 
     def _finish_stage(self, index: int, tracker: StageTracker) -> None:
         """算出第 index 個階段的結果，回報完成（列數）、有錯或還不能算。"""
         frame = self._stage_result(index)[0]
-        computed = self._computed.get(self.stages[index]["name"], [])
+        computed = self._computed.get(self.stages[index]["uid"], [])
         if any(c.errors or c.run_error for c in computed) or self._stage_input(index)[3]:
             tracker.error(index)
         elif frame is None:
@@ -1065,13 +1163,13 @@ class Session:
 
     def _load_source(self, stage: dict[str, Any]) -> tuple[pl.DataFrame | None, list[SourceFile]]:
         """這個階段已載入的資料；設定或檔案變了就放掉（要重新按「載入資料及預覽」），不會自動讀檔。"""
-        name = stage["name"]
-        entry = self._sources.get(name)
+        uid = stage["uid"]
+        entry = self._sources.get(uid)
         if entry is None:
             return None, []
         if entry[0] != self._source_key(stage):
-            del self._sources[name]
-            self._stale.add(name)
+            del self._sources[uid]
+            self._stale.add(uid)
             return None, []
         return entry[1], entry[2]
 
@@ -1095,7 +1193,7 @@ class Session:
             if frame is None:
                 return None, "", False, None
             sampled = bool(files) and sum(f.rows for f in files) > SAMPLE_THRESHOLD
-            return frame, self._sources[stage["name"]][0], sampled, None
+            return frame, self._sources[stage["uid"]][0], sampled, None
         names = list(stage["input"].get("stages") or [])
         if not names:
             return None, "", False, t("要選至少一個前面的階段", "Choose at least one earlier stage")
@@ -1115,42 +1213,46 @@ class Session:
             frames[name], sampled = frame, sampled or part_sampled
             keys.append(key)
         key = _digest({"stages": names, "keys": keys})
-        cached = self._inputs.get(stage["name"])
+        cached = self._inputs.get(stage["uid"])
         if cached and cached[0] == key:
             return cached[1], key, sampled, None
         try:
             frame = stage_frame(names, frames)
         except (InputError, pl.exceptions.PolarsError) as err:
             return None, key, sampled, str(err)
-        self._inputs[stage["name"]] = (key, frame)
+        self._inputs[stage["uid"]] = (key, frame)
         return frame, key, sampled, None
 
     def _compute(self, si: int) -> tuple[list[_Computed], pl.DataFrame | None, str, bool]:
         """依序計算第 si 個階段的每一步（有快取）。遇到參數不合法或執行失敗的步驟，之後的步驟都不算。
 
-        回傳（每一步的結果、這個階段的輸入、輸入的指紋、是不是樣本）。
+        回傳（每一步的結果、這個階段的輸入、輸入的指紋、輸入是不是樣本）。每一步的 ``sampled``
+        另外算進結合到的其他階段：另一張表是樣本時，這一步（和之後的步驟）的結果也是用樣本算的。
         """
         stage = self.stages[si]
-        source, key, sampled, _ = self._stage_input(si)
-        frame = source
-        previous = self._computed.get(stage["name"], [])
+        source, source_key, sampled, _ = self._stage_input(si)
+        frame, key, step_sampled = source, source_key, sampled
+        previous = self._computed.get(stage["uid"], [])
         results: list[_Computed] = []
         broken = frame is None
         for i, raw in enumerate(stage["steps"]):
             refs = {}
-            for field_name in ref_fields().get(raw.get("type"), []):
+            for field_name in step_ref_fields(raw):
                 ref = raw.get(field_name)
                 index = self._stage_index(ref, si) if isinstance(ref, str) else None
                 if index is not None:
                     refs[ref] = self._stage_result(index)
             key = _digest({"prev": key, "step": raw, "refs": {n: r[1] for n, r in refs.items()}})
+            if raw.get("enabled", True) is not False and any(r[2] for r in refs.values()):
+                step_sampled = True
             cached = previous[i] if i < len(previous) else None
             if cached and cached.key == key:
+                cached.sampled = step_sampled
                 results.append(cached)
                 frame = cached.frame
                 broken = broken or cached.frame is None
                 continue
-            item = _Computed(key)
+            item = _Computed(key, sampled=step_sampled)
             model = self._model(raw, item)
             waiting = any(r[0] is None for r in refs.values())
             if model is not None and not broken and not (waiting and model.enabled):
@@ -1167,36 +1269,29 @@ class Session:
             broken = broken or item.frame is None
             frame = item.frame
             results.append(item)
-        self._computed[stage["name"]] = results
-        return results, source, key, sampled
+        self._computed[stage["uid"]] = results
+        return results, source, source_key, sampled
 
     def _stage_result(self, si: int) -> tuple[pl.DataFrame | None, str, bool, bool]:
-        """第 si 個階段的結果：（資料、指紋、是不是樣本、是不是「完整跑一次」的結果）。"""
+        """第 si 個階段的結果：（資料、指紋、是不是樣本、是不是「完整跑一次」的結果）。
+
+        「是不是樣本」也算進結合的另一張表：另一張表是樣本時，這個階段的結果也不是完整的。
+        """
         computed, source, key, sampled = self._compute(si)
         frame = source
         if computed:
-            frame, key = computed[-1].frame, computed[-1].key
+            frame, key, sampled = computed[-1].frame, computed[-1].key, computed[-1].sampled
         if frame is None:
             return None, "", sampled, False
-        full = self._full.get(self.stages[si]["name"])
+        full = self._full.get(self.stages[si]["uid"])
         if sampled and full and full[0] == key:
             return full[1], f"{key}:full", False, True
         return frame, key, sampled, False
 
     def _model(self, raw: dict[str, Any], item: _Computed) -> Step | None:
-        try:
-            cls = get(raw.get("type", ""))
-        except KeyError:
-            item.errors = [
-                {
-                    "path": "type",
-                    "error": t(
-                        f"不支援的步驟類型：{raw.get('type')}",
-                        f"Unsupported step type: {raw.get('type')}",
-                    ),
-                    "severity": "error",
-                }
-            ]
+        cls = _safe_get(raw.get("type"))
+        if cls is None:
+            item.errors = [_type_issue(raw.get("type"))]
             return None
         try:
             return cls.model_validate(raw)
@@ -1240,7 +1335,7 @@ class Session:
                 execute(
                     parse_recipe(data), base, output=target, mode="stream", progress=self.progress
                 )
-                self._full[self.stages[index]["name"]] = (key, pl.read_parquet(target))
+                self._full[self.stages[index]["uid"]] = (key, pl.read_parquet(target))
             finally:
                 target.unlink(missing_ok=True)
                 release_workers()
@@ -1253,7 +1348,7 @@ class Session:
         planned = self._outputs()
         for i, stage in enumerate(self.stages):
             frame, _, sampled, full = self._stage_result(i)
-            computed = self._computed.get(stage["name"], [])
+            computed = self._computed.get(stage["uid"], [])
             error = any(c.errors or c.run_error for c in computed) or bool(self._stage_input(i)[3])
             status = "error" if error else ("ok" if frame is not None else "waiting")
             out.append(
@@ -1347,6 +1442,9 @@ class Session:
                     first_error = i
                 if status == "pending" and first_error is None and waiting_stage is None:
                     waiting_stage = self._waiting_ref(raw)
+                blocked_here = status == "pending" or (
+                    status == "disabled" and item.frame is None and source is not None
+                )
                 describe = None
                 if not item.errors and cls is not None:
                     try:
@@ -1357,8 +1455,8 @@ class Session:
                     {
                         "index": i,
                         "id": raw.get("id"),
-                        "type": raw.get("type"),
-                        "label": cls.display_label() if cls else raw.get("type"),
+                        "type": raw.get("type") if isinstance(raw.get("type"), str) else None,
+                        "label": _step_label(raw),
                         "category": cls.display_category() if cls else "",
                         "enabled": enabled,
                         "status": status,
@@ -1375,9 +1473,10 @@ class Session:
                         "warning_count": item.warning_count,
                         "errors": self._value_errors(i, raw, item.errors),
                         "run_error": item.run_error,
-                        "blocked_by": first_error if status == "pending" else None,
+                        # 算不出來是被誰擋住（停用的步驟也一樣：前面出錯時它也沒有結果）
+                        "blocked_by": first_error if blocked_here else None,
                         "blocked_stage": waiting_stage
-                        if status == "pending" and first_error is None
+                        if blocked_here and first_error is None
                         else None,
                         "params": raw,
                     }
@@ -1403,11 +1502,13 @@ class Session:
                     blocked = {"unloaded": False, "step": step, "stage": item["blocked_stage"]}
                     # 這一步算不出來：不顯示前面步驟的資料（畫面上改寫原因與「前往」）
                     shown, shown_index = None, requested
+            shown_step = None if shown_index < 0 or shown is None else computed[shown_index]
             preview_warnings = (
-                []
-                if shown_index < 0 or shown is None
-                else [w.__dict__ for w in computed[shown_index].warnings[:200]]
+                [] if shown_step is None else [w.__dict__ for w in shown_step.warnings[:200]]
             )
+            # 顯示的資料用到樣本：這個階段的輸入是樣本，或到這一步為止結合的另一張表是樣本
+            shown_sampled = sampled if shown_index < 0 else computed[shown_index].sampled
+            notes = self._sample_notes(requested) if shown_sampled else ([], [])
             total_rows = sum(f.rows for f in files) if files else None
             preview = {
                 "step": shown_index,
@@ -1418,9 +1519,11 @@ class Session:
                     for n, t in (shown.schema.items() if shown is not None else [])
                 ],
                 "warnings": preview_warnings,
+                # 實際的警告數（warnings 只列出前幾則：每項檢查最多 100 則，這裡最多 200 則）
+                "warning_count": shown_step.warning_count if shown_step else 0,
                 "blocked": blocked,
                 # 抽樣模式：用樣本算的（列數、加總可能不正確）；完整模式：資料全部讀進來，或讀匯出檔
-                "mode": None if shown is None else ("sample" if sampled else "full"),
+                "mode": None if shown is None else ("sample" if shown_sampled else "full"),
                 # 這個階段和它往上讀到的階段，讀進來的檔共有幾行（讀前面階段時也算得出來）
                 "input_rows": sum(
                     f.rows
@@ -1431,7 +1534,9 @@ class Session:
                 if shown is not None
                 else None,
                 "full": None,
-                "sampled_steps": self._sampled_steps(requested) if sampled else [],
+                "sampled_steps": notes[0],
+                # 結合的另一張表是樣本的步驟（對不到的鍵在完整的另一張表裡可能有）
+                "sampled_refs": notes[1],
             }
             if full is not None:
                 schema = pl.read_parquet_schema(full["path"])
@@ -1444,13 +1549,19 @@ class Session:
                         for n, t in schema.items()
                     ],
                     warnings=[w.__dict__ for w in full["warnings"][:200]],
+                    warning_count=full["warning_count"],
                     blocked=None,
                     mode="full",
                     sampled_steps=[],
+                    sampled_refs=[],
                     full={
                         k: full[k] for k in ("path", "rows", "input_rows", "time", "warning_count")
                     },
                 )
+            # 預覽內容的指紋：rows()、column_info() 回傳同一個，前端用它丟掉過時的回應
+            preview["key"] = (
+                self._view_key(preview["step"]) if preview["rows"] is not None else None
+            )
             return {
                 "version": {"tablade": __version__, "recipe": RECIPE_VERSION},
                 "recipe": {
@@ -1481,7 +1592,7 @@ class Session:
                     and all(e["found"] for e in entries)
                     and (not reads_files or bool(entries)),
                     "loaded": source is not None,
-                    "stale": stage["name"] in self._stale,
+                    "stale": stage["uid"] in self._stale,
                     "error": input_error,
                     "total_rows": total_rows,
                     "sampled": sampled,
@@ -1496,13 +1607,12 @@ class Session:
                 "preview": preview,
                 "can_undo": bool(self._undo),
                 "can_redo": bool(self._redo),
-                "issues": self.issues,
                 "lang": self.lang,
             }
 
     def _waiting_ref(self, raw: dict[str, Any]) -> str | None:
         """這一步引用的前面階段裡，第一個還沒有結果的（結合的另一張表）。"""
-        for name in ref_fields().get(raw.get("type"), []):
+        for name in step_ref_fields(raw):
             ref = raw.get(name)
             index = self._stage_index(ref, self.current) if isinstance(ref, str) else None
             if index is not None and self._stage_result(index)[0] is None:
@@ -1516,28 +1626,94 @@ class Session:
         full = self._showing_full()
         return (pl.scan_parquet(full["path"]), full) if full is not None else None
 
-    def _sampled_steps(self, upto: int) -> list[dict[str, Any]]:
-        """用樣本算、數字會不準的步驟（要看整個來源檔的：移除重複、群組彙總、樞紐），依階段與步驟順序。
+    def _sample_notes(self, upto: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """抽樣模式下結果可能不準的步驟，依階段與步驟順序（``stage`` 是空字串代表目前的階段）：
 
-        目前階段算到第 upto 步（含）；往上讀到、結合到的階段結果還是樣本時，它的步驟也算
-        （資料不大或已經「完整跑一次」的階段不算）。``stage`` 是空字串代表目前的階段。
+        - 用樣本算、數字會不準的步驟（要看整個來源檔的：移除重複、群組彙總、樞紐）：那個階段的輸入是樣本時
+        - 結合的另一張表是樣本的步驟（``ref`` 是另一張表）：對不到的鍵在完整的另一張表裡可能有
+
+        目前階段算到第 upto 步（含）；往上讀到、結合到、結果還是樣本的階段，它的步驟也算。
+        資料不大或已經「完整跑一次」的階段不算，也不再往上找（它的結果是完整的）。
         """
-        out = []
-        for si in self._upstream(self.current):
-            current = si == self.current
-            if not current and not self._stage_result(si)[2]:
+        found, todo = set(), [self.current]
+        while todo:
+            si = todo.pop()
+            if si in found:
                 continue
-            steps = self.stages[si]["steps"]
-            for i, raw in enumerate(steps[: upto + 1] if current else steps):
+            found.add(si)
+            for ref in self._used_stages(si, upto if si == self.current else None):
+                j = self._stage_index(ref, si)
+                if j is not None and self._stage_result(j)[2]:
+                    todo.append(j)
+        whole: list[dict[str, Any]] = []
+        refs: list[dict[str, Any]] = []
+        for si in sorted(found):
+            stage = self.stages[si]
+            current = si == self.current
+            name = "" if current else stage["name"]
+            input_sampled = self._stage_input(si)[2]
+            for i, raw in enumerate(stage["steps"][: upto + 1] if current else stage["steps"]):
                 cls = _safe_get(raw.get("type"))
-                if cls is not None and cls.whole_source and raw.get("enabled", True) is not False:
-                    name = "" if current else self.stages[si]["name"]
-                    out.append({"stage": name, "number": i + 1, "label": cls.display_label()})
-        return out
+                if cls is None or raw.get("enabled", True) is False:
+                    continue
+                if cls.whole_source and input_sampled:
+                    whole.append({"stage": name, "number": i + 1, "label": cls.display_label()})
+                for field_name in step_ref_fields(raw):
+                    ref = raw.get(field_name)
+                    j = self._stage_index(ref, si) if isinstance(ref, str) else None
+                    if j is not None and self._stage_result(j)[2]:
+                        refs.append(
+                            {
+                                "stage": name,
+                                "number": i + 1,
+                                "label": cls.display_label(),
+                                "ref": ref,
+                            }
+                        )
+        return whole, refs
+
+    def _used_stages(self, si: int, upto: int | None) -> list[str]:
+        """第 si 個階段用到的其他階段（讀取資料、啟用的步驟引用的）；upto 是只看到第幾步（含）。"""
+        stage = self.stages[si]
+        source = stage["input"]
+        used = list(source.get("stages") or []) if source.get("reader") == "stages" else []
+        steps = stage["steps"] if upto is None else stage["steps"][: upto + 1]
+        for raw in steps:
+            if raw.get("enabled", True) is not False:
+                used += [raw.get(name) for name in step_ref_fields(raw)]
+        return [ref for ref in used if isinstance(ref, str)]
+
+    def _view_key(self, index: int) -> str | None:
+        """目前階段第 index 步的預覽內容的指紋（-1 是讀取資料，步驟數是完整模式的「輸出資料」）。
+
+        ``rows()``、``column_info()`` 與 ``state.preview.key`` 用同一個：資料（到這一步為止的輸入、步驟、
+        用到的前面階段的結果）、目前的階段或畫面的語言（型別名稱）變了才換；完整模式時跟著匯出檔與匯出時間。
+        前端靠它丟掉過時的回應、決定要不要重新取資料。沒有資料時是 None。
+        """
+        where = {"stage": self.stage["name"], "lang": self.lang}
+        full = self._full_frame(index)
+        if full is not None:
+            entry = full[1]
+            return _digest({"export": [entry[k] for k in ("key", "path", "rows", "time")], **where})
+        computed, source, source_key, _ = self._compute(self.current)
+        if index < 0:
+            frame, key = source, source_key
+        elif index < len(computed):
+            frame, key = computed[index].frame, computed[index].key
+        else:
+            return None
+        return None if frame is None else _digest({"data": key, "step": index, **where})
+
+    def _sampled_at(self, index: int) -> bool:
+        """目前階段第 index 步的結果是不是用樣本算的（-1 是這個階段的輸入）。"""
+        computed, _, _, sampled = self._compute(self.current)
+        return computed[index].sampled if 0 <= index < len(computed) else sampled
 
     def rows(self, index: int, offset: int, limit: int) -> dict[str, Any]:
+        """第 index 步結果的第 offset 列起最多 limit 列；``key`` 是預覽內容的指紋（和 state.preview.key 比）。"""
         with self._lock:
             offset = max(0, offset)
+            key = self._view_key(index)
             full = self._full_frame(index)
             if full is not None:
                 part = full[0].slice(offset, max(0, min(limit, 1000))).collect()
@@ -1546,11 +1722,11 @@ class Session:
                     "total": full[1]["rows"],
                     "columns": part.columns,
                     "rows": [[_jsonable(v) for v in row] for row in part.iter_rows()],
+                    "key": key,
                 }
             frame = self.frame_at(index)
             if frame is None:
-                return {"offset": offset, "total": 0, "columns": [], "rows": []}
-            offset = max(0, offset)
+                return {"offset": offset, "total": 0, "columns": [], "rows": [], "key": None}
             limit = max(0, min(limit, 1000))
             part = frame.slice(offset, limit)
             return {
@@ -1558,11 +1734,13 @@ class Session:
                 "total": frame.height,
                 "columns": part.columns,
                 "rows": [[_jsonable(v) for v in row] for row in part.iter_rows()],
+                "key": key,
             }
 
     def column_info(self, index: int) -> dict[str, Any]:
         """第 index 步輸出的每一欄型別與概況（下方面板的「型別」分頁）；資料跟預覽同一份。"""
         with self._lock:
+            key = self._view_key(index)
             full = self._full_frame(index)
             if full is not None:
                 return {
@@ -1570,16 +1748,18 @@ class Session:
                     "rows": full[1]["rows"],
                     "sampled": False,
                     "columns": column_summary(full[0]),
+                    "key": key,
                 }
             frame = self.frame_at(index)
-            sampled = self._stage_input(self.current)[2]
+            sampled = self._sampled_at(index)
             if frame is None:
-                return {"step": index, "rows": 0, "sampled": sampled, "columns": []}
+                return {"step": index, "rows": 0, "sampled": sampled, "columns": [], "key": None}
             return {
                 "step": index,
                 "rows": frame.height,
                 "sampled": sampled,
                 "columns": column_summary(frame),
+                "key": key,
             }
 
     def find_row(
@@ -1703,7 +1883,7 @@ class Session:
                 return t(f"階段「{stage['name']}」：{error}", f'Stage "{stage["name"]}": {error}')
         for i, stage in enumerate(self.stages):
             self._stage_result(i)
-            computed = self._computed.get(stage["name"], [])
+            computed = self._computed.get(stage["uid"], [])
             if any(c.errors or c.run_error for c in computed) or self._stage_input(i)[3]:
                 where = (
                     t(f"階段「{stage['name']}」", f' in stage "{stage["name"]}"')
@@ -1721,7 +1901,7 @@ class Session:
             if self._reads_files(stage) and self._load_source(stage)[0] is None:
                 return False
             frame = self._stage_result(i)[0]
-            computed = self._computed.get(stage["name"], [])
+            computed = self._computed.get(stage["uid"], [])
             if frame is None or any(c.errors or c.run_error for c in computed):
                 return False
         return True
@@ -1779,12 +1959,15 @@ class Session:
     def _full_output(self, index: int | None = None) -> dict[str, Any] | None:
         """第 index 個階段（預設目前的）上次匯出的檔，而且跟現在的 Recipe、檔案對得上（完整模式）。"""
         index = self.current if index is None else index
-        entry = self._exports.get(self.stages[index]["name"])
+        uid = self.stages[index]["uid"]
+        entry = self._exports.get(uid)
         if entry is None:
             return None
-        if entry["key"] != self._export_key(index) or not Path(entry["path"]).is_file():
-            del self._exports[self.stages[index]["name"]]
+        if not Path(entry["path"]).is_file():
+            del self._exports[uid]
             return None
+        if entry["key"] != self._export_key(index):
+            return None  # 先留著：復原回匯出時的設定，又是完整模式
         if entry.get("format") == "csv":
             return None  # CSV 沒有存型別，也常被 Excel 改過再存：不提供完整模式，維持抽樣模式
         return entry
@@ -1831,6 +2014,19 @@ class Session:
                     progress=self.progress,
                     tracker=tracker,
                 )
+            except RunError as err:
+                # 只有全部資料才出現的錯誤（試跑只看每個檔的前幾行）：和試跑一樣指到哪個階段第幾步
+                stage, step, where = self._step_place(err.step_id)
+                raise StepError(
+                    t(
+                        f"處理時出錯：{where}：{err.message}",
+                        f"Processing failed: {where}: {err.message}",
+                    )
+                    if where
+                    else t(f"處理時出錯：{err.message}", f"Processing failed: {err.message}"),
+                    stage,
+                    step,
+                ) from None
             except (InputError, DecodeError) as err:
                 raise SessionError(str(err)) from None
             finally:
@@ -1841,7 +2037,7 @@ class Session:
                 index = names.index(out.stage)
                 used = {names[i] for i in self._upstream(index)}
                 steps = [s for s in report.steps if s.stage == out.stage]
-                self._exports[out.stage] = {
+                self._exports[self.stages[index]["uid"]] = {
                     "key": keys[index],
                     "path": out.path,
                     "format": out.format,
@@ -1895,7 +2091,14 @@ class Session:
             ) from None
 
     def error_report(self) -> str:
-        """給 AI 助理（Copilot）看的驗證結果：問題、每一步的列數、警告。"""
+        """給 AI 助理（Copilot）看的驗證結果：問題、每一步的列數、警告（``report()`` 的文字）。"""
+        return self.report()["text"]
+
+    def report(self) -> dict[str, Any]:
+        """「檢查並複製錯誤報告」：當場驗證目前的 Recipe（開著 Recipe 時用真實資料試跑）。
+
+        回傳報告文字與問題清單；兩者是同一次檢查的結果，問題清單也是畫面目前的語言。
+        """
         with self._lock:
             lines = [
                 t(
@@ -1928,7 +2131,7 @@ class Session:
                     f'Fix the Recipe based on the issues above, keeping tablade_recipe at "{RECIPE_VERSION}".',
                 ),
             ]
-            return "\n".join(lines)
+            return {"text": "\n".join(lines), "issues": result.issues}
 
 
 def _planned_state(planned: Any) -> dict[str, Any] | None:
@@ -1946,6 +2149,9 @@ def _planned_state(planned: Any) -> dict[str, Any] | None:
 
 
 def _safe_get(type_name: Any) -> type[Step] | None:
+    """步驟類型對應的類別；不支援、沒寫或不是文字（手寫的 Recipe 可能是清單）時是 None。"""
+    if not isinstance(type_name, str):
+        return None
     try:
         return get(type_name)
     except KeyError:

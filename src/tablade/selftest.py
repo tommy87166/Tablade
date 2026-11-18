@@ -136,7 +136,6 @@ def run_selftest() -> dict[str, Any]:
             # 不管這台電腦有幾個核心，都實際開 2 個工作程序轉碼一次（切成很小的段，強迫走平行），
             # 確認打包後的 App 開得了工作程序；核心太少時，平常的大檔才改用單核心
             import os
-            from concurrent.futures.process import BrokenProcessPool
 
             from .fixtures import write_big_messy_export
             from .ingest import sources
@@ -167,7 +166,7 @@ def run_selftest() -> dict[str, Any]:
                 digest = sources._transcode_parallel(
                     src, "cp950", parallel, None, 16_384, pool=pool
                 )
-            except (OSError, RuntimeError, BrokenProcessPool):
+            except sources.PoolUnavailable:  # 只有開不了工作程序才算；讀寫檔的錯誤照原樣回報
                 sources._pool_failed = True  # 這次執行之後的大檔都用單核心，不再重試
                 return t(
                     "這台電腦不能開工作程序，大檔改用單核心轉碼（結果正確）",

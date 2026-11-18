@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import zipfile
 from collections import defaultdict
 from pathlib import Path, PurePosixPath
@@ -224,10 +225,46 @@ def steps_markdown(spec: dict[str, Any] | None = None) -> str:
 # ── SKILL.md ────────────────────────────────────────────────────
 
 
+BUTTONS = {
+    "open": "開啟 Recipe",
+    "load": "載入資料及預覽",
+    "export": "處理並匯出資料",
+    "menu": "Copilot",
+    "report": "檢查並複製錯誤報告",
+}
+"""SKILL.md 提到的畫面上的按鈕與選單（tests/test_review_recipe.py 確認前端真的有這些字）。"""
+
+
+def _quick_row(cls: type[Step]) -> str:
+    """步驟速查表的一列：說明已經用名稱開頭時（「移除重複：…」）不再加一次名稱。"""
+    summary = cls.summary()
+    text = summary if summary.startswith(cls.label) else f"{cls.label}：{summary}"
+    return f"| `{cls.type_name()}` | {text} |"
+
+
+def _condition_steps(spec: dict[str, Any]) -> list[str]:
+    """參數裡有條件（可以引用系統欄位）的步驟類型。"""
+    defs = spec["schema"]["$defs"]
+    targets = {f"#/$defs/{name}" for name in spec["system_column_defs"]}
+
+    def uses(name: str, seen: set[str]) -> bool:
+        if name in seen:
+            return False
+        seen.add(name)
+        text = json.dumps(defs[name])
+        if any(target in text for target in targets):
+            return True
+        refs = {r.rsplit("/", 1)[-1] for r in re.findall(r'"#/\$defs/([^"]+)"', text)}
+        return any(uses(r, seen) for r in refs if r in defs)
+
+    return [cls.type_name() for cls in all_steps() if uses(cls.__name__, set())]
+
+
 def skill_markdown() -> str:
-    quick = ["| type | 用途 |", "|---|---|"] + [
-        f"| `{cls.type_name()}` | {cls.label}：{cls.summary()} |" for cls in all_steps()
-    ]
+    spec = build_spec()
+    quick = ["| type | 用途 |", "|---|---|"] + [_quick_row(cls) for cls in all_steps()]
+    with_conditions = "、".join(f"`{name}`" for name in _condition_steps(spec))
+    b = BUTTONS
     return f"""---
 name: {SKILL_NAME}
 description: 撰寫與驗證 Tablade recipe（資料清洗步驟的 JSON，recipe 版本 {RECIPE_VERSION}）。使用者要把 CSV、TXT 報表等凌亂的資料整理成表格，或要撰寫、修改、修正 Tablade recipe 時使用。
@@ -236,7 +273,7 @@ description: 撰寫與驗證 Tablade recipe（資料清洗步驟的 JSON，recip
 # Tablade recipe（版本 {RECIPE_VERSION}）
 
 Tablade 是本機執行的資料清洗工具。使用者描述要怎麼整理資料，你寫出 recipe（JSON），
-使用者再用 Tablade 開啟 recipe，套用到真實資料並輸出 Parquet。
+使用者再用 Tablade 開啟 recipe，套用到真實資料並輸出 Parquet 或 CSV。
 
 ## 工作流程
 
@@ -257,8 +294,8 @@ Tablade 是本機執行的資料清洗工具。使用者描述要怎麼整理資
    `severity` 是 `warning` 的只是提醒（例如沒有被用到的階段），不影響執行。
    有問題就依 `path`、`error`、`hint` 修正，直到 `"ok": true`。
 5. **交給使用者。** 輸出檔名為 `<名稱>.recipe.json` 的 recipe，並提醒使用者：
-   把 recipe 放在資料檔旁邊（或依各階段 `input.files` 的相對路徑），用 Tablade「開啟 recipe」後按「載入資料及預覽」。
-   Tablade 會用真實資料試跑；有問題時按「複製錯誤報告」貼回來，你再依報告修正。
+   把 recipe 放在資料檔旁邊（或依各階段 `input.files` 的相對路徑），用 Tablade「{b["open"]}」後按「{b["load"]}」。
+   Tablade 會用真實資料試跑；有問題時在「{b["menu"]}」選單按「{b["report"]}」，把報告貼回來，你再依報告修正。
 
 ## recipe 格式
 
@@ -282,9 +319,13 @@ Tablade 是本機執行的資料清洗工具。使用者描述要怎麼整理資
 
 - `tablade_recipe` 一定要是 `"{RECIPE_VERSION}"`。
 - `files` 是檔案清單：每一項是**相對於 recipe 檔所在資料夾**的路徑（或絕對路徑），可用 `*` 一次讀多個檔案；依清單順序讀取。
-- recipe 不記輸出位置：使用者在 Tablade 按「處理並匯出資料」時才選存檔位置（`output` 裡沒有 `path`）。
+- recipe 不記輸出資料夾（`output` 裡沒有 `path`）：使用者在 Tablade 按「{b["export"]}」時，一律寫到 recipe 檔所在資料夾底下的 `output/`，
+  檔名是每個階段的 `output_file`（見下面「階段」）。
 - 只有一份資料時就一個階段，名稱用 `"預設階段"`。舊的寫法（最外層的 `inputs` / `steps`）已經不支援。
-- 每一列都帶系統欄位 `__source_file`（來源檔）與 `__line_no`（原始行號），可以在條件裡引用。
+- 每一列都帶系統欄位 `__source_file`（來源檔）與 `__line_no`（原始行號）。系統欄位**只能在條件裡引用**
+  （{with_conditions} 的 `conditions`），其他參數只能用資料欄位。
+  `__sheet` 只有讀 Excel 全部工作表（`"sheet": "*"`）時才有，`__stage` 只有讀前面階段的輸出時才有，
+  `__orig_*` 要在 `merge_files` 之後才有。
 - 「前 N 列」「後 N 列」「向下填滿」「把第一列作為欄位標題」「移除重複」「群組彙總」「樞紐」都是**每個來源檔各自計算**；
   要整份一起算就先用 `merge_files`（合併來源檔），之後 `__source_file` 是合併的名稱、`__line_no` 重新編號，
   原本的位置留在 `__orig_source_file`、`__orig_line_no`。
@@ -304,7 +345,8 @@ Tablade 是本機執行的資料清洗工具。使用者描述要怎麼整理資
   另一張表的鍵值不能重複（要先在那個階段 `dedupe`）；沒對到的列預設產生警告。
 - 只能引用**前面**的階段；步驟 `id` 在整份 recipe 裡不能重複。
 - 拆出來的值一律是文字；數值條件（`gt`、`le`…）比較前會去掉千分位逗號。
-- 正規表示式是 Rust regex 語法：不支援 lookaround 與反向參照。
+- 正規表示式是 Rust regex 語法：不支援 lookaround 與反向參照。`validate_recipe.py` 只檢查括號是否成對、群組數，
+  以及這兩種寫法；其他語法錯誤以 Tablade 開啟 recipe（或 `tablade validate`）的結果為準。
 
 ## 步驟
 

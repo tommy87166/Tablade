@@ -118,8 +118,19 @@ def selftest(mode: str) -> bool:
     return proc.returncode == 0
 
 
+def expected_skill_files() -> set[str]:
+    """AI skill 一定要有的檔：說明、驗證器、步驟目錄、schema，以及 examples/ 底下的每一個範例 recipe。"""
+    examples = {f"references/examples/{p.name}" for p in (ROOT / "examples").glob("*.recipe.json")}
+    return {
+        "SKILL.md",
+        "scripts/validate_recipe.py",
+        "references/steps.md",
+        "references/recipe.schema.json",
+    } | examples
+
+
 def skill_check(mode: str) -> bool:
-    """打包後的 App 也要能產生 AI skill（需要的原始碼與範例都有打包進去）。"""
+    """打包後的 App 也要能產生 AI skill，內容和原始碼產生的一樣（原始碼與每個範例都有打包進去）。"""
     import zipfile
 
     exe = executable(mode)
@@ -132,7 +143,10 @@ def skill_check(mode: str) -> bool:
     with zipfile.ZipFile(out) as zf:
         names = set(zf.namelist())
     out.unlink()
-    return {"SKILL.md", "scripts/validate_recipe.py", "references/steps.md"} <= names
+    missing = sorted(expected_skill_files() - names)
+    if missing:
+        print(f"   AI skill 少了：{'、'.join(missing)}（tablade.spec 的 datas）")
+    return not missing
 
 
 def gui_smoke(mode: str) -> bool:

@@ -9,12 +9,14 @@
 
 from __future__ import annotations
 
+import os
 import re
-from dataclasses import dataclass
+import unicodedata
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from tablade.export.manifest import LOG_DIR
+from tablade.export.manifest import LOG_DIR, manifest_path
 from tablade.i18n import t
 from tablade.ingest.sources import expand
 from tablade.recipe.schema import Recipe
@@ -26,6 +28,72 @@ _INVALID = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 class OutputError(ValueError):
     """輸出檔名不合法，或寫出的位置是輸入檔。"""
+
+
+def path_key(path: Path) -> str:
+    """比對「是不是同一個檔」用的路徑：統一大小寫與 Unicode 的組合方式。
+
+    macOS 與 Windows 的檔案系統預設不分大小寫，macOS 也不分 NFC／NFD（``Data.csv`` 和 ``data.csv``、
+    NFD 的 ``café.csv`` 和 NFC 的 ``café.csv`` 是同一個檔），``Path.resolve()`` 不會把它們統一。
+    分大小寫的檔案系統上會把只差大小寫的兩個檔當成同一個（寧可不讓寫，也不要蓋掉輸入檔）。
+    """
+    text = os.path.normcase(str(path.resolve()))
+    return unicodedata.normalize("NFC", text).casefold()
+
+
+def _file_id(path: Path) -> tuple[int, int] | None:
+    """檔案系統上的身分（裝置、inode）；檔案不存在或檔案系統沒有 inode（是 0）時是 None。"""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino) if st.st_ino else None
+
+
+@dataclass
+class InputFiles:
+    """所有階段的輸入檔（實際找到的檔）→ 哪個階段讀的。用來確認寫出的位置不是輸入檔。"""
+
+    keys: dict[str, str] = field(default_factory=dict)
+    ids: dict[tuple[int, int], str] = field(default_factory=dict)
+
+    def add(self, path: Path, owner: str) -> None:
+        self.keys.setdefault(path_key(path), owner)
+        file_id = _file_id(path)
+        if file_id is not None:
+            self.ids.setdefault(file_id, owner)
+
+    def owner(self, path: Path) -> str | None:
+        """``path`` 是哪個階段的輸入檔（不是輸入檔時是 None）。"""
+        file_id = _file_id(path)
+        if file_id is not None and file_id in self.ids:
+            return self.ids[file_id]
+        return self.keys.get(path_key(path))
+
+
+def input_files(recipe: dict[str, Any], base_dir: Path) -> InputFiles:
+    """Recipe（JSON 內容）每個讀實際檔的階段找到的檔。"""
+    found = InputFiles()
+    stages = recipe.get("stages") if isinstance(recipe.get("stages"), list) else []
+    for stage in stages:
+        source = stage.get("input") if isinstance(stage, dict) else None
+        if not isinstance(source, dict) or source.get("reader") == "stages":
+            continue
+        files = source.get("files")
+        for entry in files if isinstance(files, list) else []:
+            if isinstance(entry, str) and entry:
+                for path in expand(entry, base_dir):
+                    found.add(path, str(stage.get("name")))
+    return found
+
+
+def overwrites_input(owner: str, file: str) -> str:
+    """寫出的位置是輸入檔時的錯誤訊息。"""
+    return t(
+        f"「{file}」是階段「{owner}」的輸入檔，不能寫到這裡（請換一個輸出檔名）",
+        f'"{file}" is an input file of stage "{owner}" and can\'t be '
+        "overwritten (use a different output file name)",
+    )
 
 
 @dataclass
@@ -56,6 +124,8 @@ def plan_outputs(
     """每個階段要寫的檔（不寫檔的階段是 None）：檔名、位置（``out_dir/output/檔名``）與錯誤。
 
     ``recipe`` 是 Recipe 的 JSON 內容（畫面上還沒存的也可以）；``out_dir`` 預設是 Recipe 所在的資料夾。
+    寫出的位置（含處理紀錄 ``log/主檔名.manifest.json``）不能是輸入檔：只差大小寫或 Unicode 組合方式的
+    也算同一個檔（``path_key``）。
     """
     stages = recipe.get("stages") if isinstance(recipe.get("stages"), list) else []
     errors: dict[int, str] = {}
@@ -63,15 +133,10 @@ def plan_outputs(
         match = re.match(r"^stages\[(\d+)\]", issue["path"])
         if match:
             errors.setdefault(int(match[1]), issue["error"])
-    inputs: dict[Path, str] = {}
-    for stage in stages:
-        source = stage.get("input") if isinstance(stage, dict) else None
-        if not isinstance(source, dict) or source.get("reader") == "stages":
-            continue
-        for entry in source.get("files") or []:
-            if isinstance(entry, str) and entry:
-                for path in expand(entry, base_dir):
-                    inputs.setdefault(path.resolve(), str(stage.get("name")))
+    inputs = input_files(recipe, base_dir)
+    settings = recipe.get("output")
+    manifest = not isinstance(settings, dict) or settings.get("manifest", True) is not False
+    logs = log_dir(base_dir, out_dir)
     folder = (out_dir or base_dir) / OUTPUT_DIR
     out: list[PlannedOutput | None] = []
     for k, stage in enumerate(stages):
@@ -82,16 +147,18 @@ def plan_outputs(
             out.append(None)
             continue
         fmt = stage.get("output_format") if isinstance(stage, dict) else None
-        fmt = fmt if fmt in OUTPUT_EXTENSIONS else "parquet"
+        fmt = fmt if isinstance(fmt, str) and fmt in OUTPUT_EXTENSIONS else "parquet"
         file = output_name(raw or default, fmt)
         planned = PlannedOutput(file, folder / file, not raw, errors.get(k), fmt)
-        owner = inputs.get(planned.path.resolve())
-        if planned.error is None and owner is not None:
-            planned.error = t(
-                f"「{OUTPUT_DIR}/{file}」是階段「{owner}」的輸入檔，不能寫到這裡（請換一個輸出檔名）",
-                f'"{OUTPUT_DIR}/{file}" is an input file of stage "{owner}" and can\'t be '
-                "overwritten (use a different output file name)",
-            )
+        if planned.error is None:
+            owner = inputs.owner(planned.path)
+            if owner is not None:
+                planned.error = overwrites_input(owner, f"{OUTPUT_DIR}/{file}")
+        if planned.error is None and manifest:
+            log = manifest_path(planned.path, logs)
+            owner = inputs.owner(log)
+            if owner is not None:
+                planned.error = overwrites_input(owner, f"{LOG_DIR}/{log.name}")
         out.append(planned)
     return out
 

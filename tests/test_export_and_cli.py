@@ -74,8 +74,8 @@ def test_selftest_opens_workers_even_on_two_cores(monkeypatch):
 def test_selftest_reports_when_workers_cannot_start(monkeypatch):
     from tablade.ingest import sources
 
-    def refuse(*args, **kwargs):
-        raise OSError("不能開新程序")
+    def refuse(*args, **kwargs):  # 開不了工作程序（讀寫檔的錯誤不算，見 tests/test_review_misc.py）
+        raise sources.PoolUnavailable("不能開新程序")
 
     monkeypatch.setattr(sources, "_transcode_parallel", refuse)
     monkeypatch.setattr(sources, "_pool_failed", False)

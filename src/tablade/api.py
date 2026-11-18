@@ -2,8 +2,10 @@
 
 只做參數轉換、檔案對話框與錯誤包裝，狀態與邏輯都在 ``session.py``（DESIGN.md §16.4）。
 - 每個方法都回傳 ``{"ok": True, ...}`` 或 ``{"ok": False, "error": "...", "issues"?: [...]}``，不讓例外丟到 JS
-- 會改變 recipe 的方法都直接回傳新的 ``state``，前端一次呼叫就能更新畫面
-- 前端拿不到也不能指定任意檔案路徑：開檔、存檔一律由這裡開對話框（DESIGN.md §16.4）
+- 會改變 recipe 或畫面狀態的方法（含匯出）都直接回傳新的 ``state``，前端一次呼叫就能更新畫面
+- 開檔、存檔的對話框由這裡開；檔案清單也可以手動輸入路徑（``add_file_entry``，DESIGN.md §5.3），
+  所以前端可以指定任意路徑。頁面不載入任何外部內容（CSP 是 ``default-src 'none'``），
+  能呼叫這些方法的只有 Tablade 自己的前端
 - 底線開頭的屬性與方法不會暴露給 JS
 """
 
@@ -25,20 +27,23 @@ import polars as pl
 from . import __version__
 from .desktop import open_folder
 from .i18n import t, using
+from .ingest.excel import EXCEL_SUFFIXES
 from .ingest.sources import staging_info, staging_size
 from .recipe.schema import RECIPE_VERSION, RecipeError
 from .selftest import run_selftest
-from .session import Session, TrialError, catalog
+from .session import Session, StepError, catalog
 from .usage import process_memory, worker_memory
 
-DATA_PATTERNS = "*.csv;*.txt;*.tsv;*.prn;*.dat;*.xlsx;*.xlsm;*.xls;*.parquet"
+EXCEL_PATTERNS = ";".join(f"*{suffix}" for suffix in EXCEL_SUFFIXES)
+"""Excel 讀取支援的每一種副檔名（和 ingest/excel.py 一致）。"""
+DATA_PATTERNS = f"*.csv;*.txt;*.tsv;*.prn;*.dat;{EXCEL_PATTERNS};*.parquet"
 
 
 def data_types() -> tuple[str, ...]:
     """開資料檔的對話框可以選的檔案類型（名稱依畫面的語言）。"""
     return (
         t(f"資料檔 ({DATA_PATTERNS})", f"Data files ({DATA_PATTERNS})"),
-        "Excel (*.xlsx;*.xlsm;*.xlsb;*.xls;*.ods)",
+        f"Excel ({EXCEL_PATTERNS})",
         "Parquet (*.parquet)",
         t("所有檔案 (*.*)", "All files (*.*)"),
     )
@@ -53,19 +58,32 @@ USAGE_INTERVAL = 2.0
 """每隔幾秒把記憶體與暫存資料夾的用量推給畫面（右下角、進度視窗）。"""
 
 
-def _wrap(fn: Callable[..., dict[str, Any]]) -> Callable[..., dict[str, Any]]:
-    @functools.wraps(fn)
-    def wrapper(self: Api, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        try:
-            return {"ok": True, **fn(self, *args, **kwargs)}
-        except RecipeError as exc:
-            return {"ok": False, "error": str(exc), "issues": exc.issues}
-        except Exception as exc:
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-        finally:
-            self._push_progress(None)
+Method = Callable[..., dict[str, Any]]
 
-    return wrapper
+
+def _wrap(fn: Method | None = None, *, progress: bool = False) -> Any:
+    """包成 ``{"ok": True, ...}`` / ``{"ok": False, "error": ...}``。
+
+    ``progress=True``：會推進度的方法（載入、匯出、完整跑一次），結束時把畫面上的進度清掉。
+    其他方法不動進度：它們可能在長時間的工作進行中結束（例如啟動時的 check_update）。
+    """
+
+    def decorate(fn: Method) -> Method:
+        @functools.wraps(fn)
+        def wrapper(self: Api, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            try:
+                return {"ok": True, **fn(self, *args, **kwargs)}
+            except RecipeError as exc:
+                return {"ok": False, "error": str(exc), "issues": exc.issues}
+            except Exception as exc:
+                return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            finally:
+                if progress:
+                    self._push_progress(None)
+
+        return wrapper
+
+    return decorate(fn) if fn is not None else decorate
 
 
 def _paths(picked: Any) -> list[Path]:
@@ -203,7 +221,7 @@ class Api:
             threading.Timer(0.2, self._window.destroy).start()
         return {}
 
-    @_wrap
+    @_wrap(progress=True)
     def smoke_example(self) -> dict[str, Any]:
         """``--smoke`` 模式專用：用假資料載入範例 recipe，讓前端走一次完整流程。"""
         if not self._smoke:
@@ -319,7 +337,7 @@ class Api:
         self._session.remove_file(int(index))
         return self._state()
 
-    @_wrap
+    @_wrap(progress=True)
     def load_data(self) -> dict[str, Any]:
         """「載入資料及預覽」：依序讀每個階段的檔（資料大時讀樣本），產生預覽。"""
         self._session.load_data()
@@ -374,7 +392,7 @@ class Api:
         self._session.select_stage(int(index))
         return self._state()
 
-    @_wrap
+    @_wrap(progress=True)
     def full_run(self, index: int) -> dict[str, Any]:
         """「完整跑一次」：用全部資料算出這個階段（只跑它和它用到的階段），預覽改用完整的結果（結合的右表）。"""
         self._session.full_run(int(index))
@@ -389,6 +407,7 @@ class Api:
 
     @_wrap
     def update_step(self, index: int, values: dict[str, Any]) -> dict[str, Any]:
+        """改第 index 步的參數；``values`` 帶的 ``id`` 和那一步現在的 id 不同時拒絕（表單延後送出的修改）。"""
         self._session.update_step(int(index), values)
         return self._state()
 
@@ -432,19 +451,22 @@ class Api:
 
     # ── 輸出 ───────────────────────────────────────────────────
 
-    @_wrap
+    @_wrap(progress=True)
     def export_parquet(self) -> dict[str, Any]:
         """「處理並匯出資料」：處理全部資料，寫到 Recipe 所在資料夾底下的 output/（檔名在輸出設定裡）。
 
-        不用先載入資料；試跑出錯時回傳 ``trial_error``（哪個階段的第幾步），畫面上可以「前往這一步」。
+        不用先載入資料。某一步出錯時回傳 ``trial_error``（哪個階段的第幾步），畫面上可以「前往這一步」：
+        試跑出錯（訊息開頭「試跑時出錯」），或只有全部資料才出現的錯誤（「處理時出錯」）。
+        一起回傳新的 ``state``（「輸出資料」改讀匯出檔）。
         """
         try:
-            return {"cancelled": False, **self._session.export()}
-        except TrialError as err:
-            return {
+            result = {"cancelled": False, **self._session.export()}
+        except StepError as err:
+            result = {
                 "cancelled": False,
                 "trial_error": {"message": str(err), "stage": err.stage, "step": err.step},
             }
+        return self._state(**result)
 
     @_wrap
     def download_skill(self) -> dict[str, Any]:
@@ -467,4 +489,5 @@ class Api:
 
     @_wrap
     def error_report(self) -> dict[str, Any]:
-        return {"text": self._session.error_report()}
+        """「檢查並複製錯誤報告」：報告文字與問題清單（同一次檢查，目前的 Recipe、畫面的語言）。"""
+        return self._session.report()

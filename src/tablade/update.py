@@ -29,16 +29,23 @@ def parse_version(text: str) -> tuple[int, ...]:
 
 
 def check_latest(timeout: float = TIMEOUT) -> dict[str, Any]:
-    """回傳目前版本、最新版本、是否有新版、下載頁網址；連不上時 ``error`` 說明原因。"""
+    """回傳目前版本、最新版本、是否有新版、下載頁網址；連不上時 ``error`` 說明原因。
+
+    ``error_code`` 是原因的代碼（disabled、no_release、http、offline、bad_version；HTTP 錯誤另有 ``http_status``）：
+    前端依代碼自己產生文字，切換語言時才會跟著換（``error`` 是查的當下的語言）。
+    """
     result: dict[str, Any] = {
         "current": __version__,
         "latest": None,
         "newer": False,
         "url": RELEASES_URL,
         "error": None,
+        "error_code": None,
+        "http_status": None,
     }
     if os.environ.get("TABLADE_NO_UPDATE_CHECK"):
         result["error"] = t("已關閉檢查更新", "Update check is turned off")
+        result["error_code"] = "disabled"
         return result
     request = urllib.request.Request(
         LATEST_API,
@@ -48,6 +55,8 @@ def check_latest(timeout: float = TIMEOUT) -> dict[str, Any]:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.load(response)
     except urllib.error.HTTPError as err:
+        result["error_code"] = "no_release" if err.code == 404 else "http"
+        result["http_status"] = err.code
         result["error"] = (
             t("GitHub 上還沒有發布版本", "No releases on GitHub yet")
             if err.code == 404
@@ -57,6 +66,7 @@ def check_latest(timeout: float = TIMEOUT) -> dict[str, Any]:
         )
         return result
     except (OSError, ValueError):  # 連不上、逾時、回應不是 JSON
+        result["error_code"] = "offline"
         result["error"] = t(
             "無法連線到 GitHub，略過檢查更新",
             "Couldn't connect to GitHub; skipped the update check",
@@ -65,6 +75,7 @@ def check_latest(timeout: float = TIMEOUT) -> dict[str, Any]:
     latest = str(data.get("tag_name") or "").removeprefix("v") if isinstance(data, dict) else ""
     if not parse_version(latest):
         result["error"] = t("無法判讀最新版號", "Couldn't read the latest version number")
+        result["error_code"] = "bad_version"
         return result
     result["latest"] = latest
     result["newer"] = parse_version(latest) > parse_version(__version__)
