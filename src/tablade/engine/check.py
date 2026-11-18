@@ -125,7 +125,7 @@ def check_recipe_file(
     except OSError as err:  # 找不到、是資料夾、沒有權限
         if isinstance(err, FileNotFoundError):
             reason = t("找不到這個檔", "file not found")
-        elif isinstance(err, IsADirectoryError):
+        elif isinstance(err, IsADirectoryError) or path.is_dir():  # Windows 是 PermissionError
             reason = t("這是資料夾，不是檔案", "this is a folder, not a file")
         else:
             reason = err.strerror or str(err)
