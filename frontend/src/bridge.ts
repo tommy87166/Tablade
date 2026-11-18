@@ -252,6 +252,12 @@ export interface ViewState {
     warnings: RowWarning[]
     /** 選的那一步算不出來的原因（算得出來時是 null）：還沒載入、哪一步有錯、哪個前面的階段還沒有結果 */
     blocked: { unloaded: boolean; step: number | null; stage: string | null } | null
+    /** 抽樣模式（用樣本算的：列數、加總可能不正確）、完整模式（資料全部讀進來，或讀匯出檔）；沒有資料時是 null */
+    mode: 'sample' | 'full' | null
+    /** 完整模式讀的是匯出檔時：匯出檔、列數、處理了幾行輸入、匯出時間、警告總數 */
+    full: { path: string; rows: number; input_rows: number; time: string; warning_count: number } | null
+    /** 抽樣模式下，選的那一步之前（含）第一個要看整個來源檔的步驟名稱（例如「群組彙總」） */
+    sampled_step: string | null
   }
   can_undo: boolean
   can_redo: boolean

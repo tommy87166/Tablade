@@ -365,6 +365,8 @@ export default function App() {
       state.input.encoding,
       upto,
       state.preview.rows,
+      state.preview.mode,
+      state.preview.full?.time,
     ])
   }, [state])
 
@@ -672,17 +674,38 @@ export default function App() {
                         ? `・${state.preview.rows.toLocaleString()} 列 × ${state.preview.columns.filter((c) => !c.system).length} 欄`
                         : ''}
                     </PaneMeta>
-                    {state.input.sampled ? (
+                    {state.preview.mode === 'sample' ? (
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <Badge variant="outline" className="border-amber-500/50 text-amber-700 dark:text-amber-400">
-                            預覽樣本
+                          <Badge variant="outline" className="border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400">
+                            抽樣模式：結果可能不正確
                           </Badge>
                         </TooltipTrigger>
                         <TooltipContent className="max-w-80">
-                          資料共 {state.input.total_rows?.toLocaleString()} 行，預覽只用每個檔案的前{' '}
-                          {state.input.sample.head.toLocaleString()} 行與最後 {state.input.sample.tail.toLocaleString()} 行，
-                          步驟的列數也是樣本的。匯出時會處理全部資料。
+                          資料共 {state.input.total_rows?.toLocaleString()} 行，預覽只用每個檔的前{' '}
+                          {state.input.sample.head.toLocaleString()} 行＋最後 {state.input.sample.tail.toLocaleString()}{' '}
+                          行，列數、加總、彙總結果可能不正確。按「處理並匯出資料」看完整結果（匯出後「輸出資料」會改成讀匯出檔）。
+                        </TooltipContent>
+                      </Tooltip>
+                    ) : state.preview.mode === 'full' ? (
+                      <Badge variant="outline" className="border-green-600/40 bg-green-600/10 text-green-700 dark:text-green-400">
+                        {state.preview.full
+                          ? `完整模式：已處理全部 ${state.preview.full.input_rows.toLocaleString()} 行（${state.preview.full.time} 匯出）`
+                          : `完整模式：資料共 ${state.input.total_rows?.toLocaleString()} 行，全部讀進來`}
+                      </Badge>
+                    ) : null}
+                    {state.preview.sampled_step ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Badge
+                            variant="outline"
+                            className="border-amber-600 bg-amber-500/20 font-medium text-amber-800 dark:text-amber-300"
+                          >
+                            「{state.preview.sampled_step}」用樣本算
+                          </Badge>
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-80">
+                          「{state.preview.sampled_step}」要看整個來源檔的每一列：用樣本算出來的筆數、加總、彙總結果不是全部資料的。
                         </TooltipContent>
                       </Tooltip>
                     ) : null}
@@ -739,7 +762,13 @@ export default function App() {
                           <CircleCheck className="size-4 shrink-0 text-green-600" />
                         )}
                         <span className={warnings.length ? 'text-amber-700 dark:text-amber-400' : ''}>
-                          {warnings.length ? `警告（${warnings.length.toLocaleString()}）` : '沒有警告'}
+                          {state.preview.full
+                            ? state.preview.full.warning_count
+                              ? `匯出時共 ${state.preview.full.warning_count.toLocaleString()} 則警告`
+                              : '匯出時沒有警告'
+                            : warnings.length
+                              ? `警告（${warnings.length.toLocaleString()}）`
+                              : '沒有警告'}
                         </span>
                       </BottomTab>
                       <BottomTab active={bottomTab === 'types'} onClick={() => openBottomTab('types')}>

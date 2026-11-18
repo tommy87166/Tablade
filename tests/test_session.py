@@ -1,6 +1,7 @@
 """Session：UI 背後的狀態。這裡照使用者在 UI 的操作順序測，不開視窗。"""
 
 import json
+from decimal import Decimal
 from pathlib import Path
 
 import polars as pl
@@ -559,6 +560,66 @@ def test_steps_after_an_error_say_what_blocks_them(data):
     fresh.load_recipe(s.save_recipe(data.parent / "blocked.recipe.json"))
     fresh.select(0)
     assert fresh.state()["preview"]["blocked"] == {"unloaded": True, "step": None, "stage": None}
+
+
+def test_sample_mode_and_full_mode_after_export(data, monkeypatch):
+    """大檔預覽用樣本（抽樣模式，彙總的數字不準）；匯出後「輸出資料」讀匯出檔（完整模式），
+    改了步驟就回到抽樣模式。"""
+    import shutil
+
+    from tablade import session as session_module
+
+    monkeypatch.setattr(session_module, "SAMPLE_THRESHOLD", 10)
+    monkeypatch.setattr(session_module, "SAMPLE_HEAD", 20)
+    monkeypatch.setattr(session_module, "SAMPLE_TAIL", 3)
+    shutil.copy(EXAMPLE, data.parent / EXAMPLE.name)
+    s = Session()
+    s.load_recipe(data.parent / EXAMPLE.name)
+    s.load_data()
+    n = len(s.steps)
+    s.add_step("parse_number", index=n)
+    s.update_step(n, {"columns": ["金額"]})
+    s.add_step("group_by", index=n + 1)
+    total = {"column": "金額", "op": "sum", "name": "合計"}
+    s.update_step(n + 1, {"by": ["門市"], "aggregations": [total]})
+    s.select(len(s.steps))  # 輸出資料
+    preview = s.state()["preview"]
+    assert (preview["mode"], preview["sampled_step"], preview["full"]) == (
+        "sample",
+        "群組彙總",
+        None,
+    )
+    sampled = s.frame_at(n + 1)["合計"].sum()
+
+    result = s.export()
+    exported = pl.read_parquet(result["path"])
+    assert exported["合計"].sum() != sampled  # 樣本算的加總不是全部資料的
+    preview = s.state()["preview"]
+    assert preview["mode"] == "full" and preview["step"] == len(s.steps)
+    assert preview["full"]["rows"] == exported.height and preview["full"]["input_rows"] == 94
+    assert preview["sampled_step"] is None and preview["blocked"] is None
+    assert [c["name"] for c in preview["columns"]] == exported.columns
+    page = s.rows(len(s.steps), 0, 100)
+    assert page["total"] == exported.height
+    assert page["rows"] == [
+        [str(v) if isinstance(v, Decimal) else v for v in r] for r in exported.iter_rows()
+    ]
+    info = s.column_info(len(s.steps))
+    assert info["sampled"] is False
+    column = next(c for c in info["columns"] if c["name"] == "合計")
+    assert (column["min"], column["max"]) == (
+        str(exported["合計"].min()),
+        str(exported["合計"].max()),
+    )
+    line = exported["__line_no"][1]
+    assert s.find_row(len(s.steps), exported["__source_file"][1], line) == 1
+
+    s.select(0)
+    assert s.state()["preview"]["mode"] == "sample"  # 其他步驟還是樣本
+    s.select(len(s.steps))
+    s.update_step(n + 1, {"by": ["通路"], "aggregations": [total]})  # 改了步驟：匯出檔對不上了
+    preview = s.state()["preview"]
+    assert preview["mode"] == "sample" and preview["full"] is None
 
 
 # ── 型別分頁 ────────────────────────────────────────────────────

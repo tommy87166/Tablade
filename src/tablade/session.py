@@ -21,6 +21,7 @@ import json
 import threading
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -223,15 +224,28 @@ EXAMPLE_ROWS = 1_000
 """型別分頁的範例值從前這麼多列找。"""
 
 
-def column_summary(frame: pl.DataFrame) -> list[dict[str, Any]]:
-    """每一欄的型別、空值、空白字串、最小～最大與範例值；位置是第幾個資料欄（和刪除欄的位置相同）。"""
+def column_summary(frame: pl.DataFrame | pl.LazyFrame) -> list[dict[str, Any]]:
+    """每一欄的型別、空值、空白字串、最小～最大與範例值；位置是第幾個資料欄（和刪除欄的位置相同）。
+
+    也可以是 LazyFrame（完整模式讀匯出檔）：統計一次串流查詢算完，範例值只讀前幾列，不整份讀進記憶體。
+    """
+    lazy = frame.lazy()
+    schema = lazy.collect_schema()
+    exprs = []
+    for i, (name, dtype) in enumerate(schema.items()):
+        col = pl.col(name)
+        exprs.append(col.null_count().alias(f"n{i}"))
+        if dtype == pl.String:
+            exprs.append((col.str.strip_chars() == "").sum().alias(f"b{i}"))
+        if dtype.is_numeric() or dtype.is_temporal():
+            exprs += [col.min().alias(f"lo{i}"), col.max().alias(f"hi{i}")]
+    stats = lazy.select(exprs).collect(engine="streaming").row(0, named=True) if exprs else {}
+    head = lazy.head(EXAMPLE_ROWS).collect()
     out, position = [], 0
-    head = frame.head(EXAMPLE_ROWS)
-    for name, dtype in frame.schema.items():
+    for i, (name, dtype) in enumerate(schema.items()):
         system = name.startswith(SYSTEM_PREFIX)
         if not system:
             position += 1
-        series = frame.get_column(name)
         ranged = dtype.is_numeric() or dtype.is_temporal()
         examples = head.get_column(name).drop_nulls().unique(maintain_order=True).head(3)
         out.append(
@@ -243,12 +257,10 @@ def column_summary(frame: pl.DataFrame) -> list[dict[str, Any]]:
                 if isinstance(dtype, pl.Decimal)
                 else str(dtype),
                 "label": type_label(dtype),
-                "nulls": series.null_count(),
-                "blanks": int((series.str.strip_chars() == "").sum())
-                if dtype == pl.String
-                else None,
-                "min": _jsonable(series.min()) if ranged else None,
-                "max": _jsonable(series.max()) if ranged else None,
+                "nulls": int(stats[f"n{i}"]),
+                "blanks": int(stats[f"b{i}"] or 0) if dtype == pl.String else None,
+                "min": _jsonable(stats[f"lo{i}"]) if ranged else None,
+                "max": _jsonable(stats[f"hi{i}"]) if ranged else None,
                 "examples": [_jsonable(v) for v in examples.to_list()],
             }
         )
@@ -281,6 +293,9 @@ class Session:
         """讀前面階段輸出的階段：接好的輸入（依前面階段結果的指紋快取）。"""
         self._full: dict[str, tuple[str, pl.DataFrame]] = {}
         """「完整跑一次」的結果：{階段: (樣本結果的指紋, 完整的結果)}；樣本結果變了就不用。"""
+        self._exports: dict[str, dict[str, Any]] = {}
+        """「處理並匯出資料」寫出的檔（完整模式）：{階段: {key, path, rows, input_rows, time, warnings…}}。
+        這個階段和它往上用到的階段的設定或檔案變了就不用（回到抽樣模式）；只記在這次 App 開著的期間。"""
         self.last_export: Path | None = None
         """上次「處理並匯出資料」最後一個階段寫出的檔。"""
 
@@ -1199,6 +1214,7 @@ class Session:
             while shown_index >= 0 and computed[shown_index].frame is None:
                 shown_index -= 1
             shown = source if shown_index < 0 else computed[shown_index].frame
+            full = self._showing_full()
             blocked = None
             if shown_index != requested:
                 if source is None:
@@ -1213,6 +1229,39 @@ class Session:
                 else [w.__dict__ for w in computed[shown_index].warnings[:200]]
             )
             total_rows = sum(f.rows for f in files) if files else None
+            preview = {
+                "step": shown_index,
+                "requested": requested,
+                "rows": shown.height if shown is not None else None,
+                "columns": [
+                    {"name": n, "dtype": str(t), "system": n.startswith(SYSTEM_PREFIX)}
+                    for n, t in (shown.schema.items() if shown is not None else [])
+                ],
+                "warnings": preview_warnings,
+                "blocked": blocked,
+                # 抽樣模式：用樣本算的（列數、加總可能不正確）；完整模式：資料全部讀進來，或讀匯出檔
+                "mode": None if shown is None else ("sample" if sampled else "full"),
+                "full": None,
+                "sampled_step": self._sampled_step(requested) if sampled else None,
+            }
+            if full is not None:
+                schema = pl.read_parquet_schema(full["path"])
+                preview.update(
+                    step=len(self.steps),
+                    requested=len(self.steps),
+                    rows=full["rows"],
+                    columns=[
+                        {"name": n, "dtype": str(t), "system": n.startswith(SYSTEM_PREFIX)}
+                        for n, t in schema.items()
+                    ],
+                    warnings=[w.__dict__ for w in full["warnings"][:200]],
+                    blocked=None,
+                    mode="full",
+                    sampled_step=None,
+                    full={
+                        k: full[k] for k in ("path", "rows", "input_rows", "time", "warning_count")
+                    },
+                )
             return {
                 "version": {"tablade": __version__, "recipe": RECIPE_VERSION},
                 "recipe": {
@@ -1255,17 +1304,7 @@ class Session:
                 "output": self.output,
                 "steps": steps,
                 "selected": selected,
-                "preview": {
-                    "step": shown_index,
-                    "requested": requested,
-                    "rows": shown.height if shown is not None else None,
-                    "columns": [
-                        {"name": n, "dtype": str(t), "system": n.startswith(SYSTEM_PREFIX)}
-                        for n, t in (shown.schema.items() if shown is not None else [])
-                    ],
-                    "warnings": preview_warnings,
-                    "blocked": blocked,
-                },
+                "preview": preview,
                 "can_undo": bool(self._undo),
                 "can_redo": bool(self._redo),
                 "issues": self.issues,
@@ -1280,8 +1319,33 @@ class Session:
                 return ref
         return None
 
+    def _full_frame(self, index: int) -> tuple[pl.LazyFrame, dict[str, Any]] | None:
+        """index 是「輸出資料」（步驟數）而且是完整模式：匯出檔（lazy，不整份讀進記憶體）。"""
+        if index != len(self.steps):
+            return None
+        full = self._showing_full()
+        return (pl.scan_parquet(full["path"]), full) if full is not None else None
+
+    def _sampled_step(self, upto: int) -> str | None:
+        """第 upto 步之前（含）第一個要看整個來源檔的步驟（樣本算的數字不準）。"""
+        for raw in self.steps[: upto + 1]:
+            cls = _safe_get(raw.get("type"))
+            if cls is not None and cls.whole_source and raw.get("enabled", True) is not False:
+                return cls.label
+        return None
+
     def rows(self, index: int, offset: int, limit: int) -> dict[str, Any]:
         with self._lock:
+            offset = max(0, offset)
+            full = self._full_frame(index)
+            if full is not None:
+                part = full[0].slice(offset, max(0, min(limit, 1000))).collect()
+                return {
+                    "offset": offset,
+                    "total": full[1]["rows"],
+                    "columns": part.columns,
+                    "rows": [[_jsonable(v) for v in row] for row in part.iter_rows()],
+                }
             frame = self.frame_at(index)
             if frame is None:
                 return {"offset": offset, "total": 0, "columns": [], "rows": []}
@@ -1298,6 +1362,14 @@ class Session:
     def column_info(self, index: int) -> dict[str, Any]:
         """第 index 步輸出的每一欄型別與概況（下方面板的「型別」分頁）；資料跟預覽同一份。"""
         with self._lock:
+            full = self._full_frame(index)
+            if full is not None:
+                return {
+                    "step": index,
+                    "rows": full[1]["rows"],
+                    "sampled": False,
+                    "columns": column_summary(full[0]),
+                }
             frame = self.frame_at(index)
             sampled = self._stage_input(self.current)[2]
             if frame is None:
@@ -1319,15 +1391,27 @@ class Session:
     ) -> int | None:
         """在第 index 步的結果裡找某個來源檔（工作表、從哪個階段讀進來）某一行的位置（點警告時跳到那一列）。"""
         with self._lock:
-            frame = self.frame_at(index)
-            if frame is None or "__line_no" not in frame.columns:
+            full = self._full_frame(index)
+            frame: pl.DataFrame | pl.LazyFrame | None = (
+                full[0] if full is not None else self.frame_at(index)
+            )
+            if frame is None or "__line_no" not in frame.collect_schema().names():
                 return None
             match = (pl.col("__source_file") == source_file) & (pl.col("__line_no") == line_no)
-            if sheet and SHEET in frame.columns:
+            names = frame.collect_schema().names()
+            if sheet and SHEET in names:
                 match &= pl.col(SHEET) == sheet
-            if stage and STAGE in frame.columns:
+            if stage and STAGE in names:
                 match &= pl.col(STAGE) == stage
-            hits = frame.with_row_index("__pos").filter(match).get_column("__pos")
+            hits = (
+                frame.lazy()
+                .with_row_index("__pos")
+                .filter(match)
+                .select("__pos")
+                .head(1)
+                .collect(engine="streaming")
+                .get_column("__pos")
+            )
             return int(hits[0]) if hits.len() else None
 
     # ── 匯出與報告 ────────────────────────────────────────────
@@ -1422,6 +1506,49 @@ class Session:
                     return si, i, f"{where}第 {i + 1} 步{label}"
         return None, None, ""
 
+    def _upstream(self, index: int) -> list[int]:
+        """第 index 個階段和它往上讀到、結合到的階段（依階段順序）。"""
+        found: set[int] = set()
+        todo = [index]
+        while todo:
+            i = todo.pop()
+            if i in found:
+                continue
+            found.add(i)
+            for ref, _ in stage_refs(self.stages[i]):
+                j = self._stage_index(ref, i)
+                if j is not None:
+                    todo.append(j)
+        return sorted(found)
+
+    def _export_key(self, index: int) -> str:
+        """第 index 個階段的輸出檔跟什麼有關：它和往上用到的階段的設定、輸出設定、讀到的檔（位置、大小、修改時間）。"""
+        used = [self.stages[i] for i in self._upstream(index)]
+        return _digest(
+            {
+                "stages": [self._stage_dict(st) for st in used],
+                "output": self.output,
+                "files": [self._source_key(st) for st in used if self._reads_files(st)],
+            }
+        )
+
+    def _full_output(self, index: int | None = None) -> dict[str, Any] | None:
+        """第 index 個階段（預設目前的）上次匯出的檔，而且跟現在的 Recipe、檔案對得上（完整模式）。"""
+        index = self.current if index is None else index
+        entry = self._exports.get(self.stages[index]["name"])
+        if entry is None:
+            return None
+        if entry["key"] != self._export_key(index) or not Path(entry["path"]).is_file():
+            del self._exports[self.stages[index]["name"]]
+            return None
+        return entry
+
+    def _showing_full(self) -> dict[str, Any] | None:
+        """選的是「輸出資料」，而且這個階段有對得上的匯出檔：預覽讀匯出檔（完整模式）。"""
+        if self.selected != len(self.steps):
+            return None
+        return self._full_output()
+
     def export(self) -> dict[str, Any]:
         """處理全部資料：每個要寫檔的階段寫到 Recipe 所在資料夾底下的 output/，處理紀錄寫到 log/。
 
@@ -1440,6 +1567,7 @@ class Session:
             except OutputError as err:
                 raise SessionError(str(err)) from None
             names = [st["name"] for st in self.stages]
+            keys = [self._export_key(i) for i in range(len(self.stages))]
             tracker = StageTracker(names, self.progress, [PREPARE, TRIAL])
             try:
                 if self._previewed():
@@ -1457,6 +1585,20 @@ class Session:
             except (InputError, DecodeError) as err:
                 raise SessionError(str(err)) from None
             self.last_export = Path(report.output) if report.output else None
+            when = datetime.now()
+            for out in report.outputs:
+                index = names.index(out.stage)
+                used = {names[i] for i in self._upstream(index)}
+                steps = [s for s in report.steps if s.stage == out.stage]
+                self._exports[out.stage] = {
+                    "key": keys[index],
+                    "path": out.path,
+                    "rows": out.rows,
+                    "input_rows": sum(f.rows for f in report.inputs if f.stage in used),
+                    "time": f"{when.month}/{when.day} {when:%H:%M}",
+                    "warning_count": sum(s.warning_count for s in steps),
+                    "warnings": [w for s in steps for w in s.warnings],
+                }
             return {
                 "path": report.output,
                 "rows": report.rows,

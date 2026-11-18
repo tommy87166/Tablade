@@ -137,6 +137,7 @@ class Dedupe(Step):
 
     label = "移除重複"
     per_file = True
+    whole_source = True
     category = "列"
     ai_notes = (
         "合併來源檔之前，每個來源檔各自找重複（同樣的值出現在不同檔時都會留著）；"

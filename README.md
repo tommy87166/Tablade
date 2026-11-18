@@ -335,7 +335,8 @@ tablade.spec          PyInstaller config (onefile / onedir via TABLADE_BUILD)
   form can run that stage once on all the data.
 - **Large files are previewed from a sample.** Above 200,000 lines the preview uses the first
   100,000 and last 1,000 lines of each file, so per-step row counts in the UI are sample counts;
-  export streams through everything, and the progress window shows how many lines have been processed.
+  the data pane says "sample mode". Export streams through everything, the progress window shows how many
+  lines have been processed, and afterwards "Output" reads the exported file and says "full mode".
   Streaming export reports only the final row count, and its warnings cover the rows that are still
   in the output. Group-by and pivot previews are computed from the sample too (pivot reads its new
   columns from the preview data; values that only show up at export time are reported as warnings).

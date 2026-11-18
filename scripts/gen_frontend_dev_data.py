@@ -263,7 +263,8 @@ def main(argv: list[str] | None = None) -> int:
                 state["recipe"]["base_dir"] = None
                 key = f"{stage}:{index}"
                 states[key] = state
-                if index < count:
+                # 「輸出資料」是完整模式（讀匯出檔）時，表格要的是第「步驟數」步
+                if index < count or state["preview"]["step"] == count:
                     rows[key] = api.rows(index, 0, 200)
                     columns_info[key] = api.column_info(index)
     finally:

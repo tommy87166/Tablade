@@ -121,6 +121,8 @@ class Step(BaseModel):
     （合併來源檔也是：合併之後來源檔與行號都變了）。
     這種步驟用 ``reshape_order()`` 排輸出欄位：系統欄位、資料欄、位置欄（回報進度用）、自己的暫存欄。
     """
+    whole_source: ClassVar[bool] = False
+    """True：結果要看整個來源檔的每一列（移除重複、群組彙總、樞紐）：預覽用樣本時，算出來的數字不準。"""
 
     @classmethod
     def type_name(cls) -> str:

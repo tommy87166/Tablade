@@ -173,6 +173,8 @@
 
 ## 第 5 批：抽樣模式／完整模式
 
+狀態：已完成。要看整個來源檔的步驟用新的 `Step.whole_source`（移除重複、群組彙總、樞紐）；完整模式時預覽的 `step` 是步驟數（「輸出資料」），`rows`／`column_info`／`find_row` 依它讀匯出檔。
+
 ### 記住匯出結果（`session.py`）
 
 - 匯出成功後，每個寫出的檔記一筆 `self._full[階段名稱] = {path, rows, columns, time, fingerprint}`。

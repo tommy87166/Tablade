@@ -221,6 +221,7 @@ class GroupBy(Step):
 
     label = "群組彙總"
     per_file = True
+    whole_source = True
     category = "彙總"
     reshapes = True
     effect = {"kind": "group", "by": "$by", "aggregations": "$aggregations", "count": "$count_as"}
@@ -300,6 +301,7 @@ class Pivot(Step):
 
     label = "樞紐"
     per_file = True
+    whole_source = True
     category = "彙總"
     reshapes = True
     effect = {
