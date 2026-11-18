@@ -32,7 +32,7 @@
 **Tablade** (*Table + Blade*) is a desktop data cleaning tool in the spirit of Power Query's
 *Applied Steps*: you build a **linear list of steps** — remove junk rows, split columns, fill
 down, parse numbers and dates — preview the result after every step, and export clean
-**Parquet** (into an `output` folder next to the recipe). Every row carries the file and line it came from, and a manifest in the `log` folder records
+**Parquet** or **CSV** (chosen per stage; CSV is UTF-8 with a BOM so Excel opens it directly), into an `output` folder next to the recipe. Every row carries the file and line it came from, and a manifest in the `log` folder records
 the recipe, the SHA-256 of every input and of the output, and each step's row count and warnings. The steps are
 saved as a **recipe JSON**, so the same cleanup can be re-run on next month's files.
 **Every file stays on your machine**: there is no server and no upload. The only network call is a

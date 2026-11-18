@@ -677,11 +677,6 @@
         "Output": {
           "additionalProperties": false,
           "properties": {
-            "format": {
-              "const": "parquet",
-              "default": "parquet",
-              "type": "string"
-            },
             "keep_system_columns": {
               "default": true,
               "type": "boolean"
@@ -1474,6 +1469,13 @@
               "default": "",
               "type": "string"
             },
+            "output_format": {
+              "enum": [
+                "parquet",
+                "csv"
+              ],
+              "type": "string"
+            },
             "steps": {
               "items": {
                 "discriminator": {
@@ -1588,7 +1590,8 @@
             }
           },
           "required": [
-            "name"
+            "name",
+            "output_format"
           ],
           "type": "object"
         },

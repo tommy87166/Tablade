@@ -5,14 +5,16 @@
   "stages": [
     {
       "name": "品項對照",
+      "output_format": "csv",
       "input": { "files": ["data/品項對照.csv"], "reader": "csv", "encoding": "auto" },
       "steps": [
         { "id": "a1", "type": "trim_clean", "columns": ["品號", "類別"] }
       ],
-      "output_file": "品項對照.parquet"
+      "output_file": "品項對照"
     },
     {
       "name": "文字明細",
+      "output_format": "parquet",
       "input": { "files": ["data/明細_*.csv"], "reader": "text_lines", "encoding": "auto" },
       "steps": [
         { "id": "t1", "type": "remove_top_rows", "n": 2 },
@@ -31,6 +33,7 @@
     },
     {
       "name": "Excel明細",
+      "output_format": "parquet",
       "input": { "files": ["data/明細.xlsx"], "reader": "excel", "sheet": "明細" },
       "steps": [
         { "id": "x1", "type": "remove_top_rows", "n": 3 },
@@ -41,6 +44,7 @@
     },
     {
       "name": "預設階段",
+      "output_format": "parquet",
       "input": { "reader": "stages", "stages": ["文字明細", "Excel明細"] },
       "steps": [
         { "id": "m1", "type": "merge_files", "name": "全部明細" },
@@ -49,5 +53,5 @@
       ]
     }
   ],
-  "output": { "format": "parquet", "keep_system_columns": true }
+  "output": { "keep_system_columns": true }
 }

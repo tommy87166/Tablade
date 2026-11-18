@@ -81,11 +81,13 @@ def all_steps_recipe() -> dict:
         "stages": [
             {
                 "name": "品項對照",
+                "output_format": "parquet",
                 "input": {"files": ["data/品項對照.csv"], "reader": "csv", "encoding": "auto"},
                 "steps": [{"id": "a1", "type": "trim_clean", "columns": ["品號", "類別"]}],
             },
             {
                 "name": "報表",
+                "output_format": "parquet",
                 "input": {
                     "files": ["data/銷售報表.txt"],
                     "reader": "text_lines",
@@ -95,11 +97,13 @@ def all_steps_recipe() -> dict:
             },
             {
                 "name": "文字明細",
+                "output_format": "parquet",
                 "input": {"files": ["data/明細_*.csv"], "reader": "text_lines", "encoding": "auto"},
                 "steps": detail,
             },
             {
                 "name": "預設階段",
+                "output_format": "parquet",
                 "input": {"reader": "stages", "stages": ["報表", "文字明細"]},
                 "steps": [
                     {"id": "m1", "type": "merge_files", "name": "全部明細"},
@@ -135,7 +139,7 @@ def all_steps_recipe() -> dict:
                 ],
             },
         ],
-        "output": {"format": "parquet", "keep_system_columns": True},
+        "output": {"keep_system_columns": True},
     }
 
 
@@ -209,7 +213,15 @@ def _collect(api: Api, session, name: str) -> dict:
             if index < count or state["preview"]["step"] == count:
                 rows[key] = api.rows(index, 0, 200)
                 columns_info[key] = api.column_info(index)
-    return {"ready": ready, "states": states, "rows": rows, "columns_info": columns_info}
+    # 自我檢測實際跑一次（開發畫面的「自我檢測」顯示這個；跟著目前的語言）
+    selftest = api.selftest()
+    return {
+        "ready": ready,
+        "states": states,
+        "rows": rows,
+        "columns_info": columns_info,
+        "selftest": selftest,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:

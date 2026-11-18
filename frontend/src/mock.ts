@@ -6,14 +6,16 @@
  * 用假資料跑過範例 recipe 的真實畫面狀態，鍵是「階段:步驟」。切換階段、選取步驟會切換畫面；其他修改只回傳目前的狀態。
  * 看多個階段：`uv run python scripts/gen_frontend_dev_data.py --recipe sales_combined`。
  */
-import type { Cell, ColumnsInfo, Progress, ReadyInfo, RowsPage, RunState, TabladeApi, Usage, ViewState } from './bridge'
-import type { Lang } from './i18n'
+import type { Cell, ColumnsInfo, Progress, ReadyInfo, RowsPage, RunState, SelftestResult, TabladeApi, Usage, ViewState } from './bridge'
+import { tr, type Lang } from './i18n'
 
 interface Sample {
   ready: { ok: true } & ReadyInfo
   states: Record<string, ViewState>
   rows: Record<string, { ok: true } & RowsPage>
   columns_info?: Record<string, { ok: true } & ColumnsInfo>
+  /** 產生器實際跑一次的自我檢測結果（跟著那份假資料的語言） */
+  selftest?: { ok: true; result: SelftestResult }
 }
 
 const files = import.meta.glob<Sample>(['./dev/sample.json', './dev/sample.en.json'], { eager: true, import: 'default' })
@@ -168,7 +170,13 @@ async function fakeExport() {
   // 跟 Python 一樣：每個要寫檔的階段寫到 output/（開發用假資料不會真的寫檔）
   const outputs = current()
     .stages.filter((s) => s.output && !s.output.error)
-    .map((s) => ({ stage: s.name, path: `（開發用假資料）/${s.output!.path}`, rows: s.rows ?? 0, manifest: null }))
+    .map((s) => ({
+      stage: s.name,
+      path: `（開發用假資料）/${s.output!.path}`,
+      rows: s.rows ?? 0,
+      manifest: null,
+      format: s.output!.format,
+    }))
   const last = outputs[outputs.length - 1]
   return {
     ok: true as const,
@@ -185,35 +193,21 @@ async function fakeExport() {
 
 export const mockApi: TabladeApi = sample
   ? {
-      ready: () => delay({ ...sample.ready, platform: 'Browser（開發用假資料）' }, 0),
-      staging_info: () => delay({ ok: true as const, path: '/tmp/tablade-stage-xxxx（開發用假資料）', bytes: 12_345_678 }),
-      open_staging: () => delay({ ok: true as const, path: '/tmp/tablade-stage-xxxx（開發用假資料）', bytes: 12_345_678 }),
-      selftest: () =>
+      ready: () => delay({ ...sample.ready, platform: tr('Browser（開發用假資料）', 'Browser (dev data)') }, 0),
+      staging_info: () =>
         delay({
-          ok: true,
-          result: {
-            ok: true,
-            checks: [
-              ['產生假資料 CSV', '可以在暫存資料夾寫檔', '12,205 bytes（cp950）'],
-              ['讀取 CSV（自動偵測編碼）', '讀檔與 Big5（cp950）編碼偵測正常', '200 列 × 6 欄，編碼 cp950'],
-              ['寫出 Parquet', '可以輸出 Parquet 檔', '4,342 bytes'],
-              ['讀回 Parquet 並比對', '寫出的內容完全正確', '內容一致'],
-              ['Lazy 查詢', 'Polars 的查詢引擎正常', 'group_by 得到 3 組'],
-              ['讀 Excel', '可以讀 Excel 工作表（列號、日期、數字）', '讀回 24 列，列號、日期、數字正確（fastexcel 0.21.0）'],
-              [
-                '多核心轉碼',
-                '大檔可以用多個程序同時轉碼，結果和單核心相同',
-                '開 2 個工作程序同時轉碼，結果與單核心相同；大檔平常用 8 個工作程序',
-              ],
-              [
-                '完整執行範例 Recipe',
-                '轉碼、各檔分開處理、8 個步驟、合併來源檔、串流匯出整條流程正常',
-                '2 個 cp950 檔 → 合併成 70 列，與預期一致；處理紀錄正確',
-              ],
-            ].map(([name, purpose, detail]) => ({ name, purpose, detail, ok: true, ran: true })),
-            versions: { tablade: '0.1.0', python: '—', polars: '—', platform: 'Browser（開發用假資料）', frozen: 'False' },
-          },
+          ok: true as const,
+          path: tr('/tmp/tablade-stage-xxxx（開發用假資料）', '/tmp/tablade-stage-xxxx (dev data)'),
+          bytes: 12_345_678,
         }),
+      open_staging: () =>
+        delay({
+          ok: true as const,
+          path: tr('/tmp/tablade-stage-xxxx（開發用假資料）', '/tmp/tablade-stage-xxxx (dev data)'),
+          bytes: 12_345_678,
+        }),
+      // 自我檢測：產生器實際跑過一次（中文、英文各一份）；舊的假資料沒有時顯示失敗並提示重新產生
+      selftest: () => (sample.selftest ? delay(sample.selftest) : fail()),
       smoke_done: () => delay({ ok: true }),
       // 網址加 ?update 看有新版時的提示
       check_update: () =>

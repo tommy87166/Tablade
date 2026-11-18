@@ -70,7 +70,7 @@ from .recipe.schema import (
     parse_recipe,
     pydantic_issues,
 )
-from .recipe.validator import stage_ref_fields
+from .recipe.validator import OUTPUT_EXTENSIONS, stage_ref_fields
 from .steps import all_steps, get
 from .steps.base import (
     SHEET,
@@ -85,7 +85,9 @@ from .steps.base import (
 
 MAX_UNDO = 100
 DEFAULT_INPUT = {"files": [], "reader": "text_lines", "encoding": "auto", "sheet": "", "stages": []}
-DEFAULT_OUTPUT = {"format": "parquet", "keep_system_columns": True, "manifest": True}
+DEFAULT_OUTPUT = {"keep_system_columns": True, "manifest": True}
+DEFAULT_FORMAT = "parquet"
+"""新的階段的輸出格式（每個階段的 output_format 是必填）。"""
 STAGE_NAME_MAX = 40
 
 
@@ -168,6 +170,7 @@ def _new_stage(name: str) -> dict[str, Any]:
         "input": copy.deepcopy(DEFAULT_INPUT),
         "steps": [],
         "output_file": "",
+        "output_format": DEFAULT_FORMAT,
         "selected": -1,
     }
 
@@ -398,6 +401,8 @@ class Session:
         out = {"name": stage["name"], "input": source, "steps": stage["steps"]}
         if stage.get("output_file"):
             out["output_file"] = stage["output_file"]  # 沒填就不寫，Recipe 比較好讀
+        if stage.get("output_format"):
+            out["output_format"] = stage["output_format"]  # 必填：讀進來時沒有就留著讓驗證報錯
         return out
 
     def recipe_dict(self) -> dict[str, Any]:
@@ -481,6 +486,8 @@ class Session:
                 stage["steps"] = [s for s in steps if isinstance(s, dict)]
                 file = item.get("output_file")
                 stage["output_file"] = file.strip() if isinstance(file, str) else ""
+                fmt = item.get("output_format")
+                stage["output_format"] = fmt if isinstance(fmt, str) else ""
                 stage["selected"] = len(stage["steps"]) - 1
                 stages.append(stage)
             self._reset()
@@ -722,17 +729,31 @@ class Session:
                 if key in values:
                     self.output[key] = bool(values[key])
 
-    def set_stage_output(self, index: int, file: str) -> None:
-        """改第 index 個階段的輸出檔名（只填檔名；沒有 .parquet 時補上，空白＝中間階段不寫檔）。"""
+    def set_stage_output(self, index: int, file: str, fmt: str | None = None) -> None:
+        """改第 index 個階段的輸出檔名與格式（parquet、csv；沒給格式時不變）。
+
+        檔名只填名稱：填了和格式一樣的副檔名就拿掉（副檔名照格式補）；空白＝中間的階段不寫檔。
+        """
         with self._lock:
             self._check_stage(index)
+            stage = self.stages[index]
+            fmt = (stage.get("output_format") or DEFAULT_FORMAT) if fmt is None else str(fmt)
+            if fmt not in OUTPUT_EXTENSIONS:
+                raise SessionError(
+                    t(
+                        f"不支援的輸出格式：{fmt}（可用：{'、'.join(OUTPUT_EXTENSIONS)}）",
+                        f"Unsupported output format: {fmt} (available: {', '.join(OUTPUT_EXTENSIONS)})",
+                    )
+                )
             name = str(file).strip()
-            if name and not name.lower().endswith(".parquet"):
-                name += ".parquet"
-            if name == self.stages[index].get("output_file", ""):
+            ext = OUTPUT_EXTENSIONS[fmt]
+            if name.lower().endswith(ext):
+                name = name[: -len(ext)].rstrip()
+            if name == stage.get("output_file", "") and fmt == stage.get("output_format"):
                 return
             self._change()
-            self.stages[index]["output_file"] = name
+            stage["output_file"] = name
+            stage["output_format"] = fmt
 
     def _default_output(self) -> str:
         return default_output_name(self.recipe_path, self.meta.get("name", ""))
@@ -1211,6 +1232,8 @@ class Session:
                 return
             data = self.recipe_dict()
             data["stages"] = [data["stages"][i] for i in self._upstream(index)]
+            # 結果寫成暫存的 Parquet 再讀回來（跟這個階段設定的輸出格式無關）
+            data["stages"][-1]["output_format"] = "parquet"
             data["output"] = {**data["output"], "keep_system_columns": True, "manifest": False}
             target = staging_dir() / f"full-{uuid.uuid4().hex}.parquet"
             try:
@@ -1247,6 +1270,7 @@ class Session:
                     "full": full,
                     "uses": list(dict.fromkeys(ref for ref, _ in stage_refs(stage))),
                     "output_file": stage.get("output_file", ""),
+                    "output_format": stage.get("output_format", ""),
                     "output": _planned_state(planned[i]) if i < len(planned) else None,
                 }
             )
@@ -1761,6 +1785,8 @@ class Session:
         if entry["key"] != self._export_key(index) or not Path(entry["path"]).is_file():
             del self._exports[self.stages[index]["name"]]
             return None
+        if entry.get("format") == "csv":
+            return None  # CSV 沒有存型別，也常被 Excel 改過再存：不提供完整模式，維持抽樣模式
         return entry
 
     def _showing_full(self) -> dict[str, Any] | None:
@@ -1818,6 +1844,7 @@ class Session:
                 self._exports[out.stage] = {
                     "key": keys[index],
                     "path": out.path,
+                    "format": out.format,
                     "rows": out.rows,
                     "input_rows": sum(f.rows for f in report.inputs if f.stage in used),
                     "time": f"{when.month}/{when.day} {when:%H:%M}",
@@ -1832,7 +1859,13 @@ class Session:
                 "mode": report.mode,
                 "manifest": report.manifest,
                 "outputs": [
-                    {"stage": o.stage, "path": o.path, "rows": o.rows, "manifest": o.manifest}
+                    {
+                        "stage": o.stage,
+                        "path": o.path,
+                        "rows": o.rows,
+                        "manifest": o.manifest,
+                        "format": o.format,
+                    }
                     for o in report.outputs
                 ],
             }
@@ -1908,6 +1941,7 @@ def _planned_state(planned: Any) -> dict[str, Any] | None:
         "default": planned.default,
         "exists": planned.path.is_file(),
         "error": planned.error,
+        "format": planned.format,
     }
 
 

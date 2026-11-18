@@ -703,6 +703,88 @@ def test_middle_stage_outputs_and_all_or_nothing_writes(workdir):
         assert not list((folder / "output").glob(".*"))
 
 
+def _record_reads(monkeypatch) -> list[Path]:
+    """記下所有讀 Parquet／CSV 的檔案路徑（攔截 polars 的讀檔函式，照樣讀）。"""
+    seen: list[Path] = []
+    for name in ("scan_parquet", "read_parquet", "read_parquet_schema", "scan_csv", "read_csv"):
+        real = getattr(pl, name)
+
+        def spy(source, *args, _real=real, **kwargs):
+            items = source if isinstance(source, (list, tuple)) else [source]
+            seen.extend(Path(s).resolve() for s in items if isinstance(s, (str, Path)))
+            return _real(source, *args, **kwargs)
+
+        monkeypatch.setattr(pl, name, spy)
+    return seen
+
+
+@pytest.mark.parametrize("fmt", ["parquet", "csv"])
+@pytest.mark.parametrize("mode", ["eager", "stream"])
+def test_later_stages_never_read_the_output_files(workdir, monkeypatch, mode, fmt):
+    """後面的階段只讀引擎傳下來的結果（記憶體或暫存資料夾），不讀 output/ 的輸出檔（Parquet、CSV 都一樣）：
+    輸出檔先換成內容錯的舊檔，結果照樣正確；執行中也沒有讀到 output/ 底下的任何檔（新寫的暫存檔也不讀，
+    最後一個階段的列數從結果算）。"""
+    data = load_json(COMBINED)
+    data["stages"][1]["output_format"] = fmt  # 中間的階段「文字明細」
+    r = parse_recipe(data)
+    folder = workdir / mode
+    targets = {
+        "文字明細": folder / "output" / f"文字.{fmt}",
+        "預設階段": folder / "output" / "全部.parquet",
+    }
+    read = {"parquet": pl.read_parquet, "csv": pl.read_csv}
+    _, expected = execute(r, workdir, outputs=targets, log_dir=folder / "log", mode=mode)
+    right = {name: read[path.suffix[1:]](path) for name, path in targets.items()}
+    stale = pl.DataFrame({"品號": ["ZZZ"], "金額": [1]})  # 上次留下的、內容完全不同的輸出檔
+    for path in targets.values():
+        stale.write_csv(path) if path.suffix == ".csv" else stale.write_parquet(path)
+
+    seen = _record_reads(monkeypatch)
+    _, report = execute(r, workdir, outputs=targets, log_dir=folder / "log", mode=mode)
+    monkeypatch.undo()
+
+    assert seen  # 攔截有作用（讀了輸入檔或暫存資料夾）
+    if mode == "stream":
+        assert any(part.startswith("run-") for p in seen for part in p.parts)  # 讀的是暫存資料夾
+    for name, path in targets.items():
+        assert read[path.suffix[1:]](path).equals(right[name])
+    assert (report.rows, [(o.stage, o.rows, o.format) for o in report.outputs]) == (
+        expected.rows,
+        [(o.stage, o.rows, o.format) for o in expected.outputs],
+    )
+    assert [o.format for o in report.outputs] == [fmt, "parquet"]
+    out = (folder / "output").resolve()
+    assert not [p for p in seen if out in p.parents]
+
+
+def test_preview_never_reads_the_output_files(workdir, monkeypatch):
+    """預覽（載入資料及預覽）時，後面的階段也只讀記憶體裡的結果：output/ 裡有內容錯的舊檔也不影響。"""
+    data = json.loads(COMBINED.read_text(encoding="utf-8"))
+    data["stages"][1]["output_file"] = "文字.parquet"  # 中間的階段也寫檔
+    path = workdir / "combined.recipe.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    s = Session()
+    s.load_recipe(path)
+    s.load_data()
+    expected = [(st["name"], st["rows"], st["columns"]) for st in s.state()["stages"]]
+
+    stale = pl.DataFrame({"品號": ["ZZZ"], "金額": [1]})
+    (workdir / "output").mkdir(exist_ok=True)
+    for name in ("文字.parquet", "combined.parquet"):  # 中間的階段、最後一個階段（Recipe 的名稱）
+        stale.write_parquet(workdir / "output" / name)
+
+    seen = _record_reads(monkeypatch)
+    fresh = Session()
+    fresh.load_recipe(path)
+    fresh.load_data()
+    state = fresh.state()
+    monkeypatch.undo()
+
+    assert [(st["name"], st["rows"], st["columns"]) for st in state["stages"]] == expected
+    out = (workdir / "output").resolve()
+    assert not [p for p in seen if p.parent == out]
+
+
 def test_stream_matches_eager_with_join_before_merge(workdir):
     """合併來源檔之前 join：每個來源檔各自和整張右表 join；讀前面階段時每個來源各自處理。"""
 

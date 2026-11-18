@@ -336,8 +336,9 @@ class Api:
         return self._state()
 
     @_wrap
-    def set_stage_output(self, index: int, file: str) -> dict[str, Any]:
-        self._session.set_stage_output(index, file)
+    def set_stage_output(self, index: int, file: str, format: str | None = None) -> dict[str, Any]:
+        """改階段的輸出檔名與格式（parquet、csv；沒給格式時不變）。"""
+        self._session.set_stage_output(int(index), str(file), format)
         return self._state()
 
     @_wrap

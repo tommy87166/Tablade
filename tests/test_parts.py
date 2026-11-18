@@ -49,9 +49,10 @@ def recipe_of(pattern: str, reader: str, steps: list[dict]):
                     "name": "預設階段",
                     "input": {"files": [pattern], "reader": reader, "encoding": "auto"},
                     "steps": steps,
+                    "output_format": "parquet",
                 }
             ],
-            "output": {"format": "parquet", "keep_system_columns": True},
+            "output": {"keep_system_columns": True},
         }
     )
 

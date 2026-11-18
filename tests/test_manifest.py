@@ -87,7 +87,7 @@ def test_manifest_lists_warnings(workdir):
 
 def test_manifest_can_be_turned_off(workdir):
     out = workdir / "off.parquet"
-    off = recipe(workdir, output={"format": "parquet", "manifest": False})
+    off = recipe(workdir, output={"manifest": False})
     _, report = execute(off, workdir, output=out, mode="eager")
     assert out.exists() and report.manifest is None and not manifest_path(out).exists()
     # 只試跑（不寫出檔案）時也不寫

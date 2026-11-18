@@ -171,8 +171,12 @@
   只有一份資料時就一個階段，名稱用「預設階段」。舊的寫法（最外層直接放 `inputs` / `steps`）不收，開啟時報錯並說明新寫法。
 - 後面的階段用名稱引用前面階段的結果（`"input": {"reader": "stages", "stages": [...]}` 讀它，或結合的 `right`）。
   只能引用**前面**的階段，所以不會有循環；第一個階段只能讀實際檔。中間階段沒有被用到、也不寫檔時，驗證器給提醒（`severity: warning`）。
-- **輸出檔**：每個階段可以有 `output_file`（只填檔名，例如 `"明細.parquet"`；沒寫 `.parquet` 時補上）。
-  最後一個階段一定寫檔，沒填時用 Recipe 的名稱（`明細.recipe.json` → `明細.parquet`）；中間的階段有填才寫，沒填就只是暫存的。
+- **輸出檔**：每個階段有必填的 `output_format`（`parquet` 或 `csv`），可以有 `output_file`（只填檔名，例如 `"明細"`；副檔名照格式補上）。
+  最後一個階段一定寫檔，沒填時用 Recipe 的名稱（`明細.recipe.json` → `明細.parquet` 或 `明細.csv`）；中間的階段有填才寫，沒填就只是暫存的。
+  - CSV 是 UTF-8 加 BOM（Excel 雙擊打開中文不會亂碼）；小數照原樣、日期 `2026-01-05`、日期時間 `2026-01-05 10:00:00`、空值是空白。
+  - 填了副檔名但跟格式不一樣時報錯；主檔名在同一個 Recipe 裡不能重複（`明細.csv` 和 `明細.parquet` 也算，處理紀錄都是 `log/明細.manifest.json`）。
+  - 後面的階段讀的是引擎傳下來的結果（記憶體或暫存資料夾的暫存 Parquet），不讀輸出檔，所以輸出格式不影響引用（`tests/test_large.py` 的 `test_later_stages_never_read_the_output_files`）。
+  - CSV 輸出匯出後不提供完整模式（沒有存型別，也常被 Excel 改過再存），「輸出資料」照舊是抽樣模式；超過 Excel 的 1,048,576 列時，匯出摘要提醒。
   寫出的檔一樣可以被後面的階段引用。檔名不能有路徑字元（`/ \ : * ? " < > |`）、不能「.」開頭、同一個 Recipe 裡不能重複（不分大小寫），
   寫出的位置不能是任何一個階段的輸入檔；已經存在的檔直接覆蓋。格式、保留系統欄位、處理紀錄的設定在最外層的 `output`，套用到每個輸出檔。
 - 每個步驟都有 `id`（整份 Recipe 不能重複），並可加上 `"enabled": false` 暫時停用。
@@ -292,7 +296,7 @@
 
 ## 9. 輸出與可追溯紀錄
 
-每個輸出檔 `output/xxx.parquet` 各寫一份 `log/xxx.manifest.json`（處理紀錄，`export/manifest.py`）。「輸出資料」設定可以關掉（Recipe 的 `output.manifest`，預設開）；只試跑、不寫出檔案時不寫。
+每個輸出檔 `output/xxx.parquet`（或 `xxx.csv`）各寫一份 `log/xxx.manifest.json`（處理紀錄，`export/manifest.py`；`output.format` 記格式）。「輸出資料」設定可以關掉（Recipe 的 `output.manifest`，預設開）；只試跑、不寫出檔案時不寫。
 每一份只記跟這個輸出檔有關的：寫出它的階段，加上它往上讀到、結合到的階段（輸入檔、步驟、警告），單獨拿一個檔也查得到來源；`recipe.content` 仍是完整的 Recipe。
 
 ```json
@@ -309,7 +313,7 @@
     { "id": "s1", "type": "remove_top_rows", "description": "移除每個檔案的前 2 列", "enabled": true, "rows": 120341, "warning_count": 0 }
   ],
   "warnings": { "count": 1, "items": [ { "step": "s5", "source_file": "data/明細_01.csv", "line_no": 88, "message": "「金額」的「N/A」不是數字，已改成空值" } ] },
-  "output": { "file": "明細.parquet", "rows": 120300, "columns": ["日期", "…"], "bytes": 456789, "sha256": "…" }
+  "output": { "file": "明細.parquet", "format": "parquet", "rows": 120300, "columns": ["日期", "…"], "bytes": 456789, "sha256": "…" }
 }
 ```
 

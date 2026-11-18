@@ -1,8 +1,9 @@
 """輸出檔的位置（DESIGN.md §9）：每個階段的 ``output_file`` 寫到 Recipe 所在資料夾底下的 ``output/``，
 處理紀錄寫到並排的 ``log/``。
 
-- 中間的階段有填檔名才寫檔；最後一個階段一定寫，沒填時用 Recipe 的名稱（``明細.recipe.json`` → ``明細.parquet``）。
-- 檔名只能是檔名（不能有路徑字元），同一個 Recipe 裡不能重複，寫出的位置不能是任何一個階段的輸入檔。
+- 中間的階段有填檔名才寫檔；最後一個階段一定寫，沒填時用 Recipe 的名稱（``明細.recipe.json`` → ``明細``）。
+- 副檔名照每個階段的 ``output_format`` 補上（``.parquet``、``.csv``；CSV 是 UTF-8 加 BOM）。
+- 檔名只能是檔名（不能有路徑字元），主檔名在同一個 Recipe 裡不能重複，寫出的位置不能是任何一個階段的輸入檔。
 - 已經存在的檔直接覆蓋。
 """
 
@@ -17,7 +18,7 @@ from tablade.export.manifest import LOG_DIR
 from tablade.i18n import t
 from tablade.ingest.sources import expand
 from tablade.recipe.schema import Recipe
-from tablade.recipe.validator import output_issues, output_name
+from tablade.recipe.validator import OUTPUT_EXTENSIONS, output_issues, output_name
 
 OUTPUT_DIR = "output"
 _INVALID = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
@@ -36,16 +37,17 @@ class PlannedOutput:
     default: bool
     """最後一個階段沒填檔名、用 Recipe 名稱。"""
     error: str | None = None
+    format: str = "parquet"
+    """parquet 或 csv（這個階段的 output_format）。"""
 
 
 def default_output_name(recipe_path: Path | None, fallback: str = "") -> str:
-    """最後一個階段沒填檔名時用的檔名：Recipe 的名稱（不能當檔名的字元換成 _）。"""
+    """最後一個階段沒填檔名時用的主檔名：Recipe 的名稱（不能當檔名的字元換成 _；副檔名照輸出格式另外補）。"""
     if recipe_path is not None:
         stem = recipe_path.name.removesuffix(".json").removesuffix(".recipe")
     else:
         stem = fallback
-    stem = _INVALID.sub("_", stem).strip(" .") or "result"
-    return f"{stem}.parquet"
+    return _INVALID.sub("_", stem).strip(" .") or "result"
 
 
 def plan_outputs(
@@ -79,8 +81,10 @@ def plan_outputs(
         if not raw and not last:
             out.append(None)
             continue
-        file = output_name(raw or default)
-        planned = PlannedOutput(file, folder / file, not raw, errors.get(k))
+        fmt = stage.get("output_format") if isinstance(stage, dict) else None
+        fmt = fmt if fmt in OUTPUT_EXTENSIONS else "parquet"
+        file = output_name(raw or default, fmt)
+        planned = PlannedOutput(file, folder / file, not raw, errors.get(k), fmt)
         owner = inputs.get(planned.path.resolve())
         if planned.error is None and owner is not None:
             planned.error = t(

@@ -96,8 +96,15 @@ class Stage(_Model):
         default="",
         title="輸出檔名",
         description=(
-            "只填檔名（例如 明細.parquet），存到 Recipe 所在資料夾底下的 output 資料夾；"
-            "中間的階段有填才寫檔，最後一個階段空白時用 Recipe 的名稱"
+            "只填檔名（例如 明細），副檔名照 output_format 自動補上；存到 Recipe 所在資料夾底下的"
+            " output 資料夾；中間的階段有填才寫檔，最後一個階段空白時用 Recipe 的名稱"
+        ),
+    )
+    output_format: Literal["parquet", "csv"] = Field(
+        title="輸出格式",
+        description=(
+            "parquet：保留型別，給其他程式用；csv：UTF-8（含 BOM），Excel 可以直接打開。"
+            "每個階段都要填，沒寫檔的中間階段也一樣"
         ),
     )
 
@@ -106,7 +113,6 @@ class Stage(_Model):
 
 
 class Output(_Model):
-    format: Literal["parquet"] = Field(default="parquet", title="格式")
     keep_system_columns: bool = Field(
         default=True, title="保留系統欄位（__source_file、__line_no 等）"
     )

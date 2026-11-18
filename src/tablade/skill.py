@@ -272,10 +272,11 @@ Tablade 是本機執行的資料清洗工具。使用者描述要怎麼整理資
       "input": {{ "files": ["明細_*.csv"], "reader": "text_lines", "encoding": "auto" }},
       "steps": [
         {{ "id": "s1", "type": "remove_top_rows", "n": 2 }}
-      ]
+      ],
+      "output_format": "parquet"
     }}
   ],
-  "output": {{ "format": "parquet", "keep_system_columns": true }}
+  "output": {{ "keep_system_columns": true }}
 }}
 ```
 
@@ -290,10 +291,12 @@ Tablade 是本機執行的資料清洗工具。使用者描述要怎麼整理資
 
 ## 階段
 
-- `stages` 依序執行。每個階段：`name`（不能重複，也是引用名稱）、`input`（讀什麼）、`steps`。
-- 每個階段可以有 `output_file`（只填檔名，例如 `"明細.parquet"`），寫到 Recipe 所在資料夾底下的 `output/`，處理紀錄寫到並排的 `log/`。
+- `stages` 依序執行。每個階段：`name`（不能重複，也是引用名稱）、`input`（讀什麼）、`steps`、`output_format`（必填）。
+- `output_format`（必填，每個階段都要寫，沒寫檔的中間階段也一樣）：`"parquet"`（保留型別，給其他程式用）或 `"csv"`
+  （UTF-8 加 BOM，Excel 可以直接打開；日期是 2026-01-05、空值是空白）。後面的階段讀的是 Tablade 自己暫存的結果，跟輸出格式無關。
+- 每個階段可以有 `output_file`（只填檔名，例如 `"明細"`，副檔名照 `output_format` 補上），寫到 Recipe 所在資料夾底下的 `output/`，處理紀錄寫到並排的 `log/`。
   最後一個階段一定寫檔，沒填 `output_file` 時用 Recipe 的名稱；中間的階段有填才寫，沒填就只給後面的階段用（暫存）。
-  檔名不能有路徑字元、同一個 recipe 裡不能重複。
+  檔名不能有路徑字元；主檔名在同一個 recipe 裡不能重複（`明細.csv` 和 `明細.parquet` 也算重複，處理紀錄都是 `log/明細.manifest.json`）。
 - 讀前面階段的結果：`"input": {{ "reader": "stages", "stages": ["階段A", "階段B"] }}`（第一個階段不能這樣讀）。
   每個來源檔各自是一個來源，名稱是「@階段／檔名」，系統欄位 `__stage` 記階段；
   **附加**（上下接）就是讀好幾個階段，再用 `merge_files` 接成一份（同名欄的型別要一樣，缺的欄補空值）。

@@ -124,6 +124,8 @@ class OutputReport:
     columns: list[str]
     manifest: str | None = None
     """這個檔的處理紀錄（log/xxx.manifest.json）；沒有寫出時是 None。"""
+    format: str = "parquet"
+    """parquet 或 csv（這個階段的 output_format）。"""
 
 
 @dataclass
@@ -600,6 +602,23 @@ class _Writes:
             tmp.unlink(missing_ok=True)
 
 
+CSV_DATETIME = "%Y-%m-%d %H:%M:%S"
+"""CSV 的日期時間寫法（日期是 2026-01-05，Polars 預設）。"""
+
+
+def _stage_format(recipe: Recipe, name: str) -> str:
+    """這個階段的輸出格式（parquet、csv）。"""
+    return next((s.output_format for s in recipe.stages if s.name == name), "parquet")
+
+
+def _write_frame(frame: pl.DataFrame, path: Path, fmt: str) -> None:
+    """資料在記憶體裡時寫出輸出檔：CSV 是 UTF-8 加 BOM（Excel 雙擊打開中文不會亂碼）。"""
+    if fmt == "csv":
+        frame.write_csv(path, include_bom=True, datetime_format=CSV_DATETIME)
+    else:
+        frame.write_parquet(path)
+
+
 def _kept(recipe: Recipe, names: list[str]) -> list[str]:
     """寫出的欄：Recipe 的輸出設定可以不保留系統欄位；暫存欄（__w_）一律不寫。"""
     names = [c for c in names if not c.startswith(TEMP_PREFIX)]
@@ -740,9 +759,10 @@ def _execute(
         target = targets.get(stage.name)
         if target is not None:
             tmp = writes.tmp(target)
-            frame.select(_kept(recipe, frame.columns)).write_parquet(tmp)
+            fmt = _stage_format(recipe, stage.name)
+            _write_frame(frame.select(_kept(recipe, frame.columns)), tmp, fmt)
             out = OutputReport(
-                stage.name, target.as_posix(), frame.height, _data_columns(frame.columns)
+                stage.name, target.as_posix(), frame.height, _data_columns(frame.columns), None, fmt
             )
             writes.add(tmp, target, out)
         tracker.done(k, frame.height)
@@ -1014,12 +1034,21 @@ def _sink_output(
     writes: _Writes,
     report: Any,
 ) -> int:
-    """把一個階段的結果（暫存 Parquet）寫成輸出檔的暫存檔；回傳列數。"""
-    report(t("寫出 Parquet", "Writing Parquet"))
+    """把一個階段的結果（暫存 Parquet）寫成輸出檔的暫存檔；回傳列數。
+
+    CSV 是 UTF-8 加 BOM；列數從結果算（不讀剛寫好的檔，tests/test_large.py 檢查引擎不讀輸出檔）。
+    """
+    fmt = _stage_format(recipe, stage)
+    report(t("寫出 CSV", "Writing CSV") if fmt == "csv" else t("寫出 Parquet", "Writing Parquet"))
     tmp = writes.tmp(target)
     names = result.collect_schema().names()
-    result.select(_kept(recipe, names)).sink_parquet(tmp, engine="streaming")
+    kept = result.select(_kept(recipe, names))
+    if fmt == "csv":
+        kept.sink_csv(tmp, include_bom=True, datetime_format=CSV_DATETIME, engine="streaming")
+    else:
+        kept.sink_parquet(tmp, engine="streaming")
     if rows is None:
-        rows = pl.scan_parquet(tmp).select(pl.len()).collect().item()
-    writes.add(tmp, target, OutputReport(stage, target.as_posix(), rows, _data_columns(names)))
+        rows = result.select(pl.len()).collect(engine="streaming").item()
+    report_ = OutputReport(stage, target.as_posix(), rows, _data_columns(names), None, fmt)
+    writes.add(tmp, target, report_)
     return rows

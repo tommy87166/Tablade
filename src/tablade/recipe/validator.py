@@ -791,16 +791,30 @@ BAD_FILENAME_CHARS = '/\\:*?"<>|'
 """輸出檔名不能有的字元（Windows 不允許，也不能指到別的資料夾）。"""
 
 
-def output_name(raw: str) -> str:
-    """輸出檔名補上 .parquet（已經有就不補）。"""
+OUTPUT_EXTENSIONS = {"parquet": ".parquet", "csv": ".csv"}
+"""輸出格式（每個階段的 output_format）→ 副檔名。"""
+
+
+def output_name(raw: str, fmt: str = "parquet") -> str:
+    """輸出檔名補上那個格式的副檔名（已經有就不補）。"""
     name = raw.strip()
-    return name if name.lower().endswith(".parquet") else f"{name}.parquet"
+    ext = OUTPUT_EXTENSIONS.get(fmt, ".parquet")
+    return name if name.lower().endswith(ext) else f"{name}{ext}"
+
+
+def output_stem(name: str) -> str:
+    """去掉輸出格式的副檔名（處理紀錄用主檔名：明細.csv、明細.parquet 都是 log/明細.manifest.json）。"""
+    for ext in OUTPUT_EXTENSIONS.values():
+        if name.lower().endswith(ext):
+            return name[: -len(ext)]
+    return name
 
 
 def output_issues(recipe: dict[str, Any], default: str | None = None) -> list[Issue]:
-    """每個階段的輸出檔名：不能有路徑字元、不能「.」開頭，同一個 Recipe 裡不能重複（不分大小寫）。
+    """每個階段的輸出檔名：不能有路徑字元、不能「.」開頭，副檔名要和輸出格式一致，
+    主檔名在同一個 Recipe 裡不能重複（不分大小寫；明細.csv 和 明細.parquet 也算重複）。
 
-    最後一個階段沒填時用 ``default``（Recipe 的名稱；不知道時不檢查它）。
+    最後一個階段沒填時用 ``default``（Recipe 的名稱，不含副檔名；不知道時不檢查它）。
     """
     stages = recipe.get("stages")
     if not isinstance(stages, list):
@@ -817,12 +831,32 @@ def output_issues(recipe: dict[str, Any], default: str | None = None) -> list[Is
             if si != len(stages) - 1 or not default:
                 continue
             raw = default
-        name = output_name(raw)
+        fmt = stage.get("output_format")
+        fmt = fmt if fmt in OUTPUT_EXTENSIONS else "parquet"  # 沒填或填錯由 schema 報
         path = ["stages", si, "output_file"]
+        other_ext = [
+            e for f, e in OUTPUT_EXTENSIONS.items() if f != fmt and raw.strip().lower().endswith(e)
+        ]
+        if other_ext:
+            issues.append(
+                _issue(
+                    path,
+                    t(
+                        f"輸出檔名「{raw.strip()}」的副檔名和輸出格式（{fmt}）不一樣",
+                        f'Output file name "{raw.strip()}" does not match the output format ({fmt})',
+                    ),
+                    t(
+                        f"只填檔名，副檔名會照格式補上（{OUTPUT_EXTENSIONS[fmt]}）",
+                        f"Enter the name only; the extension follows the format ({OUTPUT_EXTENSIONS[fmt]})",
+                    ),
+                )
+            )
+            continue
+        name = output_name(raw, fmt)
         if (
             any(c in BAD_FILENAME_CHARS or ord(c) < 32 for c in name)
             or name.startswith(".")
-            or name.lower() == ".parquet"
+            or not output_stem(name).strip()
         ):
             issues.append(
                 _issue(
@@ -835,7 +869,7 @@ def output_issues(recipe: dict[str, Any], default: str | None = None) -> list[Is
                 )
             )
             continue
-        key = name.casefold()
+        key = output_stem(name).casefold()  # 主檔名不能重複：處理紀錄是 log/主檔名.manifest.json
         if key in seen:
             other = stages[seen[key]].get("name") if isinstance(stages[seen[key]], dict) else None
             where = (

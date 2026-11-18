@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { plural, tr } from '@/i18n'
-import type { StageState, ViewState } from '../bridge'
+import type { OutputFormat, StageState, ViewState } from '../bridge'
 
 const readers = () => ({
   text_lines: tr('逐行讀取（爛格式檔案）', 'Line by line (messy files)'),
@@ -318,16 +318,19 @@ export function InputPanel({ state, onAddFiles, onAddEntry, onRemove, onInput }:
 interface OutputProps {
   state: ViewState
   onOutput: (values: Partial<ViewState['output']>) => void
-  onStageOutput: (index: number, file: string) => void
+  onStageOutput: (index: number, file: string, format?: OutputFormat) => void
 }
 
-const stemOf = (file: string) => file.replace(/\.parquet$/i, '')
+const EXTENSIONS: Record<OutputFormat, string> = { parquet: '.parquet', csv: '.csv' }
+/** 去掉格式的副檔名（檔名欄只填名稱） */
+const stemOf = (file: string) => file.replace(/\.(parquet|csv)$/i, '')
 
-/** 輸出檔名：只填檔名，後面固定是 .parquet；離開欄位或按 Enter 才送出（檢查在 Python 做）。 */
-function OutputFileField({ stage, onChange }: { stage: StageState; onChange: (file: string) => void }) {
+/** 輸出檔名：只填檔名，後面選格式（.parquet／.csv）；檔名離開欄位或按 Enter 才送出，格式選了馬上送（檢查在 Python 做）。 */
+function OutputFileField({ stage, onChange }: { stage: StageState; onChange: (file: string, format?: OutputFormat) => void }) {
   const saved = stemOf(stage.output_file)
   const [draft, setDraft] = useState(saved)
   const planned = stage.output
+  const format = stage.output_format || undefined
   const commit = () => {
     if (draft.trim() !== saved) onChange(draft.trim())
   }
@@ -349,8 +352,27 @@ function OutputFileField({ stage, onChange }: { stage: StageState; onChange: (fi
             if (e.key === 'Enter') e.currentTarget.blur()
           }}
         />
-        <span className="shrink-0 text-sm text-muted-foreground">.parquet</span>
+        <Select value={format} onValueChange={(v) => onChange(draft.trim(), v as OutputFormat)}>
+          <SelectTrigger className="h-8 w-28 shrink-0" aria-label={tr('輸出格式', 'Output format')}>
+            <SelectValue placeholder={tr('格式', 'Format')} />
+          </SelectTrigger>
+          <SelectContent>
+            {(Object.keys(EXTENSIONS) as OutputFormat[]).map((f) => (
+              <SelectItem key={f} value={f}>
+                {EXTENSIONS[f]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
+      {format === 'csv' ? (
+        <p className="text-xs text-muted-foreground">
+          {tr(
+            'CSV 用 UTF-8（含 BOM），Excel 可以直接打開；匯出後不提供完整模式（「輸出資料」照舊是抽樣模式）。',
+            'CSV is UTF-8 (with BOM) and opens directly in Excel; there is no full mode after export ("Output" stays in sample mode).',
+          )}
+        </p>
+      ) : null}
       {planned?.error ? (
         <p className="text-xs text-destructive">{planned.error}</p>
       ) : planned ? (
@@ -375,9 +397,13 @@ function OutputFileField({ stage, onChange }: { stage: StageState; onChange: (fi
 export function OutputPanel({ state, onOutput, onStageOutput }: OutputProps) {
   const { output } = state
   const stage = state.stages[state.current]
-  // 換階段或 Python 改了檔名（例如補上 .parquet）時重新開始編輯
+  // 換階段或 Python 改了檔名（例如拿掉和格式一樣的副檔名）時重新開始編輯
   const field = stage ? (
-    <OutputFileField key={`${stage.index}:${stage.output_file}`} stage={stage} onChange={(file) => onStageOutput(stage.index, file)} />
+    <OutputFileField
+      key={`${stage.index}:${stage.output_file}`}
+      stage={stage}
+      onChange={(file, format) => onStageOutput(stage.index, file, format)}
+    />
   ) : null
   if (stage && !stage.last) {
     const users = state.stages.filter((s) => s.uses.includes(stage.name)).map((s) => tr(`「${s.name}」`, `"${s.name}"`))

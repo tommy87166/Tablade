@@ -257,19 +257,37 @@ def test_last_stage_uses_the_recipe_name_by_default(data):
         "default": True,
         "exists": False,
         "error": None,
+        "format": "parquet",
     }
-    assert default_output_name(None, 'a/b:c*"d') == "a_b_c__d.parquet"  # 去掉檔名不能用的字
+    # 去掉檔名不能用的字；副檔名照格式另外補
+    assert default_output_name(None, 'a/b:c*"d') == "a_b_c__d"
 
 
 def test_stage_output_file(data):
     s = opened(data)
-    s.set_stage_output(0, "  結果 ")  # 補上 .parquet
-    assert s.stages[0]["output_file"] == "結果.parquet" and s.dirty
-    assert s.recipe_dict()["stages"][0]["output_file"] == "結果.parquet"
-    assert s.state()["stages"][0]["output"]["file"] == "結果.parquet"
+    s.set_stage_output(0, "  結果.parquet ")  # 只存名稱；和格式一樣的副檔名拿掉
+    assert s.stages[0]["output_file"] == "結果" and s.dirty
+    assert s.recipe_dict()["stages"][0]["output_file"] == "結果"
+    assert s.state()["stages"][0]["output"]["file"] == "結果.parquet"  # 副檔名照格式補
     assert s.state()["stages"][0]["output"]["default"] is False
-    s.undo()
+    s.set_stage_output(0, "結果", "csv")  # 改成 CSV
+    assert s.recipe_dict()["stages"][0]["output_format"] == "csv"
+    assert s.state()["stages"][0]["output"] | {"exists": None} == {
+        "file": "結果.csv",
+        "path": "output/結果.csv",
+        "default": False,
+        "exists": None,
+        "error": None,
+        "format": "csv",
+    }
+    s.set_stage_output(0, "結果.parquet", "csv")  # 副檔名和格式不一樣：留著，驗證報錯
+    assert "副檔名和輸出格式（csv）不一樣" in s.state()["stages"][0]["output"]["error"]
+    with pytest.raises(SessionError, match="不支援的輸出格式"):
+        s.set_stage_output(0, "結果", "xlsx")
+    for _ in range(3):  # 回到還沒填檔名、格式是 parquet
+        s.undo()
     assert "output_file" not in s.recipe_dict()["stages"][0]  # 沒填就不寫進 Recipe
+    assert s.recipe_dict()["stages"][0]["output_format"] == "parquet"
     s.set_stage_output(0, "a/b")
     assert "不能有 /" in s.state()["stages"][0]["output"]["error"]
     with pytest.raises(SessionError, match="不能有 /"):
@@ -401,6 +419,7 @@ def test_new_recipe_is_written_right_away(tmp_path):
             "name": "預設階段",
             "input": {"files": [], "reader": "text_lines", "encoding": "auto"},
             "steps": [],
+            "output_format": "parquet",
         }
     ]
     state = s.state()

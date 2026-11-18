@@ -87,9 +87,10 @@ def excel_recipe(sheet: str = "") -> dict:
                         "names": ["日期", "門市", "品號", "品名", "數量", "金額"],
                     },
                 ],
+                "output_format": "parquet",
             }
         ],
-        "output": {"format": "parquet", "keep_system_columns": True},
+        "output": {"keep_system_columns": True},
     }
 
 
@@ -167,9 +168,10 @@ def all_sheets_recipe(*extra: dict, keep_system: bool = True) -> dict:
                     {"id": "s2", "type": "promote_headers", "names": ["品號", "金額"]},
                     *extra,
                 ],
+                "output_format": "parquet",
             }
         ],
-        "output": {"format": "parquet", "keep_system_columns": keep_system},
+        "output": {"keep_system_columns": keep_system},
     }
 
 

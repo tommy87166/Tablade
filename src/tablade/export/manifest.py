@@ -1,4 +1,4 @@
-"""處理紀錄（manifest，DESIGN.md §9）：每個輸出檔 ``output/xxx.parquet`` 各寫一份 ``log/xxx.manifest.json``。
+"""處理紀錄（manifest，DESIGN.md §9）：每個輸出檔 ``output/xxx.parquet``（或 ``xxx.csv``）各寫一份 ``log/xxx.manifest.json``。
 
 記錄用了哪份 Recipe（完整內容與雜湊）、每個輸入檔的大小、編碼與 SHA-256、每一步的列數與警告，
 以及輸出檔的 SHA-256。日後可以證明「這份輸出是用這份 Recipe，從這些原始檔產生的」，
@@ -32,7 +32,7 @@ LOG_DIR = "log"
 
 
 def manifest_path(output: Path, folder: Path | None = None) -> Path:
-    """``明細.parquet`` → ``folder/明細.manifest.json``（``folder`` 預設是輸出檔所在資料夾底下的 log/）。"""
+    """``明細.parquet``／``明細.csv`` → ``folder/明細.manifest.json``（``folder`` 預設是輸出檔所在資料夾底下的 log/）。"""
     return (folder or output.parent / LOG_DIR) / f"{output.stem}.manifest.json"
 
 
@@ -148,6 +148,7 @@ def build_manifest(recipe: Recipe, report: RunReport, out: OutputReport) -> dict
         "warnings": {"count": sum(s.warning_count for s in steps), "items": warnings},
         "output": {
             "file": output.name,
+            "format": out.format,
             "rows": out.rows,
             "columns": out.columns,
             "bytes": output.stat().st_size,

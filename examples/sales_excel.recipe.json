@@ -5,6 +5,7 @@
   "stages": [
     {
       "name": "預設階段",
+      "output_format": "parquet",
       "input": { "files": ["data/明細.xlsx"], "reader": "excel", "sheet": "明細" },
       "steps": [
         { "id": "s1", "type": "remove_top_rows", "n": 3 },
@@ -14,5 +15,5 @@
       ]
     }
   ],
-  "output": { "format": "parquet", "keep_system_columns": true }
+  "output": { "keep_system_columns": true }
 }

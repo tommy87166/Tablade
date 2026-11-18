@@ -81,6 +81,8 @@ const sampledStepText = (s: SampledStep) =>
     ? tr(`階段「${s.stage}」第 ${s.number} 步「${s.label}」`, `Stage "${s.stage}", step ${s.number} "${s.label}"`)
     : tr(`第 ${s.number} 步「${s.label}」`, `Step ${s.number} "${s.label}"`)
 const SMOKE_TIMEOUT_MS = 30_000
+/** Excel 工作表最多幾列（CSV 超過時匯出摘要提醒） */
+const EXCEL_MAX_ROWS = 1_048_576
 
 /** 下方面板標題列的分頁按鈕（警告、型別）。 */
 function BottomTab({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
@@ -332,7 +334,15 @@ export default function App() {
                 `：${rowsText(res.rows ?? 0)} × ${res.columns} 欄`,
                 `: ${rowsText(res.rows ?? 0)} × ${plural(res.columns ?? 0, 'column', 'columns')}`,
               )}`
-        const text = tr(`已匯出 ${files}${warn}${how}${record}`, `Exported ${files}${warn}${how}${record}`)
+        // CSV 超過 Excel 的列數上限：Excel 打開會被截斷
+        const tooLong = outs.filter((o) => o.format === 'csv' && o.rows > EXCEL_MAX_ROWS).map((o) => o.path.split('/').pop())
+        const excel = tooLong.length
+          ? tr(
+              `。注意：${tooLong.join('、')} 超過 Excel 的 1,048,576 列，用 Excel 打開會被截斷`,
+              `. Note: ${tooLong.join(', ')} has more than 1,048,576 rows and will be cut off when opened in Excel`,
+            )
+          : ''
+        const text = tr(`已匯出 ${files}${warn}${how}${record}${excel}`, `Exported ${files}${warn}${how}${record}${excel}`)
         setStatus({ text })
         setRun((r) => r && { ...r, result: text })
       }
@@ -857,9 +867,19 @@ export default function App() {
                         </TooltipTrigger>
                         <TooltipContent className="max-w-80">
                           {tr(
-                            `資料共 ${state.preview.input_rows?.toLocaleString()} 行，預覽只用每個檔的前 ${state.input.sample.head.toLocaleString()} 行＋最後 ${state.input.sample.tail.toLocaleString()} 行，列數、加總、彙總結果可能不正確。按「處理並匯出資料」看完整結果（匯出後「輸出資料」會改成讀匯出檔）。`,
-                            `The data has ${state.preview.input_rows?.toLocaleString()} lines. The preview uses only the first ${state.input.sample.head.toLocaleString()} and last ${state.input.sample.tail.toLocaleString()} lines of each file, so row counts, totals and summaries may be inaccurate. Click “Process & export” for the full result (afterwards “Output” reads the exported file).`,
+                            `資料共 ${state.preview.input_rows?.toLocaleString()} 行，預覽只用每個檔的前 ${state.input.sample.head.toLocaleString()} 行＋最後 ${state.input.sample.tail.toLocaleString()} 行，列數、加總、彙總結果可能不正確。`,
+                            `The data has ${state.preview.input_rows?.toLocaleString()} lines. The preview uses only the first ${state.input.sample.head.toLocaleString()} and last ${state.input.sample.tail.toLocaleString()} lines of each file, so row counts, totals and summaries may be inaccurate. `,
                           )}
+                          {/* CSV 輸出匯出後不提供完整模式：不說「輸出資料會改成讀匯出檔」 */}
+                          {currentStage?.output?.format === 'csv'
+                            ? tr(
+                                '按「處理並匯出資料」處理全部資料（輸出 CSV：「輸出資料」照舊是抽樣模式，完整結果看匯出的檔）。',
+                                'Click “Process & export” to process all data (CSV output: “Output” stays in sample mode; see the exported file for the full result).',
+                              )
+                            : tr(
+                                '按「處理並匯出資料」看完整結果（匯出後「輸出資料」會改成讀匯出檔）。',
+                                'Click “Process & export” for the full result (afterwards “Output” reads the exported file).',
+                              )}
                         </TooltipContent>
                       </Tooltip>
                     ) : state.preview.mode === 'full' ? (
@@ -1103,8 +1123,8 @@ export default function App() {
                     <OutputPanel
                       state={state}
                       onOutput={(v) => void call(tr('更新輸出設定', 'Update output settings'), () => api.set_output(v))}
-                      onStageOutput={(index, file) =>
-                        void call(tr('更新輸出檔名', 'Update output file name'), () => api.set_stage_output(index, file))
+                      onStageOutput={(index, file, format) =>
+                        void call(tr('更新輸出檔名', 'Update output file name'), () => api.set_stage_output(index, file, format))
                       }
                     />
                   ) : (

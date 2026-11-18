@@ -166,14 +166,20 @@ export interface StageState {
   uses: string[]
   /** Recipe 裡的輸出檔名（空白：中間的階段不寫檔、最後一個階段用 Recipe 名稱） */
   output_file: string
+  /** 輸出格式（必填；讀進來的 Recipe 沒有時是空字串，驗證會報錯） */
+  output_format: OutputFormat | ''
   /** 要寫的檔（中間的階段沒填檔名時是 null） */
   output: StageOutput | null
 }
 
+/** 輸出檔的格式：Parquet（保留型別）或 CSV（UTF-8 加 BOM，Excel 可以直接打開） */
+export type OutputFormat = 'parquet' | 'csv'
+
 /** 一個階段要寫的檔（session.py 的 _planned_state） */
 export interface StageOutput {
-  /** 檔名（已補上 .parquet） */
+  /** 檔名（已照格式補上副檔名） */
   file: string
+  format: OutputFormat
   /** 寫出的位置，例如 output/明細.parquet（相對於 Recipe 所在的資料夾） */
   path: string
   /** 最後一個階段沒填檔名，用 Recipe 名稱 */
@@ -250,7 +256,7 @@ export interface ViewState {
     /** 載入後實際讀到的每個檔 */
     sources: SourceFile[]
   }
-  output: { format: string; keep_system_columns: boolean; manifest: boolean }
+  output: { keep_system_columns: boolean; manifest: boolean }
   steps: StepState[]
   /** -1 是「讀取資料」，0..n-1 是步驟，steps.length 是「輸出資料」（預覽最後一步的結果） */
   selected: number
@@ -398,7 +404,8 @@ export interface TabladeApi {
   load_data(): Promise<WithState>
   set_input(values: Partial<ViewState['input']>): Promise<WithState>
   set_output(values: Partial<ViewState['output']>): Promise<WithState>
-  set_stage_output(index: number, file: string): Promise<WithState>
+  /** 改階段的輸出檔名與格式（沒給格式時不變） */
+  set_stage_output(index: number, file: string, format?: OutputFormat): Promise<WithState>
   set_meta(values: { name?: string; description?: string }): Promise<WithState>
   add_stage(name: string, before?: boolean): Promise<WithState<{ index: number }>>
   rename_stage(index: number, name: string): Promise<WithState>
@@ -425,7 +432,7 @@ export interface TabladeApi {
       mode?: string
       manifest?: string | null
       /** 寫出的每個檔（依階段順序） */
-      outputs?: { stage: string; path: string; rows: number; manifest: string | null }[]
+      outputs?: { stage: string; path: string; rows: number; manifest: string | null; format: OutputFormat }[]
       /** 匯出前試跑出錯：哪個階段的第幾步（沒有寫出任何檔） */
       trial_error?: { message: string; stage: number | null; step: number | null }
     }>
