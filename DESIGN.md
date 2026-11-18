@@ -616,6 +616,21 @@ tablade/
 
 ---
 
+
+### 16.8 畫面的語言（繁體中文／英文）
+
+計畫與用語對照見 [docs/i18n-plan.md](docs/i18n-plan.md)。
+
+- 工具列右上「⋯」的左邊是語言切換鈕（🌐 中文 ▾）。
+- 預設跟作業系統語言：`navigator.language` 是 `zh` 開頭就用中文，其他用英文。
+- 不記住選擇：不寫設定檔，每次開啟都用預設。
+- 語言放在 Python：前端啟動時用 `api.set_language` 送偵測到的語言，切換時再送一次；`state.lang` 是目前的語言。
+- 前端每個字串寫成 `tr('中文', 'English')`（`frontend/src/i18n.ts`，不用 i18n 套件），兩種語言放在一起。
+  - 不能在模組最上層用 `tr()` 算常數，要寫成函式或在元件裡算。
+  - `tests/test_i18n.py`（`scripts/check_i18n.py`）檢查前端的中文只出現在 `tr()` 的第一個參數；拿 Python 產生的中文比對的那一行標 `i18n-ignore`。
+- Python 產生的文字（步驟名稱、表單欄位、狀態說明、進度、錯誤與警告）分批改成兩種語言。
+  - Recipe 檔、AI skill、CLI、處理紀錄維持中文。
+
 ## 17. AI skill：讓 AI 助理撰寫 recipe
 
 ### 17.1 目標與流程

@@ -6,6 +6,8 @@
  * 狀態由 Python 管理：會修改 recipe 的方法都回傳新的 state（DESIGN.md §16.4）。
  */
 
+import type { Lang } from './i18n'
+
 export type Ok<T> = { ok: true } & T
 export type Fail = { ok: false; error: string; issues?: Issue[] }
 export type Result<T> = Ok<T> | Fail
@@ -273,6 +275,8 @@ export interface ViewState {
   can_undo: boolean
   can_redo: boolean
   issues: Issue[]
+  /** 畫面的語言（Python 記著；啟動時前端送作業系統的語言，切換時再送一次） */
+  lang: Lang
 }
 
 /** 啟動時向 GitHub 查的最新版號（只讀版號，不下載） */
@@ -371,6 +375,8 @@ export interface TabladeApi {
   check_update(): Promise<Result<{ update: UpdateInfo | null }>>
   smoke_example(): Promise<WithState<{ issues: Issue[] }>>
   state(): Promise<WithState>
+  /** 切換畫面的語言（不記住，下次開啟又跟作業系統的語言） */
+  set_language(lang: Lang): Promise<WithState>
   rows(step: number, offset: number, limit: number): Promise<Result<RowsPage>>
   column_info(step: number): Promise<Result<ColumnsInfo>>
   find_row(

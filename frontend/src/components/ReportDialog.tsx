@@ -8,6 +8,7 @@ import { useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
+import { plural, tr } from '@/i18n'
 import type { Issue } from '../bridge'
 
 interface Props {
@@ -39,9 +40,16 @@ export function ReportDialog({ open, onOpenChange, issues, report }: Props) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>{errors.length ? `Recipe 有 ${errors.length} 個問題` : '驗證結果'}</DialogTitle>
+          <DialogTitle>
+            {errors.length
+              ? tr(`Recipe 有 ${errors.length} 個問題`, `Recipe has ${plural(errors.length, 'problem', 'problems')}`)
+              : tr('驗證結果', 'Validation results')}
+          </DialogTitle>
           <DialogDescription>
-            把報告複製貼給 AI 助理（例如 Copilot），請它依報告修正 Recipe；也可以直接在左側步驟裡修改。
+            {tr(
+              '把報告複製貼給 AI 助理（例如 Copilot），請它依報告修正 Recipe；也可以直接在左側步驟裡修改。',
+              'Copy the report and paste it to an AI assistant (such as Copilot) so it can fix the recipe, or edit the steps on the left directly.',
+            )}
           </DialogDescription>
         </DialogHeader>
         {issues.length ? (
@@ -50,7 +58,7 @@ export function ReportDialog({ open, onOpenChange, issues, report }: Props) {
               <li key={`${i.path}:${i.error}`}>
                 <span className="font-mono text-xs text-muted-foreground">{i.path}</span>{' '}
                 <span className={i.severity === 'error' ? 'text-destructive' : 'text-amber-700 dark:text-amber-400'}>{i.error}</span>
-                {i.hint ? <span className="text-muted-foreground">（{i.hint}）</span> : null}
+                {i.hint ? <span className="text-muted-foreground">{tr(`（${i.hint}）`, ` (${i.hint})`)}</span> : null}
               </li>
             ))}
           </ul>
@@ -63,7 +71,7 @@ export function ReportDialog({ open, onOpenChange, issues, report }: Props) {
               window.setTimeout(() => setCopied(false), 2000)
             }}
           >
-            {copied ? <Check /> : <Copy />} {copied ? '已複製' : '複製錯誤報告'}
+            {copied ? <Check /> : <Copy />} {copied ? tr('已複製', 'Copied') : tr('複製錯誤報告', 'Copy error report')}
           </Button>
         </DialogFooter>
       </DialogContent>

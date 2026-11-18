@@ -150,6 +150,12 @@ class Api:
         return {"result": run_selftest()}
 
     @_wrap
+    def set_language(self, lang: str) -> dict[str, Any]:
+        """畫面的語言（zh、en）：前端啟動時送作業系統的語言，切換時再送一次。"""
+        self._session.set_language(str(lang))
+        return self._state()
+
+    @_wrap
     def staging_info(self) -> dict[str, Any]:
         """自我診斷畫面的「暫存資料夾」：位置與目前大小。"""
         folder, size = staging_info()

@@ -8,6 +8,7 @@ import {
   FileInput,
   FilePlus2,
   FolderOpen,
+  Globe,
   MoreHorizontal,
   Play,
   Redo2,
@@ -28,6 +29,8 @@ import {
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
@@ -63,6 +66,7 @@ import { StepsPanel } from './components/StepsPanel'
 import { TypesPane } from './components/TypesPane'
 import { UpdateNotice } from './components/UpdateNotice'
 import { UsageStatus } from './components/UsageStatus'
+import { detectLang, lang, LANGS, plural, setLang, tr, type Lang } from './i18n'
 
 type Status = { text: string; error?: boolean }
 
@@ -72,7 +76,10 @@ const cleanError = (message: string) => message.replace(/^[A-Za-z]+Error: /, '')
 const fileName = (path: string | null | undefined) => (path ?? '').split(/[\\/]/).pop() ?? ''
 
 /** 「第 16 步「移除重複」」；前面階段的步驟前面加「階段「文字明細」」 */
-const sampledStepText = (s: SampledStep) => `${s.stage ? `階段「${s.stage}」` : ''}第 ${s.number} 步「${s.label}」`
+const sampledStepText = (s: SampledStep) =>
+  s.stage
+    ? tr(`階段「${s.stage}」第 ${s.number} 步「${s.label}」`, `Stage "${s.stage}", step ${s.number} "${s.label}"`)
+    : tr(`第 ${s.number} 步「${s.label}」`, `Step ${s.number} "${s.label}"`)
 const SMOKE_TIMEOUT_MS = 30_000
 
 /** 下方面板標題列的分頁按鈕（警告、型別）。 */
@@ -120,7 +127,7 @@ export default function App() {
   const [info, setInfo] = useState<ReadyInfo | null>(null)
   const [state, setState] = useState<ViewState | null>(null)
   const [busy, setBusy] = useState(false)
-  const [status, setStatus] = useState<Status>({ text: '載入中…' })
+  const [status, setStatus] = useState<Status>(() => ({ text: tr('載入中…', 'Loading…') }))
   const [showSystem, setShowSystem] = useState(false)
   const [bottomTab, setBottomTab] = useState<'warnings' | 'types'>('warnings')
   const [report, setReport] = useState<{ open: boolean; issues: Issue[]; text: string }>({ open: false, issues: [], text: '' })
@@ -164,16 +171,20 @@ export default function App() {
       const res = await fn()
       if (!res.ok) {
         lastError.current = res.error
-        setStatus({ text: `${label}失敗：${cleanError(res.error)}`, error: true })
+        setStatus({ text: tr(`${label}失敗：${cleanError(res.error)}`, `${label} failed: ${cleanError(res.error)}`), error: true })
         if (res.issues?.length) setReport({ open: true, issues: res.issues, text: res.error })
         return null
       }
       const withState = res as { state?: ViewState }
-      if (withState.state) setState(withState.state)
+      if (withState.state) {
+        // 畫面的文字跟著 Python 記著的語言（在畫面重畫之前換好）
+        setLang(withState.state.lang)
+        setState(withState.state)
+      }
       return res as T & { ok: true }
     } catch (err) {
       lastError.current = String(err)
-      setStatus({ text: `${label}失敗：${cleanError(String(err))}`, error: true })
+      setStatus({ text: tr(`${label}失敗：${cleanError(String(err))}`, `${label} failed: ${cleanError(String(err))}`), error: true })
       return null
     } finally {
       setBusy(false)
@@ -203,7 +214,7 @@ export default function App() {
       const ready = await target.ready()
       if (cancelled) return
       if (!ready.ok) {
-        setStatus({ text: `初始化失敗：${ready.error}`, error: true })
+        setStatus({ text: tr(`初始化失敗：${ready.error}`, `Initialization failed: ${ready.error}`), error: true })
         return
       }
       setApi(target)
@@ -214,9 +225,15 @@ export default function App() {
         runStateRef.current = value
         setRunState(value)
       })
-      const first = await target.state()
-      if (first.ok) setState(first.state)
-      setStatus({ text: '就緒。先新增或開啟 Recipe。' })
+      // 畫面的語言跟作業系統（不記住選擇）；Python 也用這個語言產生文字
+      const detected = detectLang()
+      setLang(detected)
+      const first = await target.set_language(detected)
+      if (first.ok) {
+        setLang(first.state.lang)
+        setState(first.state)
+      }
+      setStatus({ text: tr('就緒。先新增或開啟 Recipe。', 'Ready. Create or open a recipe to start.') })
       // 啟動時查 GitHub 上的最新版號（背景進行，不擋畫面；不自動更新）
       void target.check_update().then((res) => setUpdate(res.ok ? res.update : null))
       if (ready.smoke) await target.smoke_done(await runSmoke(target))
@@ -231,41 +248,67 @@ export default function App() {
   const act = {
     newRecipe: async () => {
       if (!api) return
-      const res = await call('新增 Recipe', () => api.new_recipe())
-      if (res && !res.cancelled) setStatus({ text: `已建立 ${fileName(res.path)}。接著在「讀取資料」加入檔案。` })
+      const res = await call(tr('新增 Recipe', 'New recipe'), () => api.new_recipe())
+      if (res && !res.cancelled)
+        setStatus({
+          text: tr(
+            `已建立 ${fileName(res.path)}。接著在「讀取資料」加入檔案。`,
+            `Created ${fileName(res.path)}. Next, add files in “Read data”.`,
+          ),
+        })
     },
     openRecipe: async () => {
       if (!api) return
-      const res = await call('開啟 Recipe', () => api.open_recipe())
+      const res = await call(tr('開啟 Recipe', 'Open recipe'), () => api.open_recipe())
       if (!res || res.cancelled) return
       const next = res.state.actions.export.ok
-        ? '可以直接按「處理並匯出資料」，或先按「載入資料及預覽」看每一步的結果。'
-        : `${res.state.actions.export.reason}。`
-      setStatus({ text: `已開啟 ${fileName(res.state.recipe.path)}。${next}` })
+        ? tr(
+            '可以直接按「處理並匯出資料」，或先按「載入資料及預覽」看每一步的結果。',
+            'Click “Process & export” to run it now, or “Load & preview” to see each step first.',
+          )
+        : `${res.state.actions.export.reason}${tr('。', '.')}`
+      const name = fileName(res.state.recipe.path)
+      setStatus({ text: tr(`已開啟 ${name}。${next}`, `Opened ${name}. ${next}`) })
       if (res.issues?.length) await showReport(res.issues)
     },
     save: async (as: boolean) => {
       if (!api) return
-      const res = await call('儲存', () => (as ? api.save_recipe_as() : api.save_recipe()))
-      if (res && !res.cancelled) setStatus({ text: `已儲存 ${fileName(res.path)}` })
+      const res = await call(tr('儲存', 'Save'), () => (as ? api.save_recipe_as() : api.save_recipe()))
+      if (res && !res.cancelled) setStatus({ text: tr(`已儲存 ${fileName(res.path)}`, `Saved ${fileName(res.path)}`) })
     },
     addFiles: async () => {
       if (!api) return
-      const res = await call('加入檔案', () => api.add_files())
-      if (res && !res.cancelled) setStatus({ text: `檔案清單共 ${res.state.input.files.length} 項。按「載入資料及預覽」讀取。` })
+      const res = await call(tr('加入檔案', 'Add files'), () => api.add_files())
+      if (!res || res.cancelled) return
+      const n = res.state.input.files.length
+      setStatus({
+        text: tr(
+          `檔案清單共 ${n} 項。按「載入資料及預覽」讀取。`,
+          `File list: ${plural(n, 'item', 'items')}. Click “Load & preview” to read them.`,
+        ),
+      })
     },
     loadData: async () => {
       if (!api) return
-      const res = await runStages('載入資料及預覽', true, () => call('載入資料', () => api.load_data()))
+      const res = await runStages(tr('載入資料及預覽', 'Load & preview'), true, () =>
+        call(tr('載入資料', 'Load data'), () => api.load_data()),
+      )
       if (res) {
         const { preview } = res.state
-        const rows = preview.input_rows !== null ? `，共 ${preview.input_rows.toLocaleString()} 行` : ''
-        setStatus({ text: `已載入資料${rows}${preview.mode === 'sample' ? '（大檔：預覽用樣本）' : ''}` })
+        const n = preview.input_rows
+        const sample = preview.mode === 'sample'
+        setStatus({
+          text: tr(
+            `已載入資料${n !== null ? `，共 ${n.toLocaleString()} 行` : ''}${sample ? '（大檔：預覽用樣本）' : ''}`,
+            `Data loaded${n !== null ? ` (${plural(n, 'line', 'lines')})` : ''}${sample ? '; large files are previewed from a sample' : ''}`,
+          ),
+        })
       }
     },
     exportParquet: async () => {
       if (!api) return
-      const res = await runStages('處理並匯出資料', false, () => call('處理並匯出資料', () => api.export_parquet()))
+      const title = tr('處理並匯出資料', 'Process & export')
+      const res = await runStages(title, false, () => call(title, () => api.export_parquet()))
       if (res?.trial_error) {
         const failure = res.trial_error
         setStatus({ text: failure.message, error: true })
@@ -273,31 +316,46 @@ export default function App() {
         return
       }
       if (res && !res.cancelled) {
-        const warn = res.warnings ? `，警告 ${res.warnings.toLocaleString()} 則` : ''
-        const how = res.mode === 'stream' ? '（串流處理全部資料）' : ''
+        const warn = res.warnings
+          ? tr(`，警告 ${res.warnings.toLocaleString()} 則`, `, ${plural(res.warnings, 'warning', 'warnings')}`)
+          : ''
+        const how = res.mode === 'stream' ? tr('（串流處理全部資料）', ' (all data streamed)') : ''
         const outs = res.outputs ?? []
-        const record = outs.some((o) => o.manifest) ? '；處理紀錄寫在 log 資料夾' : ''
+        const record = outs.some((o) => o.manifest) ? tr('；處理紀錄寫在 log 資料夾', '; processing log written to the log folder') : ''
+        const rowsText = (n: number) => tr(`${n.toLocaleString()} 列`, plural(n, 'row', 'rows'))
         const files =
           outs.length > 1
-            ? `${outs.length} 個檔到 output 資料夾：${outs.map((o) => `${o.path.split('/').pop()}（${o.rows.toLocaleString()} 列）`).join('、')}`
-            : `${res.path?.split('/').slice(-2).join('/')}：${res.rows?.toLocaleString()} 列 × ${res.columns} 欄`
-        const text = `已匯出 ${files}${warn}${how}${record}`
+            ? tr(`${outs.length} 個檔到 output 資料夾：`, `${outs.length} files to the output folder: `) +
+              outs.map((o) => `${o.path.split('/').pop()}${tr(`（${rowsText(o.rows)}）`, ` (${rowsText(o.rows)})`)}`).join(tr('、', ', '))
+            : `${res.path?.split('/').slice(-2).join('/')}${tr(
+                `：${rowsText(res.rows ?? 0)} × ${res.columns} 欄`,
+                `: ${rowsText(res.rows ?? 0)} × ${plural(res.columns ?? 0, 'column', 'columns')}`,
+              )}`
+        const text = tr(`已匯出 ${files}${warn}${how}${record}`, `Exported ${files}${warn}${how}${record}`)
         setStatus({ text })
         setRun((r) => r && { ...r, result: text })
       }
     },
     downloadSkill: async () => {
       if (!api) return
-      const res = await call('下載 Copilot skill', () => api.download_skill())
-      if (res && !res.cancelled) setStatus({ text: `已存成 ${res.path}（Recipe 版本 ${res.version}）` })
+      const res = await call(tr('下載 Copilot skill', 'Download Copilot skill'), () => api.download_skill())
+      if (res && !res.cancelled)
+        setStatus({ text: tr(`已存成 ${res.path}（Recipe 版本 ${res.version}）`, `Saved as ${res.path} (recipe version ${res.version})`) })
     },
     selftest: async () => {
       if (!api) return
-      const res = await call('自我檢測', () => api.selftest())
+      const res = await call(tr('自我檢測', 'Self-test'), () => api.selftest())
       if (res) setSelftest(res.result)
     },
-    undo: () => api && call('復原', () => api.undo()),
-    redo: () => api && call('重做', () => api.redo()),
+    undo: () => api && call(tr('復原', 'Undo'), () => api.undo()),
+    redo: () => api && call(tr('重做', 'Redo'), () => api.redo()),
+    /** 切換畫面的語言（Python 記著，不寫設定檔） */
+    setLanguage: async (value: Lang) => {
+      if (!api || value === lang()) return
+      setLang(value)
+      const res = await call(tr('切換語言', 'Switch language'), () => api.set_language(value))
+      if (res) setStatus({ text: tr('已切換成中文。', 'Switched to English.') })
+    },
   }
 
   /** 會依序跑好幾個階段的動作：開進度視窗（收到第一個進度狀態才顯示；動作被取消時不顯示）。 */
@@ -324,28 +382,28 @@ export default function App() {
 
   const showReport = async (issues?: Issue[]) => {
     if (!api) return
-    const res = await call('產生錯誤報告', () => api.error_report())
+    const res = await call(tr('產生錯誤報告', 'Create error report'), () => api.error_report())
     if (res) setReport({ open: true, issues: issues ?? state?.issues ?? [], text: res.text })
   }
 
   /** 切到某個階段，選它的結果（「輸出資料」那一格）。 */
   const goStage = async (index: number) => {
     if (!api) return
-    const res = await call('切換階段', () => api.select_stage(index))
-    if (res) await call('選取', () => api.select_step(res.state.steps.length))
+    const res = await call(tr('切換階段', 'Switch stage'), () => api.select_stage(index))
+    if (res) await call(tr('選取', 'Select'), () => api.select_step(res.state.steps.length))
   }
 
   /** 切到某個階段的某一步（試跑出錯時「前往這一步」）。 */
   const goStep = async (stage: number, step: number) => {
     if (!api) return
-    const res = await call('切換階段', () => api.select_stage(stage))
-    if (res) await call('選取', () => api.select_step(step))
+    const res = await call(tr('切換階段', 'Switch stage'), () => api.select_stage(stage))
+    if (res) await call(tr('選取', 'Select'), () => api.select_step(step))
   }
 
   const addStep = async (type: string, context: AddStepRequest['context'] = {}) => {
     if (!api) return
-    const res = await call('新增步驟', () => api.add_step(type, context))
-    if (res) setStatus({ text: `已新增：${res.state.steps[res.index]?.label}` })
+    const res = await call(tr('新增步驟', 'Add step'), () => api.add_step(type, context))
+    if (res) setStatus({ text: tr(`已新增：${res.state.steps[res.index]?.label}`, `Added: ${res.state.steps[res.index]?.label}`) })
   }
 
   // 快捷鍵（輸入框裡的 ⌘Z 交給瀏覽器處理）
@@ -411,6 +469,26 @@ export default function App() {
       </span>
     </footer>
   )
+  /** 「⋯」左邊的語言切換鈕：地球圖示＋目前的語言，點開選另一個 */
+  const languageMenu = (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="sm" aria-label={tr('切換語言', 'Language')} disabled={busy}>
+          <Globe /> {LANGS.find((l) => l.value === state.lang)?.label}
+          <ChevronDown className="opacity-60" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-36">
+        <DropdownMenuRadioGroup value={state.lang} onValueChange={(v) => void act.setLanguage(v as Lang)}>
+          {LANGS.map((l) => (
+            <DropdownMenuRadioItem key={l.value} value={l.value}>
+              {l.label}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
   const dialogs = (
     <>
       <ReportDialog
@@ -462,18 +540,19 @@ export default function App() {
             <img src={iconUrl} alt="Tablade" className="size-6" />
             <span className="px-1 text-[15px] font-semibold">Tablade</span>
             <div className="ml-auto flex items-center gap-1">
+              {languageMenu}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon-sm" aria-label="更多">
+                  <Button variant="ghost" size="icon-sm" aria-label={tr('更多', 'More')}>
                     <MoreHorizontal />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-60 whitespace-nowrap">
                   <DropdownMenuItem onSelect={() => void act.downloadSkill()}>
-                    <Download /> 下載 Copilot skill（v{info.recipe_version}）
+                    <Download /> {tr(`下載 Copilot skill（v${info.recipe_version}）`, `Download Copilot skill (v${info.recipe_version})`)}
                   </DropdownMenuItem>
                   <DropdownMenuItem onSelect={() => void act.selftest()}>
-                    <Stethoscope /> 自我檢測
+                    <Stethoscope /> {tr('自我檢測', 'Self-test')}
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -482,16 +561,19 @@ export default function App() {
           <main className="flex min-h-0 flex-1 items-center justify-center p-6">
             <div className="w-full max-w-md space-y-4 rounded-lg border p-6 text-center">
               <img src={iconUrl} alt="" className="mx-auto size-12" />
-              <h1 className="text-lg font-semibold">開始整理資料</h1>
+              <h1 className="text-lg font-semibold">{tr('開始整理資料', 'Start cleaning data')}</h1>
               <p className="text-sm text-muted-foreground">
-                先新增一個 Recipe（會請你選擇存放位置並命名），或開啟已經存好的 Recipe。之後在「讀取資料」加入檔案，再按「載入資料及預覽」。
+                {tr(
+                  '先新增一個 Recipe（會請你選擇存放位置並命名），或開啟已經存好的 Recipe。之後在「讀取資料」加入檔案，再按「載入資料及預覽」。',
+                  'Create a recipe (you will choose where to save it and name it), or open one you saved before. Then add files in “Read data” and click “Load & preview”.',
+                )}
               </p>
               <div className="flex justify-center gap-2">
                 <Button onClick={() => void act.newRecipe()} disabled={busy}>
-                  <FilePlus2 /> 新增 Recipe
+                  <FilePlus2 /> {tr('新增 Recipe', 'New recipe')}
                 </Button>
                 <Button variant="outline" onClick={() => void act.openRecipe()} disabled={busy}>
-                  <FolderOpen /> 開啟 Recipe
+                  <FolderOpen /> {tr('開啟 Recipe', 'Open recipe')}
                 </Button>
               </div>
               <UpdateNotice current={info.version} update={update} />
@@ -509,20 +591,35 @@ export default function App() {
   const needsFiles = (input.reader !== 'stages' && !input.files.length) || !input.can_load
   const emptyPreview =
     input.reader !== 'stages' && !input.files.length
-      ? '先在「讀取資料」按「瀏覽檔案…」加入檔案。'
+      ? tr('先在「讀取資料」按「瀏覽檔案…」加入檔案。', 'Add files in “Read data” with “Browse files…” first.')
       : !input.can_load
-        ? '檔案清單有找不到的檔，請先在「讀取資料」移除或修正。'
+        ? tr(
+            '檔案清單有找不到的檔，請先在「讀取資料」移除或修正。',
+            'Some files in the list are missing. Remove or fix them in “Read data” first.',
+          )
         : input.stale
-          ? '檔案清單、讀取方式或編碼已變更，按「載入資料及預覽」重新讀取。'
-          : '按「載入資料及預覽」讀取檔案、看每一步的結果。只要匯出的話，可以直接按「處理並匯出資料」。'
+          ? tr(
+              '檔案清單、讀取方式或編碼已變更，按「載入資料及預覽」重新讀取。',
+              'The file list, read mode or encoding has changed. Click “Load & preview” to read again.',
+            )
+          : tr(
+              '按「載入資料及預覽」讀取檔案、看每一步的結果。只要匯出的話，可以直接按「處理並匯出資料」。',
+              'Click “Load & preview” to read the files and see the result of each step. To just export, click “Process & export”.',
+            )
 
   const outputSelected = state.selected === state.steps.length
   const warnings = state.preview.warnings
   const stage = state.stages[state.current]
-  const outputLabel = stage && !stage.last ? '階段結果' : '輸出資料'
-  const stagePrefix = state.stages.length > 1 && stage ? `${stage.name}・` : ''
+  const outputLabel = stage && !stage.last ? tr('階段結果', 'Stage result') : tr('輸出資料', 'Output')
+  const stagePrefix = state.stages.length > 1 && stage ? `${stage.name}${tr('・', ' · ')}` : ''
   const blocked = state.preview.blocked
-  const previewLabel = stagePrefix + (state.selected < 0 ? '讀取資料' : outputSelected ? outputLabel : `步驟 ${state.selected + 1}`)
+  const previewLabel =
+    stagePrefix +
+    (state.selected < 0
+      ? tr('讀取資料', 'Read data')
+      : outputSelected
+        ? outputLabel
+        : tr(`步驟 ${state.selected + 1}`, `Step ${state.selected + 1}`))
   /** 選的那一步算不出來（步驟有錯）：不顯示資料，改寫原因與「前往」 */
   const currentStage = state.stages[state.current]
   /** 這一步沒有結果（還沒載入或算不出來）：警告分頁不寫「沒有警告」 */
@@ -534,38 +631,53 @@ export default function App() {
       : undefined
   const blockedInfo = (() => {
     if (!blocked || blocked.unloaded) return null
-    const which = outputSelected ? outputLabel : `第 ${state.preview.requested + 1} 步`
+    const which = outputSelected ? outputLabel : tr(`第 ${state.preview.requested + 1} 步`, `Step ${state.preview.requested + 1}`)
+    const title = tr(`${which}算不出來`, `${which} can't be computed`)
     if (blocked.step !== null) {
+      const n = blocked.step + 1
       const step = state.steps[blocked.step]
       const error = step?.run_error ?? step?.errors[0]?.error ?? ''
       const own = blocked.step === state.preview.requested
+      const reason = error ? tr(`：${error}`, `: ${error}`) : ''
       return {
-        badge: `${which}算不出來：${own ? '這一步有錯' : `第 ${blocked.step + 1} 步有錯`}`,
-        title: `${which}算不出來`,
-        detail: `${own ? '這一步' : `第 ${blocked.step + 1} 步「${step?.label ?? ''}」`}有錯${error ? `：${error}` : ''}`,
-        go: own ? null : { label: `前往第 ${blocked.step + 1} 步`, run: () => void call('選取', () => api!.select_step(blocked.step!)) },
+        badge: own
+          ? tr(`${which}算不出來：這一步有錯`, `${which} can't be computed: this step has an error`)
+          : tr(`${which}算不出來：第 ${n} 步有錯`, `${which} can't be computed: step ${n} has an error`),
+        title,
+        detail: own
+          ? tr(`這一步有錯${reason}`, `This step has an error${reason}`)
+          : tr(`第 ${n} 步「${step?.label ?? ''}」有錯${reason}`, `Step ${n} "${step?.label ?? ''}" has an error${reason}`),
+        go: own
+          ? null
+          : {
+              label: tr(`前往第 ${n} 步`, `Go to step ${n}`),
+              run: () => void call(tr('選取', 'Select'), () => api!.select_step(blocked.step!)),
+            },
       }
     }
     if (blocked.stage) {
       const target = state.stages.find((s) => s.name === blocked.stage)
+      const why = target ? tr(`（${target.status_text}）`, ` (${target.status_text})`) : ''
       return {
-        badge: `${which}算不出來：@${blocked.stage} 還沒有結果`,
-        title: `${which}算不出來`,
-        detail: `用到的 @${blocked.stage} 還沒有結果${target ? `（${target.status_text}）` : ''}`,
-        go: target ? { label: `前往 @${blocked.stage}`, run: () => void goStage(target.index) } : null,
+        badge: tr(`${which}算不出來：@${blocked.stage} 還沒有結果`, `${which} can't be computed: @${blocked.stage} has no result yet`),
+        title,
+        detail: tr(`用到的 @${blocked.stage} 還沒有結果${why}`, `@${blocked.stage}, which this uses, has no result yet${why}`),
+        go: target ? { label: tr(`前往 @${blocked.stage}`, `Go to @${blocked.stage}`), run: () => void goStage(target.index) } : null,
       }
     }
-    return { badge: `${which}算不出來`, title: `${which}算不出來`, detail: '前面的步驟算不出來', go: null }
+    return { badge: title, title, detail: tr('前面的步驟算不出來', "An earlier step can't be computed"), go: null }
   })()
   const earlierStages = state.stages
     .slice(0, state.current)
     .map((s) => ({ index: s.index, name: s.name, columns: s.columns, sampled: s.sampled, full: s.full }))
   /** 警告指到的位置：「@階段／檔名［工作表］:行號（原始：…）」 */
   const place = (w: (typeof warnings)[number]) => {
-    let where = `${w.stage ? `@${w.stage}／` : ''}${w.source_file}${w.sheet ? `［${w.sheet}］` : ''}:${w.line_no}`
+    const slash = tr('／', '/')
+    const sheet = (name: string | null | undefined) => (name ? tr(`［${name}］`, ` [${name}]`) : '')
+    let where = `${w.stage ? `@${w.stage}${slash}` : ''}${w.source_file}${sheet(w.sheet)}:${w.line_no}`
     if (w.orig_source_file != null || w.orig_line_no != null) {
-      const orig = `${w.orig_stage ? `@${w.orig_stage}／` : ''}${w.orig_source_file}${w.orig_sheet ? `［${w.orig_sheet}］` : ''}`
-      where += `（原始：${orig}:${w.orig_line_no}）`
+      const orig = `${w.orig_stage ? `@${w.orig_stage}${slash}` : ''}${w.orig_source_file}${sheet(w.orig_sheet)}`
+      where += tr(`（原始：${orig}:${w.orig_line_no}）`, ` (original: ${orig}:${w.orig_line_no})`)
     }
     return where
   }
@@ -578,23 +690,27 @@ export default function App() {
           <RecipeTitle
             name={state.recipe.name}
             path={state.recipe.path}
-            onCommit={(name) => void call('更新名稱', () => api.set_meta({ name }))}
+            onCommit={(name) => void call(tr('更新名稱', 'Rename'), () => api.set_meta({ name }))}
           />
           <div className="mx-1 h-5 w-px bg-border" />
-          <ToolButton label="新增 Recipe" onClick={() => void act.newRecipe()} disabled={busy}>
+          <ToolButton label={tr('新增 Recipe', 'New recipe')} onClick={() => void act.newRecipe()} disabled={busy}>
             <FilePlus2 />
           </ToolButton>
-          <ToolButton label="開啟 Recipe（⌘O）" onClick={() => void act.openRecipe()} disabled={busy}>
+          <ToolButton label={tr('開啟 Recipe（⌘O）', 'Open recipe (⌘O)')} onClick={() => void act.openRecipe()} disabled={busy}>
             <FolderOpen />
           </ToolButton>
-          <ToolButton label="儲存 Recipe（⌘S，⇧⌘S 另存）" onClick={() => void act.save(false)} disabled={busy}>
+          <ToolButton
+            label={tr('儲存 Recipe（⌘S，⇧⌘S 另存）', 'Save recipe (⌘S; ⇧⌘S to save as)')}
+            onClick={() => void act.save(false)}
+            disabled={busy}
+          >
             <Save />
           </ToolButton>
           <div className="mx-1 h-5 w-px bg-border" />
-          <ToolButton label="復原（⌘Z）" onClick={() => void act.undo()} disabled={busy || !state.can_undo}>
+          <ToolButton label={tr('復原（⌘Z）', 'Undo (⌘Z)')} onClick={() => void act.undo()} disabled={busy || !state.can_undo}>
             <Undo2 />
           </ToolButton>
-          <ToolButton label="重做（⇧⌘Z）" onClick={() => void act.redo()} disabled={busy || !state.can_redo}>
+          <ToolButton label={tr('重做（⇧⌘Z）', 'Redo (⇧⌘Z)')} onClick={() => void act.redo()} disabled={busy || !state.can_redo}>
             <Redo2 />
           </ToolButton>
           <div className="mx-1 h-5 w-px bg-border" />
@@ -602,27 +718,35 @@ export default function App() {
             <TooltipTrigger asChild>
               <span>
                 <Button size="sm" variant="outline" onClick={() => void act.loadData()} disabled={busy || !state.actions.load.ok}>
-                  <FileInput /> 載入資料及預覽
+                  <FileInput /> {tr('載入資料及預覽', 'Load & preview')}
                 </Button>
               </span>
             </TooltipTrigger>
             <TooltipContent className="max-w-80">
-              {state.actions.load.reason ?? '依序讀取全部階段的檔案（大檔讀樣本），算出每一步的預覽；只重讀有變更的階段'}
+              {state.actions.load.reason ??
+                tr(
+                  '依序讀取全部階段的檔案（大檔讀樣本），算出每一步的預覽；只重讀有變更的階段',
+                  'Read the files of every stage in order (a sample for large files) and preview each step; only changed stages are read again',
+                )}
             </TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
               <span className="ml-1">
                 <Button size="sm" onClick={() => void act.exportParquet()} disabled={busy || !state.actions.export.ok}>
-                  <Play /> 處理並匯出資料
+                  <Play /> {tr('處理並匯出資料', 'Process & export')}
                 </Button>
               </span>
             </TooltipTrigger>
             <TooltipContent className="max-w-80">
-              {state.actions.export.reason ?? '處理全部資料，存到 output 資料夾。不用先載入；沒預覽過時會先試跑。'}
+              {state.actions.export.reason ??
+                tr(
+                  '處理全部資料，存到 output 資料夾。不用先載入；沒預覽過時會先試跑。',
+                  'Process all data and save it to the output folder. No need to load first; a trial run comes first if you have not previewed.',
+                )}
             </TooltipContent>
           </Tooltip>
-          {state.recipe.dirty ? <span className="ml-1.5 text-xs text-muted-foreground">還沒儲存</span> : null}
+          {state.recipe.dirty ? <span className="ml-1.5 text-xs text-muted-foreground">{tr('還沒儲存', 'Unsaved')}</span> : null}
           <div className="ml-auto flex items-center gap-1">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -632,29 +756,30 @@ export default function App() {
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-60 whitespace-nowrap">
                 <DropdownMenuItem onSelect={() => void showReport()}>
-                  <TriangleAlert /> 檢查並複製錯誤報告
+                  <TriangleAlert /> {tr('檢查並複製錯誤報告', 'Check and copy error report')}
                 </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => void act.downloadSkill()}>
-                  <Download /> 下載 Copilot skill（v{info.recipe_version}）
+                  <Download /> {tr(`下載 Copilot skill（v${info.recipe_version}）`, `Download Copilot skill (v${info.recipe_version})`)}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+            {languageMenu}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon-sm" aria-label="更多">
+                <Button variant="ghost" size="icon-sm" aria-label={tr('更多', 'More')}>
                   <MoreHorizontal />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-48 whitespace-nowrap">
                 <DropdownMenuItem onSelect={() => void act.save(true)}>
-                  <Save /> 另存 Recipe…
+                  <Save /> {tr('另存 Recipe…', 'Save recipe as…')}
                 </DropdownMenuItem>
                 <DropdownMenuCheckboxItem checked={showSystem} onCheckedChange={(v) => setShowSystem(v === true)}>
-                  <Columns3 /> 顯示系統欄位
+                  <Columns3 /> {tr('顯示系統欄位', 'Show system columns')}
                 </DropdownMenuCheckboxItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onSelect={() => void act.selftest()}>
-                  <Stethoscope /> 自我檢測
+                  <Stethoscope /> {tr('自我檢測', 'Self-test')}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -663,35 +788,41 @@ export default function App() {
 
         <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
           <ResizablePanel defaultSize="12" minSize={120} collapsible collapsedSize={RAIL_WIDTH} panelRef={stagesPanel}>
-            <CollapsiblePane side="left" label="階段" onExpand={() => stagesPanel.current?.expand()}>
+            <CollapsiblePane side="left" label={tr('階段', 'Stages')} onExpand={() => stagesPanel.current?.expand()}>
               <StagesBar
                 state={state}
                 busy={busy}
                 onCollapse={() => stagesPanel.current?.collapse()}
-                onSelect={(i) => void call('切換階段', () => api.select_stage(i))}
+                onSelect={(i) => void call(tr('切換階段', 'Switch stage'), () => api.select_stage(i))}
                 onAdd={async (name, before) => {
-                  const res = await call('新增階段', () => api.add_stage(name, before))
-                  if (res) setStatus({ text: `已新增階段「${name}」。接著在「讀取資料」選擇要讀的檔案或前面的階段。` })
+                  const res = await call(tr('新增階段', 'Add stage'), () => api.add_stage(name, before))
+                  if (res)
+                    setStatus({
+                      text: tr(
+                        `已新增階段「${name}」。接著在「讀取資料」選擇要讀的檔案或前面的階段。`,
+                        `Added stage "${name}". Next, choose the files or earlier stages to read in “Read data”.`,
+                      ),
+                    })
                   return res !== null
                 }}
-                onRename={async (i, name) => (await call('階段改名', () => api.rename_stage(i, name))) !== null}
-                onMove={(i, to) => void call('移動階段', () => api.move_stage(i, to))}
-                onDelete={(i) => void call('刪除階段', () => api.delete_stage(i))}
+                onRename={async (i, name) => (await call(tr('階段改名', 'Rename stage'), () => api.rename_stage(i, name))) !== null}
+                onMove={(i, to) => void call(tr('移動階段', 'Move stage'), () => api.move_stage(i, to))}
+                onDelete={(i) => void call(tr('刪除階段', 'Delete stage'), () => api.delete_stage(i))}
               />
             </CollapsiblePane>
           </ResizablePanel>
           <ResizableHandle />
           <ResizablePanel defaultSize="20" minSize={220} collapsible collapsedSize={RAIL_WIDTH} panelRef={leftPanel}>
-            <CollapsiblePane side="left" label="步驟" onExpand={() => leftPanel.current?.expand()}>
+            <CollapsiblePane side="left" label={tr('步驟', 'Steps')} onExpand={() => leftPanel.current?.expand()}>
               <StepsPanel
                 state={state}
                 catalog={info.catalog}
                 busy={busy}
-                onSelect={(i) => void call('選取', () => api.select_step(i))}
+                onSelect={(i) => void call(tr('選取', 'Select'), () => api.select_step(i))}
                 onAdd={(type) => void addStep(type)}
-                onMove={(i, to) => void call('移動步驟', () => api.move_step(i, to))}
-                onToggle={(i) => void call('切換步驟', () => api.toggle_step(i))}
-                onDelete={(i) => void call('刪除步驟', () => api.delete_step(i))}
+                onMove={(i, to) => void call(tr('移動步驟', 'Move step'), () => api.move_step(i, to))}
+                onToggle={(i) => void call(tr('切換步驟', 'Toggle step'), () => api.toggle_step(i))}
+                onDelete={(i) => void call(tr('刪除步驟', 'Delete step'), () => api.delete_step(i))}
                 onCollapse={() => leftPanel.current?.collapse()}
               />
             </CollapsiblePane>
@@ -708,33 +839,43 @@ export default function App() {
                     </span>
                     {state.preview.rows !== null ? (
                       <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                        {state.preview.rows.toLocaleString()} 列 × {state.preview.columns.filter((c) => !c.system).length} 欄
+                        {tr(
+                          `${state.preview.rows.toLocaleString()} 列 × ${state.preview.columns.filter((c) => !c.system).length} 欄`,
+                          `${plural(state.preview.rows, 'row', 'rows')} × ${plural(state.preview.columns.filter((c) => !c.system).length, 'column', 'columns')}`,
+                        )}
                       </span>
                     ) : null}
                     {state.preview.mode === 'sample' ? (
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <Badge variant="outline" className="border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400">
-                            抽樣模式
+                            {tr('抽樣模式', 'Sample mode')}
                           </Badge>
                         </TooltipTrigger>
                         <TooltipContent className="max-w-80">
-                          資料共 {state.preview.input_rows?.toLocaleString()} 行，預覽只用每個檔的前{' '}
-                          {state.input.sample.head.toLocaleString()} 行＋最後 {state.input.sample.tail.toLocaleString()}{' '}
-                          行，列數、加總、彙總結果可能不正確。按「處理並匯出資料」看完整結果（匯出後「輸出資料」會改成讀匯出檔）。
+                          {tr(
+                            `資料共 ${state.preview.input_rows?.toLocaleString()} 行，預覽只用每個檔的前 ${state.input.sample.head.toLocaleString()} 行＋最後 ${state.input.sample.tail.toLocaleString()} 行，列數、加總、彙總結果可能不正確。按「處理並匯出資料」看完整結果（匯出後「輸出資料」會改成讀匯出檔）。`,
+                            `The data has ${state.preview.input_rows?.toLocaleString()} lines. The preview uses only the first ${state.input.sample.head.toLocaleString()} and last ${state.input.sample.tail.toLocaleString()} lines of each file, so row counts, totals and summaries may be inaccurate. Click “Process & export” for the full result (afterwards “Output” reads the exported file).`,
+                          )}
                         </TooltipContent>
                       </Tooltip>
                     ) : state.preview.mode === 'full' ? (
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <Badge variant="outline" className="border-green-600/40 bg-green-600/10 text-green-700 dark:text-green-400">
-                            完整模式
+                            {tr('完整模式', 'Full mode')}
                           </Badge>
                         </TooltipTrigger>
                         <TooltipContent className="max-w-80">
                           {state.preview.full
-                            ? `已處理全部 ${state.preview.full.input_rows.toLocaleString()} 行（${state.preview.full.time} 匯出），顯示的是匯出的檔。`
-                            : `資料共 ${state.preview.input_rows?.toLocaleString()} 行，全部讀進來（沒有抽樣），列數、加總都是全部資料的。`}
+                            ? tr(
+                                `已處理全部 ${state.preview.full.input_rows.toLocaleString()} 行（${state.preview.full.time} 匯出），顯示的是匯出的檔。`,
+                                `All ${state.preview.full.input_rows.toLocaleString()} lines processed (exported ${state.preview.full.time}); showing the exported file.`,
+                              )
+                            : tr(
+                                `資料共 ${state.preview.input_rows?.toLocaleString()} 行，全部讀進來（沒有抽樣），列數、加總都是全部資料的。`,
+                                `The data has ${state.preview.input_rows?.toLocaleString()} lines, all read in (no sampling), so row counts and totals cover all data.`,
+                              )}
                         </TooltipContent>
                       </Tooltip>
                     ) : null}
@@ -742,17 +883,24 @@ export default function App() {
                     {state.preview.sampled_steps.length > 0 ? (
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <Badge variant="destructive">警告：預覽結果可能不正確</Badge>
+                          <Badge variant="destructive">{tr('警告：預覽結果可能不正確', 'Warning: preview may be inaccurate')}</Badge>
                         </TooltipTrigger>
                         <TooltipContent className="max-w-80 flex-col items-start gap-1">
                           {state.preview.sampled_steps.length === 1 ? (
                             <div>
-                              {sampledStepText(state.preview.sampled_steps[0])}
-                              要看整個來源檔的每一列：用樣本算出來的筆數、加總、彙總結果不是全部資料的。
+                              {tr(
+                                `${sampledStepText(state.preview.sampled_steps[0])}要看整個來源檔的每一列：用樣本算出來的筆數、加總、彙總結果不是全部資料的。`,
+                                `${sampledStepText(state.preview.sampled_steps[0])} needs every row of the whole source file: counts, totals and summaries computed from the sample don't cover all data.`,
+                              )}
                             </div>
                           ) : (
                             <>
-                              <div>下面這些步驟要看整個來源檔的每一列，用樣本算出來的筆數、加總、彙總結果不是全部資料的：</div>
+                              <div>
+                                {tr(
+                                  '下面這些步驟要看整個來源檔的每一列，用樣本算出來的筆數、加總、彙總結果不是全部資料的：',
+                                  "These steps need every row of the whole source file; counts, totals and summaries computed from the sample don't cover all data:",
+                                )}
+                              </div>
                               <ul className="list-disc pl-4">
                                 {state.preview.sampled_steps.map((s) => (
                                   <li key={`${s.stage}:${s.number}`}>{sampledStepText(s)}</li>
@@ -760,7 +908,9 @@ export default function App() {
                               </ul>
                             </>
                           )}
-                          <div className="opacity-80">按「處理並匯出資料」看完整結果。</div>
+                          <div className="opacity-80">
+                            {tr('按「處理並匯出資料」看完整結果。', 'Click “Process & export” for the full result.')}
+                          </div>
                         </TooltipContent>
                       </Tooltip>
                     ) : null}
@@ -768,7 +918,7 @@ export default function App() {
                       <Badge variant="destructive">{currentStage?.status_text}</Badge>
                     ) : !input.loaded ? (
                       <Badge variant="outline" className="text-muted-foreground">
-                        {currentStage?.status_text ?? '還沒載入資料'}
+                        {currentStage?.status_text ?? tr('還沒載入資料', 'Data not loaded yet')}
                       </Badge>
                     ) : blockedInfo ? (
                       <Badge variant="destructive">{blockedInfo.badge}</Badge>
@@ -777,12 +927,15 @@ export default function App() {
                   <div className="min-h-0 flex-1">
                     {brokenRef ? (
                       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm">
-                        <p className="font-medium text-destructive">還算不出來</p>
+                        <p className="font-medium text-destructive">{tr('還算不出來', "Can't be computed yet")}</p>
                         <p className="max-w-md text-muted-foreground">
-                          讀的「{brokenRef.name}」{brokenRef.status_text}，先修正那個階段。
+                          {tr(
+                            `讀的「${brokenRef.name}」${brokenRef.status_text}，先修正那個階段。`,
+                            `"${brokenRef.name}", which this reads: ${brokenRef.status_text}. Fix that stage first.`,
+                          )}
                         </p>
                         <Button size="sm" variant="outline" onClick={() => void goStage(brokenRef.index)}>
-                          前往 @{brokenRef.name}
+                          {tr(`前往 @${brokenRef.name}`, `Go to @${brokenRef.name}`)}
                         </Button>
                       </div>
                     ) : blockedInfo ? (
@@ -817,7 +970,7 @@ export default function App() {
                             title={state.actions.load.reason ?? undefined}
                             onClick={() => void act.loadData()}
                           >
-                            <FileInput /> 載入資料及預覽
+                            <FileInput /> {tr('載入資料及預覽', 'Load & preview')}
                           </Button>
                         ) : state.selected !== -1 ? (
                           <Button
@@ -825,10 +978,10 @@ export default function App() {
                             variant="outline"
                             onClick={() => {
                               rightPanel.current?.expand()
-                              void call('選取', () => api.select_step(-1))
+                              void call(tr('選取', 'Select'), () => api.select_step(-1))
                             }}
                           >
-                            前往「讀取資料」
+                            {tr('前往「讀取資料」', 'Go to “Read data”')}
                           </Button>
                         ) : null}
                       </div>
@@ -841,7 +994,7 @@ export default function App() {
                 {/* 收合到只剩標題列時，右邊的按鈕改成「展開」（index.css 的 .warn-pane） */}
                 <div className="warn-pane flex h-full flex-col">
                   <PaneHeader className={warnings.length ? 'bg-amber-500/10' : ''}>
-                    <div role="tablist" aria-label="下方面板" className="flex items-center gap-1">
+                    <div role="tablist" aria-label={tr('下方面板', 'Bottom panel')} className="flex items-center gap-1">
                       <BottomTab active={bottomTab === 'warnings'} onClick={() => openBottomTab('warnings')}>
                         {warnings.length ? (
                           <TriangleAlert className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
@@ -853,26 +1006,29 @@ export default function App() {
                         <span className={warnings.length ? 'text-amber-700 dark:text-amber-400' : noResult ? 'text-muted-foreground' : ''}>
                           {state.preview.full
                             ? state.preview.full.warning_count
-                              ? `匯出時共 ${state.preview.full.warning_count.toLocaleString()} 則警告`
-                              : '匯出時沒有警告'
+                              ? tr(
+                                  `匯出時共 ${state.preview.full.warning_count.toLocaleString()} 則警告`,
+                                  `${plural(state.preview.full.warning_count, 'warning', 'warnings')} at export`,
+                                )
+                              : tr('匯出時沒有警告', 'No warnings at export')
                             : warnings.length
-                              ? `警告（${warnings.length.toLocaleString()}）`
+                              ? tr(`警告（${warnings.length.toLocaleString()}）`, `Warnings (${warnings.length.toLocaleString()})`)
                               : noResult
-                                ? '警告'
-                                : '沒有警告'}
+                                ? tr('警告', 'Warnings')
+                                : tr('沒有警告', 'No warnings')}
                         </span>
                       </BottomTab>
                       <BottomTab active={bottomTab === 'types'} onClick={() => openBottomTab('types')}>
                         <Shapes className="size-4 shrink-0" />
-                        型別
+                        {tr('型別', 'Types')}
                       </BottomTab>
                     </div>
                     <Button
                       variant="ghost"
                       size="icon-xs"
                       className="ml-auto"
-                      aria-label="收合或展開下方面板"
-                      title="收合或展開下方面板"
+                      aria-label={tr('收合或展開下方面板', 'Collapse or expand the bottom panel')}
+                      title={tr('收合或展開下方面板', 'Collapse or expand the bottom panel')}
                       onClick={() => (warnPanel.current?.isCollapsed() ? warnPanel.current.expand() : warnPanel.current?.collapse())}
                     >
                       <ChevronDown className="warn-collapse" />
@@ -915,11 +1071,11 @@ export default function App() {
           </ResizablePanel>
           <ResizableHandle />
           <ResizablePanel defaultSize="23" minSize={280} collapsible collapsedSize={RAIL_WIDTH} panelRef={rightPanel}>
-            <CollapsiblePane side="right" label="設定" onExpand={() => rightPanel.current?.expand()}>
+            <CollapsiblePane side="right" label={tr('設定', 'Settings')} onExpand={() => rightPanel.current?.expand()}>
               <div className="flex h-full flex-col">
                 <PaneHeader>
-                  <CollapseButton side="right" label="設定" onClick={() => rightPanel.current?.collapse()} />
-                  <PaneTitle>設定</PaneTitle>
+                  <CollapseButton side="right" label={tr('設定', 'Settings')} onClick={() => rightPanel.current?.collapse()} />
+                  <PaneTitle>{tr('設定', 'Settings')}</PaneTitle>
                 </PaneHeader>
                 <div className="min-h-0 flex-1 overflow-auto p-4">
                   {selected && catalogItem ? (
@@ -927,28 +1083,35 @@ export default function App() {
                       key={selected.id}
                       step={selected}
                       item={catalogItem}
-                      onChange={(values) => void call('更新步驟', () => api.update_step(selected.index, values))}
-                      onRefresh={(field, values) => void call('重新從資料讀取', () => api.refresh_values(selected.index, field, values))}
+                      onChange={(values) => void call(tr('更新步驟', 'Update step'), () => api.update_step(selected.index, values))}
+                      onRefresh={(field, values) =>
+                        void call(tr('重新從資料讀取', 'Read again from data'), () => api.refresh_values(selected.index, field, values))
+                      }
                       context={{
                         stages: earlierStages,
                         onGoStage: (i) => void goStage(i),
-                        onFullRun: (i) => void runStages('完整跑一次', true, () => call('完整跑一次', () => api.full_run(i))),
+                        onFullRun: (i) =>
+                          void runStages(tr('完整跑一次', 'Run in full'), true, () =>
+                            call(tr('完整跑一次', 'Run in full'), () => api.full_run(i)),
+                          ),
                       }}
                     />
                   ) : outputSelected ? (
                     <OutputPanel
                       state={state}
-                      onOutput={(v) => void call('更新輸出設定', () => api.set_output(v))}
-                      onStageOutput={(index, file) => void call('更新輸出檔名', () => api.set_stage_output(index, file))}
+                      onOutput={(v) => void call(tr('更新輸出設定', 'Update output settings'), () => api.set_output(v))}
+                      onStageOutput={(index, file) =>
+                        void call(tr('更新輸出檔名', 'Update output file name'), () => api.set_stage_output(index, file))
+                      }
                     />
                   ) : (
                     <InputPanel
                       state={state}
                       busy={busy}
                       onAddFiles={() => void act.addFiles()}
-                      onAddEntry={(text) => void call('加入路徑', () => api.add_file_entry(text))}
-                      onRemove={(i) => void call('移除檔案', () => api.remove_file(i))}
-                      onInput={(v) => void call('更新資料設定', () => api.set_input(v))}
+                      onAddEntry={(text) => void call(tr('加入路徑', 'Add path'), () => api.add_file_entry(text))}
+                      onRemove={(i) => void call(tr('移除檔案', 'Remove file'), () => api.remove_file(i))}
+                      onInput={(v) => void call(tr('更新資料設定', 'Update read settings'), () => api.set_input(v))}
                     />
                   )}
                 </div>

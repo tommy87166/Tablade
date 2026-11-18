@@ -5,6 +5,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 
+import { tr } from '@/i18n'
 import type { CatalogItem, StepState } from '../../bridge'
 import { editableFields, resolve, visible } from '../../lib/schema'
 import { StepScope } from '../StepScope'
@@ -105,9 +106,15 @@ export function StepForm({ step, item, onChange, context, onRefresh }: Props) {
             }}
           />
         ))}
-      {fields.length === 0 ? <p className="text-sm text-muted-foreground">這個步驟沒有參數。</p> : null}
+      {fields.length === 0 ? (
+        <p className="text-sm text-muted-foreground">{tr('這個步驟沒有參數。', 'This step has no parameters.')}</p>
+      ) : null}
       <FieldErrors issues={stray} />
-      {step.run_error ? <p className="rounded-md bg-destructive/10 p-2 text-sm text-destructive">執行失敗：{step.run_error}</p> : null}
+      {step.run_error ? (
+        <p className="rounded-md bg-destructive/10 p-2 text-sm text-destructive">
+          {tr(`執行失敗：${step.run_error}`, `Run failed: ${step.run_error}`)}
+        </p>
+      ) : null}
     </div>
   )
 }

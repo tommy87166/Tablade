@@ -13,6 +13,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
+import { tr } from '@/i18n'
 import type { Cell, TabladeApi, ViewState } from '../bridge'
 
 const PAGE = 200
@@ -71,8 +72,8 @@ function ResizeHandle({ name, width, onResize }: { name: string; width: number; 
     <div
       role="separator"
       aria-orientation="vertical"
-      aria-label={`調整「${name}」的欄寬`}
-      title="拖曳調整欄寬，雙擊回到自動寬度"
+      aria-label={tr(`調整「${name}」的欄寬`, `Resize column "${name}"`)}
+      title={tr('拖曳調整欄寬，雙擊回到自動寬度', 'Drag to resize; double-click to fit')}
       className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-primary/40"
       onPointerDown={(e) => {
         e.preventDefault()
@@ -160,9 +161,7 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
     if (!items.length && !pages.has(0)) void load(0)
   }, [items, pages, total, load])
 
-  useImperativeHandle(ref, () => ({
-    scrollToRow: (index: number) => virtualizer.scrollToIndex(index, { align: 'center' }),
-  }))
+  useImperativeHandle(ref, () => ({ scrollToRow: (index: number) => virtualizer.scrollToIndex(index, { align: 'center' }) }))
 
   const visible = useMemo(() => {
     const idx = columns.map((name, i) => ({ name, i }))
@@ -175,7 +174,12 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
   const firstPage = pages.get(0)
   const estimated = useMemo(() => {
     const sample = (firstPage ?? []).slice(0, SAMPLE_ROWS)
-    return visible.map(({ name, i }) => estimateWidth(name, sample.map((r) => r[i])))
+    return visible.map(({ name, i }) =>
+      estimateWidth(
+        name,
+        sample.map((r) => r[i]),
+      ),
+    )
   }, [visible, firstPage])
   // 行號欄依最大行號的位數加寬（大檔的行號可能有 8、9 位數）
   const maxLineText = String(Math.max(maxLine ?? 0, preview.rows ?? 0, 1))
@@ -209,7 +213,11 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
   const template = `${lineWidth}px ${widths.map((w) => `${w}px`).join(' ')}`
 
   if (preview.rows === null) {
-    return <div className="flex h-full items-center justify-center text-sm text-muted-foreground">沒有可預覽的資料</div>
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+        {tr('沒有可預覽的資料', 'No data to preview')}
+      </div>
+    )
   }
 
   return (
@@ -220,9 +228,13 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
           className="sticky top-0 z-10 grid border-b bg-background font-medium"
           style={{ gridTemplateColumns: template, height: ROW_HEIGHT + 8 }}
         >
-          <div className="px-2 py-1.5 text-right text-xs text-muted-foreground">行號</div>
+          <div className="px-2 py-1.5 text-right text-xs text-muted-foreground">{tr('行號', 'Line')}</div>
           {visible.map(({ name }, k) => (
-            <div key={name} className="relative truncate border-l px-2 py-1.5" title={`${name}（${dtypes.get(name) ?? ''}）`}>
+            <div
+              key={name}
+              className="relative truncate border-l px-2 py-1.5"
+              title={tr(`${name}（${dtypes.get(name) ?? ''}）`, `${name} (${dtypes.get(name) ?? ''})`)}
+            >
               {name}
               <ResizeHandle name={name} width={widths[k]} onResize={resized} />
             </div>
@@ -257,7 +269,12 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
                       {row && lineIndex >= 0 ? String(row[lineIndex]) : item.index + 1}
                     </div>
                     {visible.map(({ name, i }) => {
-                      if (!row) return <div key={name} className="border-l px-2 py-1 text-muted-foreground/40">…</div>
+                      if (!row)
+                        return (
+                          <div key={name} className="border-l px-2 py-1 text-muted-foreground/40">
+                            …
+                          </div>
+                        )
                       const value = row[i]
                       return (
                         <div
@@ -279,20 +296,24 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
           {target ? (
             <ContextMenuContent>
               <ContextMenuLabel className="max-w-64 truncate">
-                {target.name}：{target.value === null ? 'null' : String(target.value)}
+                {target.name}
+                {tr('：', ': ')}
+                {target.value === null ? 'null' : String(target.value)}
               </ContextMenuLabel>
               <ContextMenuSeparator />
               <ContextMenuItem onSelect={() => onAddStep({ type: 'filter', context: { column: target.name, value: target.value } })}>
-                只保留等於這個值的列
+                {tr('只保留等於這個值的列', 'Keep only rows equal to this value')}
               </ContextMenuItem>
               <ContextMenuItem
                 onSelect={() => onAddStep({ type: 'filter', context: { column: target.name, value: target.value, exclude: true } })}
               >
-                排除等於這個值的列
+                {tr('排除等於這個值的列', 'Exclude rows equal to this value')}
               </ContextMenuItem>
               <ContextMenuSeparator />
-              <ContextMenuItem onSelect={() => onAddStep({ type: 'replace_values', context: { column: target.name, value: target.value } })}>
-                取代這個值
+              <ContextMenuItem
+                onSelect={() => onAddStep({ type: 'replace_values', context: { column: target.name, value: target.value } })}
+              >
+                {tr('取代這個值', 'Replace this value')}
               </ContextMenuItem>
             </ContextMenuContent>
           ) : null}

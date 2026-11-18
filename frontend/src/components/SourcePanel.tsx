@@ -7,26 +7,27 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { plural, tr } from '@/i18n'
 import type { StageState, ViewState } from '../bridge'
 
-const READERS = {
-  text_lines: '逐行讀取（爛格式檔案）',
-  csv: '乾淨的 CSV',
-  excel: 'Excel 工作表',
+const readers = () => ({
+  text_lines: tr('逐行讀取（爛格式檔案）', 'Line by line (messy files)'),
+  csv: tr('乾淨的 CSV', 'Clean CSV'),
+  excel: tr('Excel 工作表', 'Excel sheet'),
   parquet: 'Parquet',
-  stages: '前面階段的輸出',
-}
+  stages: tr('前面階段的輸出', 'Output of earlier stages'),
+})
 /** Radix 的選項不能是空字串：「第一個工作表」用這個值代表 sheet = '' */
 const FIRST_SHEET = '__first__'
 /** 全部工作表（Excel 的工作表名稱不能有 *，不會撞名） */
 const ALL_SHEETS = '*'
-const ENCODINGS = {
-  auto: '自動偵測（UTF-8 → cp950）',
+const encodings = () => ({
+  auto: tr('自動偵測（UTF-8 → cp950）', 'Auto-detect (UTF-8 → cp950)'),
   'utf-8': 'UTF-8',
-  'utf-8-sig': 'UTF-8（BOM）',
-  cp950: 'cp950（Big5）',
+  'utf-8-sig': tr('UTF-8（BOM）', 'UTF-8 (BOM)'),
+  cp950: tr('cp950（Big5）', 'cp950 (Big5)'),
   big5hkscs: 'Big5-HKSCS',
-}
+})
 
 function formatBytes(n: number) {
   if (n < 1024) return `${n} B`
@@ -56,7 +57,7 @@ function StagesInput({ state, onInput }: Pick<InputProps, 'state' | 'onInput'>) 
   return (
     <div className="space-y-3">
       <div className="space-y-1.5">
-        <div className="text-xs text-muted-foreground">要讀的階段（依階段的順序接在一起）</div>
+        <div className="text-xs text-muted-foreground">{tr('要讀的階段（依階段的順序接在一起）', 'Stages to read (in stage order)')}</div>
         <ul className="divide-y rounded-md border text-sm">
           {input.earlier.map((name) => (
             <li key={name}>
@@ -67,23 +68,36 @@ function StagesInput({ state, onInput }: Pick<InputProps, 'state' | 'onInput'>) 
             </li>
           ))}
         </ul>
-        {missing.length ? <p className="text-xs text-destructive">不是前面的階段：{missing.join('、')}</p> : null}
+        {missing.length ? (
+          <p className="text-xs text-destructive">
+            {tr(`不是前面的階段：${missing.join('、')}`, `Not earlier stages: ${missing.join(', ')}`)}
+          </p>
+        ) : null}
         <p className="text-xs text-muted-foreground">
-          每個來源檔各自是一個來源（名稱是「@階段／檔名」）。要接成一份（附加）就加「合併來源檔」；同名欄的型別要一樣，缺的欄補空值。
+          {tr(
+            '每個來源檔各自是一個來源（名稱是「@階段／檔名」）。要接成一份（附加）就加「合併來源檔」；同名欄的型別要一樣，缺的欄補空值。',
+            'Each source file is a separate source (named "@stage/file"). To append them into one, add "Combine source files"; columns with the same name must have the same type, and missing columns are filled with nulls.',
+          )}
         </p>
       </div>
       {input.error ? <p className="rounded-md bg-destructive/10 p-2 text-sm text-destructive">{input.error}</p> : null}
       {!input.loaded && !input.error ? (
         <p className={`text-xs ${broken ? 'text-destructive' : 'text-muted-foreground'}`}>
           {!input.stages.length
-            ? '先勾選要讀的階段'
+            ? tr('先勾選要讀的階段', 'Select the stages to read first')
             : broken
-              ? `讀的「${broken.name}」有錯，先修正那個階段`
-              : '前面的階段還沒有結果：按工具列的「載入資料及預覽」'}
+              ? tr(`讀的「${broken.name}」有錯，先修正那個階段`, `"${broken.name}" has errors; fix that stage first`)
+              : tr(
+                  '前面的階段還沒有結果：按工具列的「載入資料及預覽」',
+                  'Earlier stages have no results yet: click "Load & preview" in the toolbar',
+                )}
         </p>
       ) : input.loaded ? (
         <p className="text-xs text-muted-foreground">
-          {input.rows?.toLocaleString()} 列 × {input.columns?.length} 欄
+          {tr(
+            `${input.rows?.toLocaleString() ?? ''} 列 × ${input.columns?.length ?? ''} 欄`,
+            `${plural(input.rows ?? 0, 'row', 'rows')} × ${plural(input.columns?.length ?? 0, 'column', 'columns')}`,
+          )}
         </p>
       ) : null}
     </div>
@@ -95,16 +109,16 @@ export function InputPanel({ state, onAddFiles, onAddEntry, onRemove, onInput }:
   const [entry, setEntry] = useState('')
   const readerSelect = (
     <div className="space-y-1.5">
-      <div className="text-xs text-muted-foreground">讀取方式</div>
+      <div className="text-xs text-muted-foreground">{tr('讀取方式', 'Read as')}</div>
       <Select value={input.reader} onValueChange={(reader) => onInput({ reader: reader as ViewState['input']['reader'] })}>
         <SelectTrigger className="w-full">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          {Object.entries(READERS).map(([k, v]) => (
+          {Object.entries(readers()).map(([k, v]) => (
             <SelectItem key={k} value={k} disabled={k === 'stages' && state.current === 0}>
               {v}
-              {k === 'stages' && state.current === 0 ? '（第一個階段不能選）' : ''}
+              {k === 'stages' && state.current === 0 ? tr('（第一個階段不能選）', ' (not available in the first stage)') : ''}
             </SelectItem>
           ))}
         </SelectContent>
@@ -114,19 +128,25 @@ export function InputPanel({ state, onAddFiles, onAddEntry, onRemove, onInput }:
   if (input.reader === 'stages') {
     return (
       <section className="space-y-3">
-        <div className="text-sm font-medium">讀取資料</div>
+        <div className="text-sm font-medium">{tr('讀取資料', 'Read data')}</div>
         {readerSelect}
         <StagesInput state={state} onInput={onInput} />
       </section>
     )
   }
   const loadHint = !input.files.length
-    ? '先加入檔案'
+    ? tr('先加入檔案', 'Add files first')
     : !input.can_load
-      ? '檔案清單有找不到的檔，請先移除或修正'
+      ? tr('檔案清單有找不到的檔，請先移除或修正', "Some files in the list can't be found; remove or fix them first")
       : input.stale
-        ? '檔案清單、讀取方式或編碼已變更：按工具列的「載入資料及預覽」重新讀取'
-        : '還沒載入：按工具列的「載入資料及預覽」看每一步的結果'
+        ? tr(
+            '檔案清單、讀取方式或編碼已變更：按工具列的「載入資料及預覽」重新讀取',
+            'The file list or read settings changed: click "Load & preview" in the toolbar to read again',
+          )
+        : tr(
+            '還沒載入：按工具列的「載入資料及預覽」看每一步的結果',
+            'Not loaded yet: click "Load & preview" in the toolbar to see the result of each step',
+          )
   const hintTone =
     !input.can_load && input.files.length
       ? 'text-destructive'
@@ -141,13 +161,13 @@ export function InputPanel({ state, onAddFiles, onAddEntry, onRemove, onInput }:
   return (
     <section className="space-y-3">
       <div className="flex items-center justify-between">
-        <div className="text-sm font-medium">讀取資料</div>
+        <div className="text-sm font-medium">{tr('讀取資料', 'Read data')}</div>
         <Button size="sm" variant="outline" onClick={onAddFiles}>
-          <FolderOpen /> 瀏覽檔案…
+          <FolderOpen /> {tr('瀏覽檔案…', 'Browse files…')}
         </Button>
       </div>
       <div className="space-y-1.5">
-        <div className="text-xs text-muted-foreground">檔案清單</div>
+        <div className="text-xs text-muted-foreground">{tr('檔案清單', 'Files')}</div>
         {input.entries.length ? (
           <ul className="divide-y rounded-md border text-sm">
             {input.entries.map((e, i) => (
@@ -161,11 +181,19 @@ export function InputPanel({ state, onAddFiles, onAddEntry, onRemove, onInput }:
                   {e.path}
                 </span>
                 {!e.found ? (
-                  <span className="shrink-0 text-xs text-destructive">找不到</span>
+                  <span className="shrink-0 text-xs text-destructive">{tr('找不到', 'Not found')}</span>
                 ) : isGlob(e.path) ? (
-                  <span className="shrink-0 text-xs text-muted-foreground">符合 {e.found} 個檔</span>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {tr(`符合 ${e.found} 個檔`, `Matches ${plural(e.found, 'file', 'files')}`)}
+                  </span>
                 ) : null}
-                <Button variant="ghost" size="icon-xs" aria-label={`從清單移除 ${e.path}`} title="從清單移除" onClick={() => onRemove(i)}>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={tr(`從清單移除 ${e.path}`, `Remove ${e.path} from list`)}
+                  title={tr('從清單移除', 'Remove from list')}
+                  onClick={() => onRemove(i)}
+                >
                   <X />
                 </Button>
               </li>
@@ -173,7 +201,10 @@ export function InputPanel({ state, onAddFiles, onAddEntry, onRemove, onInput }:
           </ul>
         ) : (
           <p className="rounded-md border border-dashed p-3 text-center text-xs text-muted-foreground">
-            還沒有檔案。按「瀏覽檔案…」選檔，或在下面輸入路徑。
+            {tr(
+              '還沒有檔案。按「瀏覽檔案…」選檔，或在下面輸入路徑。',
+              'No files yet. Click "Browse files…" to pick files, or enter a path below.',
+            )}
           </p>
         )}
         <form
@@ -183,9 +214,13 @@ export function InputPanel({ state, onAddFiles, onAddEntry, onRemove, onInput }:
             submit()
           }}
         >
-          <Input value={entry} onChange={(e) => setEntry(e.target.value)} placeholder="手動輸入路徑，例如 data/明細_*.csv" />
+          <Input
+            value={entry}
+            onChange={(e) => setEntry(e.target.value)}
+            placeholder={tr('手動輸入路徑，例如 data/明細_*.csv', 'Enter a path, e.g. data/detail_*.csv')}
+          />
           <Button type="submit" size="sm" variant="outline" disabled={!entry.trim()}>
-            <Plus /> 加入
+            <Plus /> {tr('加入', 'Add')}
           </Button>
         </form>
       </div>
@@ -193,39 +228,52 @@ export function InputPanel({ state, onAddFiles, onAddEntry, onRemove, onInput }:
         {readerSelect}
         {input.reader === 'parquet' ? (
           <p className="text-xs text-muted-foreground">
-            欄位與型別照檔案；檔案自己帶的 __ 開頭欄位改名成「原始…」保留（例如 __line_no → 原始行號）。
+            {tr(
+              '欄位與型別照檔案；檔案自己帶的 __ 開頭欄位改名成「原始…」保留（例如 __line_no → 原始行號）。',
+              'Columns and types come from the file; columns in the file that start with __ are kept, renamed to "原始…" (e.g. __line_no → 原始行號).', // i18n-ignore：「原始…」是 Python 產生的欄名（資料），不翻
+            )}
           </p>
         ) : input.reader === 'excel' ? (
           <div className="space-y-1.5">
-            <div className="text-xs text-muted-foreground">工作表</div>
+            <div className="text-xs text-muted-foreground">{tr('工作表', 'Sheet')}</div>
             <Select value={input.sheet || FIRST_SHEET} onValueChange={(sheet) => onInput({ sheet: sheet === FIRST_SHEET ? '' : sheet })}>
               <SelectTrigger className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value={FIRST_SHEET}>第一個工作表</SelectItem>
-                <SelectItem value={ALL_SHEETS}>全部工作表（每個檔的每個工作表）</SelectItem>
+                <SelectItem value={FIRST_SHEET}>{tr('第一個工作表', 'First sheet')}</SelectItem>
+                <SelectItem value={ALL_SHEETS}>
+                  {tr('全部工作表（每個檔的每個工作表）', 'All sheets (every sheet in every file)')}
+                </SelectItem>
                 {[...new Set([...input.sheets, ...(input.sheet && input.sheet !== ALL_SHEETS ? [input.sheet] : [])])].map((name) => (
                   <SelectItem key={name} value={name}>
-                    {input.sheets.includes(name) ? name : `${name}（找不到）`}
+                    {input.sheets.includes(name) ? name : tr(`${name}（找不到）`, `${name} (not found)`)}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">
-              欄名是 A、B、C…，行號是 Excel 的列號；每一格都讀成文字。
-              {input.sheet === ALL_SHEETS ? '每個工作表各自處理，系統欄位 __sheet 記工作表名稱。' : ''}
+              {tr(
+                '欄名是 A、B、C…，行號是 Excel 的列號；每一格都讀成文字。',
+                'Columns are named A, B, C…; line numbers are Excel row numbers; every cell is read as text.',
+              )}
+              {input.sheet === ALL_SHEETS
+                ? tr(
+                    '每個工作表各自處理，系統欄位 __sheet 記工作表名稱。',
+                    ' Each sheet is processed separately; the system column __sheet holds the sheet name.',
+                  )
+                : ''}
             </p>
           </div>
         ) : (
           <div className="space-y-1.5">
-            <div className="text-xs text-muted-foreground">編碼</div>
+            <div className="text-xs text-muted-foreground">{tr('編碼', 'Encoding')}</div>
             <Select value={input.encoding} onValueChange={(encoding) => onInput({ encoding })}>
               <SelectTrigger className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {Object.entries(ENCODINGS).map(([k, v]) => (
+                {Object.entries(encodings()).map(([k, v]) => (
                   <SelectItem key={k} value={k}>
                     {v}
                   </SelectItem>
@@ -241,17 +289,22 @@ export function InputPanel({ state, onAddFiles, onAddEntry, onRemove, onInput }:
         <p className={`text-xs ${hintTone}`}>{loadHint}</p>
       ) : (
         <div className="space-y-1.5">
-          <div className="text-xs text-muted-foreground">已載入的檔案</div>
+          <div className="text-xs text-muted-foreground">{tr('已載入的檔案', 'Loaded files')}</div>
           <ul className="divide-y rounded-md border text-xs">
             {input.sources.map((f) => (
-              <li key={`${f.path}／${f.sheet ?? ''}`} className="flex items-center justify-between gap-2 px-2 py-1.5">
-                <span className="min-w-0 truncate" title={f.sheet ? `${f.path}［${f.sheet}］` : f.path}>
+              <li
+                key={`${f.path}／${f.sheet ?? ''}` /* i18n-ignore：React 的 key，不是畫面文字 */}
+                className="flex items-center justify-between gap-2 px-2 py-1.5"
+              >
+                <span className="min-w-0 truncate" title={f.sheet ? tr(`${f.path}［${f.sheet}］`, `${f.path} [${f.sheet}]`) : f.path}>
                   {f.path}
-                  {f.sheet ? <span className="text-muted-foreground">［{f.sheet}］</span> : null}
+                  {f.sheet ? <span className="text-muted-foreground">{tr(`［${f.sheet}］`, ` [${f.sheet}]`)}</span> : null}
                 </span>
                 <span className="shrink-0 text-muted-foreground tabular-nums">
-                  {f.encoding}・{f.rows.toLocaleString()} {f.encoding === 'excel' || f.encoding === 'parquet' ? '列' : '行'}・
-                  {formatBytes(f.bytes)}
+                  {tr(
+                    `${f.encoding}・${f.rows.toLocaleString()} ${f.encoding === 'excel' || f.encoding === 'parquet' ? '列' : '行'}・${formatBytes(f.bytes)}`,
+                    `${f.encoding} · ${f.encoding === 'excel' || f.encoding === 'parquet' ? plural(f.rows, 'row', 'rows') : plural(f.rows, 'line', 'lines')} · ${formatBytes(f.bytes)}`,
+                  )}
                 </span>
               </li>
             ))}
@@ -281,14 +334,15 @@ function OutputFileField({ stage, onChange }: { stage: StageState; onChange: (fi
   return (
     <div className="space-y-1.5">
       <label className="text-sm" htmlFor={`output-file-${stage.index}`}>
-        輸出檔名{stage.last ? '' : '（選填）'}
+        {tr('輸出檔名', 'Output file name')}
+        {stage.last ? '' : tr('（選填）', ' (optional)')}
       </label>
       <div className="flex items-center gap-1.5">
         <Input
           id={`output-file-${stage.index}`}
           className="h-8"
           value={draft}
-          placeholder={stage.last && planned ? stemOf(planned.file) : '不寫檔'}
+          placeholder={stage.last && planned ? stemOf(planned.file) : tr('不寫檔', 'No file')}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commit}
           onKeyDown={(e) => {
@@ -301,12 +355,18 @@ function OutputFileField({ stage, onChange }: { stage: StageState; onChange: (fi
         <p className="text-xs text-destructive">{planned.error}</p>
       ) : planned ? (
         <p className="text-xs break-all text-muted-foreground">
-          寫到 {planned.path}
-          {planned.default ? '（沒填時用 Recipe 的名稱）' : ''}
-          {planned.exists ? <span className="text-amber-700 dark:text-amber-400">；已經有這個檔，匯出時會覆蓋</span> : null}
+          {tr(`寫到 ${planned.path}`, `Writes to ${planned.path}`)}
+          {planned.default ? tr('（沒填時用 Recipe 的名稱）', ' (uses the Recipe name when left blank)') : ''}
+          {planned.exists ? (
+            <span className="text-amber-700 dark:text-amber-400">
+              {tr('；已經有這個檔，匯出時會覆蓋', '; this file already exists and will be overwritten on export')}
+            </span>
+          ) : null}
         </p>
       ) : (
-        <p className="text-xs text-muted-foreground">填了才另外存成檔案（存到 output 資料夾）。</p>
+        <p className="text-xs text-muted-foreground">
+          {tr('填了才另外存成檔案（存到 output 資料夾）。', 'Fill this in to also save a file (in the output folder).')}
+        </p>
       )}
     </div>
   )
@@ -320,13 +380,16 @@ export function OutputPanel({ state, onOutput, onStageOutput }: OutputProps) {
     <OutputFileField key={`${stage.index}:${stage.output_file}`} stage={stage} onChange={(file) => onStageOutput(stage.index, file)} />
   ) : null
   if (stage && !stage.last) {
-    const users = state.stages.filter((s) => s.uses.includes(stage.name)).map((s) => `「${s.name}」`)
+    const users = state.stages.filter((s) => s.uses.includes(stage.name)).map((s) => tr(`「${s.name}」`, `"${s.name}"`))
     return (
       <section className="space-y-3">
-        <div className="text-sm font-medium">階段結果</div>
+        <div className="text-sm font-medium">{tr('階段結果', 'Stage result')}</div>
         <p className="text-sm text-muted-foreground">
-          後面的階段用 @{stage.name} 讀這個階段的結果
-          {users.length ? `（目前${users.join('、')}用到它）` : '（目前還沒有階段用到它）'}；填了輸出檔名也會另外存成檔案。
+          {tr(`後面的階段用 @${stage.name} 讀這個階段的結果`, `Later stages read this stage's result as @${stage.name}`)}
+          {users.length
+            ? tr(`（目前${users.join('、')}用到它）`, ` (used by ${users.join(', ')})`)
+            : tr('（目前還沒有階段用到它）', ' (not used by any stage yet)')}
+          {tr('；填了輸出檔名也會另外存成檔案。', '; fill in an output file name to also save it to a file.')}
         </p>
         {field}
       </section>
@@ -334,23 +397,29 @@ export function OutputPanel({ state, onOutput, onStageOutput }: OutputProps) {
   }
   return (
     <section className="space-y-3">
-      <div className="text-sm font-medium">輸出資料</div>
+      <div className="text-sm font-medium">{tr('輸出資料', 'Output')}</div>
       <p className="text-xs text-muted-foreground">
-        按「處理並匯出資料」處理全部資料，存到 output 資料夾。
+        {tr(
+          '按「處理並匯出資料」處理全部資料，存到 output 資料夾。',
+          'Click "Process & export" to process all data and save it to the output folder.',
+        )}
       </p>
       {field}
       <label className="flex items-center justify-between gap-3 text-sm">
         <span>
-          保留系統欄位（__source_file、__line_no 等）
-          <span className="block text-xs text-muted-foreground">套用到每個輸出檔</span>
+          {tr('保留系統欄位（__source_file、__line_no 等）', 'Keep system columns (__source_file, __line_no, etc.)')}
+          <span className="block text-xs text-muted-foreground">{tr('套用到每個輸出檔', 'Applies to every output file')}</span>
         </span>
         <Switch checked={output.keep_system_columns} onCheckedChange={(keep_system_columns) => onOutput({ keep_system_columns })} />
       </label>
       <label className="flex items-start justify-between gap-3 text-sm">
         <span>
-          同時寫出處理紀錄（manifest）
+          {tr('同時寫出處理紀錄（manifest）', 'Also write a processing log (manifest)')}
           <span className="block text-xs text-muted-foreground">
-            每個輸出檔在 log 資料夾各寫一份 .manifest.json：用了哪份 Recipe、輸入與輸出檔的 SHA-256、每一步的列數與警告
+            {tr(
+              '每個輸出檔在 log 資料夾各寫一份 .manifest.json：用了哪份 Recipe、輸入與輸出檔的 SHA-256、每一步的列數與警告',
+              'Writes a .manifest.json per output file to the log folder: the Recipe used, SHA-256 of input and output files, and row counts and warnings for each step',
+            )}
           </span>
         </span>
         <Switch checked={output.manifest} onCheckedChange={(manifest) => onOutput({ manifest })} />

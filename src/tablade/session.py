@@ -101,6 +101,8 @@ class TrialError(SessionError):
         self.stage, self.step = stage, step
 
 
+LANGS = ("zh", "en")
+"""畫面可以切換的語言：繁體中文、英文。"""
 LOAD_HINT = "請先按工具列的「載入資料及預覽」"
 TRIAL_HEAD = 2_000
 """匯出前試跑時每個檔取前幾行（只為了先找出步驟的錯誤，不用多）。"""
@@ -289,6 +291,8 @@ class Session:
         """載入之後檔案清單、讀取方式、編碼或檔案內容變了的階段：要重新按「載入資料及預覽」。"""
         self.progress: Progress = None
         """讀檔、轉碼、匯出時的進度回報（api.py 會把它推給前端）。"""
+        self.lang = "zh"
+        """畫面的語言（zh、en）：前端啟動時送作業系統的語言，切換時再送一次（docs/i18n-plan.md）。"""
         self._computed: dict[str, list[_Computed]] = {}
         self._inputs: dict[str, tuple[str, pl.DataFrame]] = {}
         """讀前面階段輸出的階段：接好的輸入（依前面階段結果的指紋快取）。"""
@@ -386,10 +390,17 @@ class Session:
         }
 
     def _reset(self) -> None:
-        """回到空白狀態（保留進度回報的接線）。"""
-        progress = self.progress
+        """回到空白狀態（保留進度回報的接線與畫面的語言）。"""
+        progress, lang = self.progress, self.lang
         self.__init__()
-        self.progress = progress
+        self.progress, self.lang = progress, lang
+
+    def set_language(self, lang: str) -> None:
+        """切換畫面的語言（zh、en）；不寫任何設定檔，下次開啟又跟作業系統的語言。"""
+        if lang not in LANGS:
+            raise SessionError(f"不支援的語言：{lang}（可用：{'、'.join(LANGS)}）")
+        with self._lock:
+            self.lang = lang
 
     def new(self, path: Path) -> Path:
         """新增 Recipe：先決定存放位置（檔名就是名稱），立刻寫出空的 Recipe 檔。"""
@@ -1352,6 +1363,7 @@ class Session:
                 "can_undo": bool(self._undo),
                 "can_redo": bool(self._redo),
                 "issues": self.issues,
+                "lang": self.lang,
             }
 
     def _waiting_ref(self, raw: dict[str, Any]) -> str | None:

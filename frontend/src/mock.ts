@@ -7,6 +7,7 @@
  * 看多個階段：`uv run python scripts/gen_frontend_dev_data.py --recipe sales_combined`。
  */
 import type { Cell, ColumnsInfo, Progress, ReadyInfo, RowsPage, RunState, TabladeApi, Usage, ViewState } from './bridge'
+import type { Lang } from './i18n'
 
 interface Sample {
   ready: { ok: true } & ReadyInfo
@@ -44,9 +45,13 @@ let loaded = !location.search.includes('unloaded')
 
 const delay = <T>(value: T, ms = 120) => new Promise<T>((r) => setTimeout(() => r(value), ms))
 // 每次回傳複本：React 才會察覺狀態變了
+/** 跟 session.py 一樣記著畫面的語言（Python 的文字還沒翻：假資料是中文） */
+let mockLang: Lang = 'zh'
+
 const current = () => {
   const state = structuredClone(sample.states[key()])
   state.recipe.open = open
+  state.lang = mockLang
   if (!loaded) {
     state.input = { ...state.input, loaded: false, sources: [], rows: null, total_rows: null, columns: null }
     // 跟 session.py 一樣：沒有資料時哪一步都算不出來（step 是 -1）
@@ -227,6 +232,10 @@ export const mockApi: TabladeApi = sample
         ),
       smoke_example: () => withState({ issues: [] }),
       state: () => withState(),
+      set_language: (lang) => {
+        mockLang = lang
+        return withState()
+      },
       rows: (step, offset, limit) => {
         const page = sample.rows[key(step)]
         return delay({ ...page, offset, rows: page.rows.slice(offset, offset + limit) as Cell[][] })

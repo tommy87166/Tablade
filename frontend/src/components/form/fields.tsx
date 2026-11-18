@@ -7,6 +7,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { plural, tr } from '@/i18n'
 import type { Issue, JsonSchema } from '../../bridge'
 import { OptionIcon } from './OptionIcon'
 import { defaultFor, fieldKind, issuesAt, resolve, variants, type FieldKind } from '../../lib/schema'
@@ -57,7 +58,7 @@ export function FieldErrors({ issues }: { issues: Issue[] }) {
       {issues.map((i) => (
         <li key={`${i.path}:${i.error}`}>
           {i.error}
-          {i.hint ? `（${i.hint}）` : ''}
+          {i.hint ? tr(`（${i.hint}）`, ` (${i.hint})`) : ''}
         </li>
       ))}
     </ul>
@@ -116,7 +117,7 @@ function EnumSelect({ value, onChange, schema }: { value: unknown; onChange: (v:
   const select = (
     <Select value={asString(value)} onValueChange={onChange}>
       <SelectTrigger className="w-full">
-        <SelectValue placeholder="請選擇" />
+        <SelectValue placeholder={tr('請選擇', 'Select…')} />
       </SelectTrigger>
       <SelectContent>
         {(schema.enum ?? []).map((option) => (
@@ -172,17 +173,17 @@ function OptionCards({ value, onChange, schema }: { value: unknown; onChange: (v
 
 function ColumnSelect({ value, onChange, columns }: { value: unknown; onChange: (v: unknown) => void; columns: string[] | null }) {
   const current = asString(value)
-  if (!columns) return <Input value={current} placeholder="欄位名稱" onChange={(e) => onChange(e.target.value)} />
+  if (!columns) return <Input value={current} placeholder={tr('欄位名稱', 'Column name')} onChange={(e) => onChange(e.target.value)} />
   const options = columns.includes(current) || !current ? columns : [current, ...columns]
   return (
     <Select value={current} onValueChange={onChange}>
       <SelectTrigger className="w-full">
-        <SelectValue placeholder="選擇欄位" />
+        <SelectValue placeholder={tr('選擇欄位', 'Choose a column')} />
       </SelectTrigger>
       <SelectContent>
         {options.map((c) => (
           <SelectItem key={c} value={c}>
-            {columns.includes(c) ? c : `${c}（不存在）`}
+            {columns.includes(c) ? c : tr(`${c}（不存在）`, `${c} (missing)`)}
           </SelectItem>
         ))}
       </SelectContent>
@@ -192,7 +193,7 @@ function ColumnSelect({ value, onChange, columns }: { value: unknown; onChange: 
 
 function ColumnChecklist({ value, onChange, columns }: { value: unknown; onChange: (v: unknown) => void; columns: string[] | null }) {
   const selected = asList(value)
-  if (!columns) return <TagsEditor value={selected} onChange={onChange} placeholder="欄位名稱" />
+  if (!columns) return <TagsEditor value={selected} onChange={onChange} placeholder={tr('欄位名稱', 'Column name')} />
   const toggle = (name: string, on: boolean) =>
     onChange(on ? columns.filter((c) => c === name || selected.includes(c)) : selected.filter((c) => c !== name))
   return (
@@ -207,7 +208,7 @@ function ColumnChecklist({ value, onChange, columns }: { value: unknown; onChang
         .filter((c) => !columns.includes(c))
         .map((c) => (
           <span key={c} className="text-sm text-destructive">
-            {c}（不存在）
+            {tr(`${c}（不存在）`, `${c} (missing)`)}
           </span>
         ))}
     </div>
@@ -226,7 +227,15 @@ function rightStage(root: JsonSchema, context?: FormContext): FormStage | undefi
 function StageSelect({ value, onChange, context }: { value: unknown; onChange: (v: unknown) => void; context?: FormContext }) {
   const current = asString(value)
   const stages = context?.stages ?? []
-  if (!stages.length) return <p className="text-xs text-muted-foreground">前面沒有階段：先在最左邊新增一個階段（例如對照表）。</p>
+  if (!stages.length)
+    return (
+      <p className="text-xs text-muted-foreground">
+        {tr(
+          '前面沒有階段：先在最左邊新增一個階段（例如對照表）。',
+          'No earlier stages: add a stage on the far left first (for example, a lookup table).',
+        )}
+      </p>
+    )
   const names = stages.map((s) => s.name)
   const options = names.includes(current) || !current ? names : [current, ...names]
   const picked = stages.find((s) => s.name === current)
@@ -234,13 +243,13 @@ function StageSelect({ value, onChange, context }: { value: unknown; onChange: (
     <div className="space-y-1.5">
       <Select value={current} onValueChange={onChange}>
         <SelectTrigger className="w-full">
-          <SelectValue placeholder="選擇前面的階段" />
+          <SelectValue placeholder={tr('選擇前面的階段', 'Choose an earlier stage')} />
         </SelectTrigger>
         <SelectContent>
           {options.map((n) => (
             <SelectItem key={n} value={n}>
               @{n}
-              {names.includes(n) ? '' : '（不是前面的階段）'}
+              {names.includes(n) ? '' : tr('（不是前面的階段）', ' (not an earlier stage)')}
             </SelectItem>
           ))}
         </SelectContent>
@@ -248,19 +257,22 @@ function StageSelect({ value, onChange, context }: { value: unknown; onChange: (
       {picked ? (
         <div className="flex flex-wrap items-center gap-1.5">
           <Button variant="outline" size="xs" onClick={() => context?.onGoStage?.(picked.index)}>
-            <ArrowUpRight /> 前往 @{picked.name}
+            <ArrowUpRight /> {tr(`前往 @${picked.name}`, `Go to @${picked.name}`)}
           </Button>
           {picked.sampled ? (
             <Button variant="outline" size="xs" onClick={() => context?.onFullRun?.(picked.index)}>
-              <Play /> 完整跑一次
+              <Play /> {tr('完整跑一次', 'Run in full')}
             </Button>
           ) : null}
-          {picked.full ? <span className="text-xs text-muted-foreground">用完整的結果</span> : null}
+          {picked.full ? <span className="text-xs text-muted-foreground">{tr('用完整的結果', 'Using the full result')}</span> : null}
         </div>
       ) : null}
       {picked?.sampled ? (
         <p className="text-xs text-amber-700 dark:text-amber-400">
-          另一張表是樣本：預覽時有些列可能對不到，匯出時會用完整的資料。按「完整跑一次」用全部資料算出另一張表。
+          {tr(
+            '另一張表是樣本：預覽時有些列可能對不到，匯出時會用完整的資料。按「完整跑一次」用全部資料算出另一張表。',
+            'The other table is a sample: some rows may not match in the preview, but export uses the full data. Click "Run in full" to compute the other table from all data.',
+          )}
         </p>
       ) : null}
     </div>
@@ -281,30 +293,35 @@ function DataValues({ name, value, onChange, schema, root, context }: FieldProps
   return (
     <div className="space-y-1.5 rounded-md border p-2">
       {editing ? (
-        <TagsEditor value={items} onChange={onChange} placeholder="值" />
+        <TagsEditor value={items} onChange={onChange} placeholder={tr('值', 'Value')} />
       ) : (
         <p className="text-sm break-all">
           {items.length ? (
             <>
-              <span className="text-muted-foreground tabular-nums">{items.length} 個：</span>
-              {items.join('、')}
+              <span className="text-muted-foreground tabular-nums">
+                {tr(`${items.length} 個：`, `${plural(items.length, 'value', 'values')}: `)}
+              </span>
+              {items.join(tr('、', ', '))}
             </>
           ) : (
-            <span className="text-muted-foreground">還沒有</span>
+            <span className="text-muted-foreground">{tr('還沒有', 'None yet')}</span>
           )}
         </p>
       )}
       <div className="flex flex-wrap items-center gap-1.5">
         <Button variant="outline" size="xs" disabled={!column || !context?.onRefresh} onClick={() => context?.onRefresh?.(name)}>
-          <RefreshCw /> 重新從資料讀取
+          <RefreshCw /> {tr('重新從資料讀取', 'Reload from data')}
         </Button>
         <Button variant="ghost" size="xs" onClick={() => setEditing(!editing)}>
-          {editing ? <ChevronUp /> : <Pencil />} {editing ? '收起' : '修改'}
+          {editing ? <ChevronUp /> : <Pencil />} {editing ? tr('收起', 'Collapse') : tr('修改', 'Edit')}
         </Button>
       </div>
       {column ? (
         <p className="text-xs text-muted-foreground">
-          從「{column}」{sourceTitle ? `（${sourceTitle}）` : ''}讀出；改了依據的欄會自動重新讀。
+          {tr(
+            `從「${column}」${sourceTitle ? `（${sourceTitle}）` : ''}讀出；改了依據的欄會自動重新讀。`,
+            `Read from "${column}"${sourceTitle ? ` (${sourceTitle})` : ''}; re-read automatically when that column changes.`,
+          )}
         </p>
       ) : null}
     </div>
@@ -318,11 +335,11 @@ function PositionChecklist({ value, onChange, columns }: { value: unknown; onCha
     return (
       <Input
         value={selected.join(', ')}
-        placeholder="例如 2, 5"
+        placeholder={tr('例如 2, 5', 'e.g. 2, 5')}
         onChange={(e) =>
           onChange(
             e.target.value
-              .split(/[,，\s]+/)
+              .split(/[,，\s]+/) // i18n-ignore
               .map((t) => Number.parseInt(t, 10))
               .filter((n) => Number.isInteger(n)),
           )
@@ -345,7 +362,7 @@ function PositionChecklist({ value, onChange, columns }: { value: unknown; onCha
         .filter((p) => p > columns.length)
         .map((p) => (
           <span key={p} className="text-sm text-destructive">
-            第 {p} 欄（不存在）
+            {tr(`第 ${p} 欄（不存在）`, `Column ${p} (missing)`)}
           </span>
         ))}
     </div>
@@ -366,7 +383,7 @@ function IntListInput({ value, onChange }: { value: unknown; onChange: (v: unkno
   return (
     <Input
       value={text}
-      placeholder="例如 1, 12, 18"
+      placeholder={tr('例如 1, 12, 18', 'e.g. 1, 12, 18')}
       className="font-mono tabular-nums"
       onChange={(e) => {
         setText(e.target.value)
@@ -378,7 +395,7 @@ function IntListInput({ value, onChange }: { value: unknown; onChange: (v: unkno
 
 function parseInts(text: string): number[] {
   return text
-    .split(/[,，\s]+/)
+    .split(/[,，\s]+/) // i18n-ignore
     .map((t) => Number.parseInt(t, 10))
     .filter((n) => Number.isInteger(n))
 }
@@ -386,7 +403,7 @@ function parseInts(text: string): number[] {
 /** 保留和排序欄位：上面是要保留的欄（依順序，可以上下移、移除），下面是沒保留的欄（勾選就加到最後）。 */
 function ColumnOrderEditor({ value, onChange, columns }: { value: unknown; onChange: (v: unknown) => void; columns: string[] | null }) {
   const selected = asList(value)
-  if (!columns) return <TagsEditor value={selected} onChange={onChange} placeholder="欄位名稱（依順序）" />
+  if (!columns) return <TagsEditor value={selected} onChange={onChange} placeholder={tr('欄位名稱（依順序）', 'Column names (in order)')} />
   const rest = columns.filter((c) => !selected.includes(c))
   const move = (i: number, to: number) => {
     const next = [...selected]
@@ -401,33 +418,46 @@ function ColumnOrderEditor({ value, onChange, columns }: { value: unknown; onCha
           <li key={c} className="flex items-center gap-1.5 py-1 pr-1 pl-2">
             <span className="w-5 text-right text-xs text-muted-foreground tabular-nums">{i + 1}</span>
             <span className={`min-w-0 flex-1 truncate ${columns.includes(c) ? '' : 'text-destructive'}`}>
-              {columns.includes(c) ? c : `${c}（不存在）`}
+              {columns.includes(c) ? c : tr(`${c}（不存在）`, `${c} (missing)`)}
             </span>
-            <Button variant="ghost" size="icon-xs" aria-label={`上移 ${c}`} disabled={i === 0} onClick={() => move(i, i - 1)}>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label={tr(`上移 ${c}`, `Move ${c} up`)}
+              disabled={i === 0}
+              onClick={() => move(i, i - 1)}
+            >
               <ArrowUp />
             </Button>
             <Button
               variant="ghost"
               size="icon-xs"
-              aria-label={`下移 ${c}`}
+              aria-label={tr(`下移 ${c}`, `Move ${c} down`)}
               disabled={i === selected.length - 1}
               onClick={() => move(i, i + 1)}
             >
               <ArrowDown />
             </Button>
-            <Button variant="ghost" size="icon-xs" aria-label={`不保留 ${c}`} onClick={() => onChange(selected.filter((x) => x !== c))}>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label={tr(`不保留 ${c}`, `Don't keep ${c}`)}
+              onClick={() => onChange(selected.filter((x) => x !== c))}
+            >
               <X />
             </Button>
           </li>
         ))}
-        {selected.length === 0 ? <li className="p-2 text-xs text-muted-foreground">還沒有選要保留的欄位</li> : null}
+        {selected.length === 0 ? (
+          <li className="p-2 text-xs text-muted-foreground">{tr('還沒有選要保留的欄位', 'No columns selected to keep yet')}</li>
+        ) : null}
       </ol>
       {rest.length ? (
         <div className="space-y-1">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>不保留的欄位（勾選就加到最後）</span>
+            <span>{tr('不保留的欄位（勾選就加到最後）', 'Columns not kept (check to add to the end)')}</span>
             <Button variant="link" size="sm" className="h-auto p-0 text-xs" onClick={() => onChange([...selected, ...rest])}>
-              全部加入
+              {tr('全部加入', 'Add all')}
             </Button>
           </div>
           <div className="flex flex-wrap gap-x-4 gap-y-1.5 rounded-md border border-dashed p-2">
@@ -464,19 +494,24 @@ function RenameMapEditor({ value, onChange, columns }: { value: unknown; onChang
               <span className="truncate text-sm" title={c}>
                 {c}
               </span>
-              <Input value={names[c] ?? ''} placeholder="不改" className="h-8" onChange={(e) => set(c, e.target.value)} />
+              <Input
+                value={names[c] ?? ''}
+                placeholder={tr('不改', 'No change')}
+                className="h-8"
+                onChange={(e) => set(c, e.target.value)}
+              />
             </div>
           ))}
         </div>
       ) : (
-        <p className="text-xs text-muted-foreground">載入資料後，這裡會列出每一個欄位。</p>
+        <p className="text-xs text-muted-foreground">
+          {tr('載入資料後，這裡會列出每一個欄位。', 'Every column will be listed here once data is loaded.')}
+        </p>
       )}
       {missing.map((k) => (
         <div key={k} className="flex items-center gap-2 text-sm text-destructive">
-          <span className="min-w-0 flex-1 truncate">
-            {k}（不存在）→ {names[k]}
-          </span>
-          <Button variant="ghost" size="icon-xs" aria-label={`移除 ${k}`} onClick={() => set(k, '')}>
+          <span className="min-w-0 flex-1 truncate">{tr(`${k}（不存在）→ ${names[k]}`, `${k} (missing) → ${names[k]}`)}</span>
+          <Button variant="ghost" size="icon-xs" aria-label={tr(`移除 ${k}`, `Remove ${k}`)} onClick={() => set(k, '')}>
             <X />
           </Button>
         </div>
@@ -517,7 +552,12 @@ function ObjectListEditor(props: FieldProps) {
                   <FieldErrors issues={own} />
                 </div>
                 {j === 0 ? (
-                  <Button variant="ghost" size="icon-sm" aria-label="移除這一組" onClick={() => onChange(items.filter((_, k) => k !== i))}>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={tr('移除這一組', 'Remove this item')}
+                    onClick={() => onChange(items.filter((_, k) => k !== i))}
+                  >
                     <X />
                   </Button>
                 ) : null}
@@ -527,7 +567,7 @@ function ObjectListEditor(props: FieldProps) {
         </div>
       ))}
       <Button variant="outline" size="sm" onClick={() => onChange([...items, blank()])}>
-        <Plus /> 新增一組
+        <Plus /> {tr('新增一組', 'Add item')}
       </Button>
     </div>
   )
@@ -542,13 +582,18 @@ export function TagsEditor({ value, onChange, placeholder }: { value: unknown; o
         <div key={i} className="flex items-center gap-1.5">
           <span className="w-5 text-right text-xs text-muted-foreground tabular-nums">{i + 1}</span>
           <Input value={item} placeholder={placeholder} onChange={(e) => set(i, e.target.value)} />
-          <Button variant="ghost" size="icon-sm" aria-label="移除" onClick={() => onChange(items.filter((_, k) => k !== i))}>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={tr('移除', 'Remove')}
+            onClick={() => onChange(items.filter((_, k) => k !== i))}
+          >
             <X />
           </Button>
         </div>
       ))}
       <Button variant="outline" size="sm" onClick={() => onChange([...items, ''])}>
-        <Plus /> 新增
+        <Plus /> {tr('新增', 'Add')}
       </Button>
     </div>
   )
@@ -557,7 +602,7 @@ export function TagsEditor({ value, onChange, placeholder }: { value: unknown; o
 /** 來源檔順序：列出目前的來源檔，可上下移動；存成完整的順序。 */
 function SourceFilesOrder({ value, onChange, files }: { value: unknown; onChange: (v: unknown) => void; files: string[] | null }) {
   const listed = asList(value)
-  if (!files) return <TagsEditor value={listed} onChange={onChange} placeholder="來源檔名稱" />
+  if (!files) return <TagsEditor value={listed} onChange={onChange} placeholder={tr('來源檔名稱', 'Source file name')} />
   const order = [...listed.filter((f) => files.includes(f)), ...files.filter((f) => !listed.includes(f))]
   const missing = listed.filter((f) => !files.includes(f))
   const move = (i: number, to: number) => {
@@ -573,13 +618,19 @@ function SourceFilesOrder({ value, onChange, files }: { value: unknown; onChange
           <li key={f} className="flex items-center gap-1.5 py-1 pr-1 pl-2">
             <span className="w-5 text-right text-xs text-muted-foreground tabular-nums">{i + 1}</span>
             <span className="min-w-0 flex-1 truncate">{f}</span>
-            <Button variant="ghost" size="icon-xs" aria-label={`上移 ${f}`} disabled={i === 0} onClick={() => move(i, i - 1)}>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label={tr(`上移 ${f}`, `Move ${f} up`)}
+              disabled={i === 0}
+              onClick={() => move(i, i - 1)}
+            >
               <ArrowUp />
             </Button>
             <Button
               variant="ghost"
               size="icon-xs"
-              aria-label={`下移 ${f}`}
+              aria-label={tr(`下移 ${f}`, `Move ${f} down`)}
               disabled={i === order.length - 1}
               onClick={() => move(i, i + 1)}
             >
@@ -588,10 +639,14 @@ function SourceFilesOrder({ value, onChange, files }: { value: unknown; onChange
           </li>
         ))}
       </ol>
-      {missing.length ? <p className="text-xs text-muted-foreground">目前的資料沒有：{missing.join('、')}</p> : null}
+      {missing.length ? (
+        <p className="text-xs text-muted-foreground">
+          {tr(`目前的資料沒有：${missing.join('、')}`, `Not in the current data: ${missing.join(', ')}`)}
+        </p>
+      ) : null}
       {listed.length ? (
         <Button variant="outline" size="sm" onClick={() => onChange([])}>
-          恢復原本的順序
+          {tr('恢復原本的順序', 'Restore original order')}
         </Button>
       ) : null}
     </div>
@@ -635,9 +690,14 @@ function ConditionsEditor({ value, onChange, schema, root, columns, issues, path
             key={i}
             className="grid grid-cols-[2.75rem_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1.5 rounded-md border bg-muted/30 p-2"
           >
-            <span className={label}>欄位</span>
+            <span className={label}>{tr('欄位', 'Column')}</span>
             <ColumnSelect value={cond.column} columns={columns} onChange={(c) => update(i, { ...cond, column: String(c) })} />
-            <Button variant="ghost" size="icon-sm" aria-label="移除條件" onClick={() => onChange(items.filter((_, k) => k !== i))}>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={tr('移除條件', 'Remove condition')}
+              onClick={() => onChange(items.filter((_, k) => k !== i))}
+            >
               <X />
             </Button>
             {at('column').length ? (
@@ -646,11 +706,11 @@ function ConditionsEditor({ value, onChange, schema, root, columns, issues, path
               </div>
             ) : null}
 
-            <span className={label}>條件</span>
+            <span className={label}>{tr('條件', 'Condition')}</span>
             <div className="col-span-2">
               <Select value={cond.op ?? ''} onValueChange={(op) => changeOp(i, op)}>
                 <SelectTrigger className="w-full">
-                  <SelectValue placeholder="選擇條件" />
+                  <SelectValue placeholder={tr('選擇條件', 'Choose a condition')} />
                 </SelectTrigger>
                 <SelectContent>
                   {[...groups.entries()].map(([group, list]) => (
@@ -715,7 +775,7 @@ function ConditionsEditor({ value, onChange, schema, root, columns, issues, path
         )
       })}
       <Button variant="outline" size="sm" onClick={() => onChange([...items, { column: columns?.[0] ?? '', op: 'equals', value: '' }])}>
-        <Plus /> 新增條件
+        <Plus /> {tr('新增條件', 'Add condition')}
       </Button>
     </div>
   )
@@ -732,7 +792,7 @@ function control(kind: FieldKind, props: FieldProps) {
     case 'column_positions':
       return <PositionChecklist value={value} onChange={onChange} columns={columns} />
     case 'new_columns':
-      return <TagsEditor value={value} onChange={onChange} placeholder="欄名" />
+      return <TagsEditor value={value} onChange={onChange} placeholder={tr('欄名', 'Column name')} />
     case 'conditions':
       return <ConditionsEditor {...props} />
     case 'source_files':
@@ -763,7 +823,7 @@ function control(kind: FieldKind, props: FieldProps) {
     case 'number':
       return <NumberInput value={value} onChange={onChange} integer={kind === 'integer'} />
     case 'regex':
-      return <TextInput value={value} onChange={onChange} schema={schema} placeholder="例如 ^\d{3}/" />
+      return <TextInput value={value} onChange={onChange} schema={schema} placeholder={tr('例如 ^\\d{3}/', 'e.g. ^\\d{3}/')} />
     default:
       return <TextInput value={value} onChange={onChange} schema={schema} />
   }

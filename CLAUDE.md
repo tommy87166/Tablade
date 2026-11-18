@@ -38,6 +38,7 @@ Tablade：本機執行、Power Query 式的資料清洗工具（Python + Polars 
 - 步驟的參數表單由 pydantic schema 自動產生（DESIGN.md §16.5），不要為個別步驟手寫表單；驗證只在 Python 做。
 - `src/bridge.ts` 的 `TabladeApi` 必須與 `api.py` 的公開方法一致（有測試檢查）。
 - 不用 `dangerouslySetInnerHTML` / `innerHTML`，不用 `fetch` / `WebSocket` 等網路 API，不用 `eval` / `new Function`。
+- 畫面上的文字一律寫成 `tr('繁體中文', 'English')`（`src/i18n.ts`；用語照 `docs/i18n-plan.md` 的對照表），不能在模組最上層用 `tr()` 算常數；`tests/test_i18n.py` 會檢查。
 - UI 元件用 shadcn/ui：`cd frontend && npx shadcn@latest add <元件>`。**不要**把 `shadcn` 裝成依賴；新增元件後確認 `src/index.css` 沒有被改回 `@import "shadcn/tailwind.css"`。
 - 不載入外部字型或資源；字型用系統字型。
 - CSP 由 `vite.config.ts` 在 build 時注入，不要寫在 `index.html`。

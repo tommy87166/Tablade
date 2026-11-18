@@ -20,6 +20,7 @@ API_METHODS = {
     "check_update",
     "smoke_example",
     "state",
+    "set_language",
     "rows",
     "column_info",
     "find_row",

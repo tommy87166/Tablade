@@ -5,6 +5,7 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { tr } from '@/i18n'
 
 let canvas: HTMLCanvasElement | null = null
 
@@ -39,12 +40,12 @@ export function RecipeTitle({ name, path, onCommit }: Props) {
     if (next !== name) onCommit(next)
   }
 
-  const placeholder = '未命名 Recipe'
+  const placeholder = tr('未命名 Recipe', 'Untitled recipe')
   const input = useRef<HTMLInputElement>(null)
   const [width, setWidth] = useState(120)
   useLayoutEffect(() => {
     if (input.current) setWidth(Math.min(Math.ceil(measure(draft || placeholder, input.current)) + 22, 420))
-  }, [draft])
+  }, [draft, placeholder])
 
   return (
     <div className="flex min-w-0 items-center">
@@ -52,7 +53,7 @@ export function RecipeTitle({ name, path, onCommit }: Props) {
         <TooltipTrigger asChild>
           <input
             ref={input}
-            aria-label="Recipe 名稱"
+            aria-label={tr('Recipe 名稱', 'Recipe name')}
             value={draft}
             placeholder={placeholder}
             spellCheck={false}
@@ -70,7 +71,7 @@ export function RecipeTitle({ name, path, onCommit }: Props) {
             }}
           />
         </TooltipTrigger>
-        <TooltipContent>{path ?? '尚未存檔'}</TooltipContent>
+        <TooltipContent>{path ?? tr('尚未存檔', 'Not saved yet')}</TooltipContent>
       </Tooltip>
     </div>
   )

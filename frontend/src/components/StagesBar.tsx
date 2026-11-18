@@ -26,6 +26,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
+import { tr } from '@/i18n'
 import { CollapseButton, PaneHeader, PaneTitle } from './Pane'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { StageState, ViewState } from '../bridge'
@@ -70,20 +71,20 @@ function StageMenuItems({ parts, stage, total, onRename, onMove, onDelete }: Men
   const { Item, Label, Separator } = parts
   return (
     <>
-      <Label>階段「{stage.name}」</Label>
+      <Label>{tr(`階段「${stage.name}」`, `Stage "${stage.name}"`)}</Label>
       <Separator />
       <Item onSelect={onRename}>
-        <Pencil /> 改名…
+        <Pencil /> {tr('改名…', 'Rename…')}
       </Item>
       <Item disabled={stage.index === 0} onSelect={() => onMove(stage.index - 1)}>
-        <ArrowUp /> 往前移
+        <ArrowUp /> {tr('往前移', 'Move earlier')}
       </Item>
       <Item disabled={stage.last} onSelect={() => onMove(stage.index + 1)}>
-        <ArrowDown /> 往後移
+        <ArrowDown /> {tr('往後移', 'Move later')}
       </Item>
       <Separator />
       <Item variant="destructive" disabled={total === 1} onSelect={onDelete}>
-        <Trash2 /> 刪除階段
+        <Trash2 /> {tr('刪除階段', 'Delete stage')}
       </Item>
     </>
   )
@@ -105,21 +106,21 @@ export function StagesBar({ state, busy, onSelect, onAdd, onRename, onMove, onDe
     if (ok) setNaming(null)
   }
   return (
-    <nav aria-label="階段" className="flex h-full flex-col bg-muted/30">
+    <nav aria-label={tr('階段', 'Stages')} className="flex h-full flex-col bg-muted/30">
       <PaneHeader>
-        <PaneTitle>階段</PaneTitle>
+        <PaneTitle>{tr('階段', 'Stages')}</PaneTitle>
         <span className="ml-auto flex shrink-0 items-center gap-1">
           <Button
             variant="ghost"
             size="icon-xs"
-            aria-label="新增階段"
-            title="新增階段"
+            aria-label={tr('新增階段', 'Add stage')}
+            title={tr('新增階段', 'Add stage')}
             disabled={busy}
             onClick={() => open({ mode: 'add' })}
           >
             <Plus />
           </Button>
-          <CollapseButton side="left" label="階段" onClick={onCollapse} />
+          <CollapseButton side="left" label={tr('階段', 'Stages')} onClick={onCollapse} />
         </span>
       </PaneHeader>
       <ul role="tablist" aria-orientation="vertical" className="min-h-0 flex-1 overflow-auto p-1">
@@ -154,14 +155,22 @@ export function StagesBar({ state, busy, onSelect, onAdd, onRename, onMove, onDe
                           <span className={`size-1.5 shrink-0 rounded-full ${DOT[stage.status]}`} aria-label={stage.status_text} />
                           <span className="min-w-0 flex-1 truncate">{stage.name}</span>
                           {stage.output ? (
-                            <FileOutput className="size-3.5 shrink-0 text-muted-foreground" aria-label={`寫出 ${stage.output.path}`} />
+                            <FileOutput
+                              className="size-3.5 shrink-0 text-muted-foreground"
+                              aria-label={tr(`寫出 ${stage.output.path}`, `Writes to ${stage.output.path}`)}
+                            />
                           ) : null}
                         </button>
                       </TooltipTrigger>
                       <TooltipContent side="right" className="max-w-72 flex-col items-start gap-0.5">
                         <div className="font-medium">{stage.status_text}</div>
                         <div className="opacity-80">
-                          {stage.output ? `寫出 ${stage.output.path}${stage.last ? '' : '，也給後面的階段用'}` : '暫存，給後面的階段用'}
+                          {stage.output
+                            ? tr(
+                                `寫出 ${stage.output.path}${stage.last ? '' : '，也給後面的階段用'}`,
+                                `Writes to ${stage.output.path}${stage.last ? '' : ', also available to later stages'}`,
+                              )
+                            : tr('暫存，給後面的階段用', 'Temporary, for later stages')}
                         </div>
                       </TooltipContent>
                     </Tooltip>
@@ -170,8 +179,8 @@ export function StagesBar({ state, busy, onSelect, onAdd, onRename, onMove, onDe
                         <Button
                           variant="ghost"
                           size="icon-xs"
-                          aria-label={`階段「${stage.name}」：改名、移動、刪除`}
-                          title="改名、移動、刪除"
+                          aria-label={tr(`階段「${stage.name}」：改名、移動、刪除`, `Stage "${stage.name}": rename, move, delete`)}
+                          title={tr('改名、移動、刪除', 'Rename, move, delete')}
                           className={
                             selected
                               ? 'shrink-0'
@@ -195,16 +204,24 @@ export function StagesBar({ state, busy, onSelect, onAdd, onRename, onMove, onDe
           )
         })}
       </ul>
-      <p className="border-t p-2 text-[11px] leading-snug text-muted-foreground">階段依序執行，由最後一個階段輸出檔案。</p>
+      <p className="border-t p-2 text-[11px] leading-snug text-muted-foreground">
+        {tr('階段依序執行，由最後一個階段輸出檔案。', 'Stages run in order; the last stage writes the output file.')}
+      </p>
 
       <Dialog open={naming !== null} onOpenChange={(v) => !v && setNaming(null)}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>{naming?.mode === 'rename' ? '階段改名' : '新增階段'}</DialogTitle>
+            <DialogTitle>{naming?.mode === 'rename' ? tr('階段改名', 'Rename stage') : tr('新增階段', 'Add stage')}</DialogTitle>
             <DialogDescription>
               {naming?.mode === 'rename'
-                ? '引用這個階段的地方（讀取資料、結合的另一張表）會一起改。'
-                : '階段名稱也是引用名稱：後面的階段用 @名稱 讀它的結果。'}
+                ? tr(
+                    '引用這個階段的地方（讀取資料、結合的另一張表）會一起改。',
+                    "References to this stage (Read data, a Join's other table) are updated too.",
+                  )
+                : tr(
+                    '階段名稱也是引用名稱：後面的階段用 @名稱 讀它的結果。',
+                    'The stage name is also its reference name: later stages read its result as @name.',
+                  )}
             </DialogDescription>
           </DialogHeader>
           <form
@@ -214,9 +231,15 @@ export function StagesBar({ state, busy, onSelect, onAdd, onRename, onMove, onDe
               void submit()
             }}
           >
-            <Input autoFocus value={name} maxLength={MAX_NAME} placeholder="例如 門市對照" onChange={(e) => setName(e.target.value)} />
+            <Input
+              autoFocus
+              value={name}
+              maxLength={MAX_NAME}
+              placeholder={tr('例如 門市對照', 'e.g. Store lookup')}
+              onChange={(e) => setName(e.target.value)}
+            />
             {naming?.mode === 'add' && current ? (
-              <div className="flex gap-1.5" role="radiogroup" aria-label="放在哪裡">
+              <div className="flex gap-1.5" role="radiogroup" aria-label={tr('放在哪裡', 'Position')}>
                 {[true, false].map((b) => (
                   <Button
                     key={String(b)}
@@ -228,17 +251,17 @@ export function StagesBar({ state, busy, onSelect, onAdd, onRename, onMove, onDe
                     className="flex-1"
                     onClick={() => setBefore(b)}
                   >
-                    放在「{current.name}」{b ? '前面' : '後面'}
+                    {tr(`放在「${current.name}」${b ? '前面' : '後面'}`, `${b ? 'Before' : 'After'} "${current.name}"`)}
                   </Button>
                 ))}
               </div>
             ) : null}
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={() => setNaming(null)}>
-                取消
+                {tr('取消', 'Cancel')}
               </Button>
               <Button type="submit" disabled={busy || !name.trim()}>
-                {naming?.mode === 'rename' ? '改名' : '新增'}
+                {naming?.mode === 'rename' ? tr('改名', 'Rename') : tr('新增', 'Add')}
               </Button>
             </DialogFooter>
           </form>

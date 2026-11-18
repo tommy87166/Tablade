@@ -6,10 +6,12 @@
 import { HardDrive, MemoryStick } from 'lucide-react'
 
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { tr } from '@/i18n'
 import type { Usage } from '../bridge'
 import { formatSize } from '../lib/format'
 
-const withPeak = (current: number, peak: number | null) => `${formatSize(current)}（最高 ${formatSize(peak ?? current)}）`
+const withPeak = (current: number, peak: number | null) =>
+  tr(`${formatSize(current)}（最高 ${formatSize(peak ?? current)}）`, `${formatSize(current)} (peak ${formatSize(peak ?? current)})`)
 
 export function UsageStatus({ usage, className = '' }: { usage: Usage; className?: string }) {
   const memory = usage.memory !== null ? usage.memory + (usage.workers ?? 0) : null
@@ -18,12 +20,15 @@ export function UsageStatus({ usage, className = '' }: { usage: Usage; className
       <TooltipTrigger asChild>
         <span className={`flex shrink-0 items-center gap-2 text-muted-foreground tabular-nums ${className}`}>
           {memory !== null ? (
-            <span className="flex items-center gap-1" aria-label={`記憶體 ${formatSize(memory)}`}>
+            <span className="flex items-center gap-1" aria-label={tr(`記憶體 ${formatSize(memory)}`, `Memory ${formatSize(memory)}`)}>
               <MemoryStick className="size-3.5" />
               {formatSize(memory)}
             </span>
           ) : null}
-          <span className="flex items-center gap-1" aria-label={`暫存資料夾 ${formatSize(usage.staging)}`}>
+          <span
+            className="flex items-center gap-1"
+            aria-label={tr(`暫存資料夾 ${formatSize(usage.staging)}`, `Temp folder ${formatSize(usage.staging)}`)}
+          >
             <HardDrive className="size-3.5" />
             {formatSize(usage.staging)}
           </span>
@@ -32,14 +37,24 @@ export function UsageStatus({ usage, className = '' }: { usage: Usage; className
       <TooltipContent side="top" className="max-w-80 flex-col items-start gap-1">
         {usage.memory !== null ? (
           <div>
-            <div>記憶體用量</div>
+            <div>{tr('記憶體用量', 'Memory usage')}</div>
             <ul className="list-disc pl-4">
-              <li>主程序（Polars）：{withPeak(usage.memory, usage.peak)}</li>
-              <li>轉碼：{withPeak(usage.workers ?? 0, usage.workers_peak)}</li>
+              <li>
+                {tr(
+                  `主程序（Polars）：${withPeak(usage.memory, usage.peak)}`,
+                  `Main process (Polars): ${withPeak(usage.memory, usage.peak)}`,
+                )}
+              </li>
+              <li>
+                {tr(
+                  `轉碼：${withPeak(usage.workers ?? 0, usage.workers_peak)}`,
+                  `Transcoding: ${withPeak(usage.workers ?? 0, usage.workers_peak)}`,
+                )}
+              </li>
             </ul>
           </div>
         ) : null}
-        <div>暫存資料夾用量：{formatSize(usage.staging)}</div>
+        <div>{tr(`暫存資料夾用量：${formatSize(usage.staging)}`, `Temp folder usage: ${formatSize(usage.staging)}`)}</div>
       </TooltipContent>
     </Tooltip>
   )

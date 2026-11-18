@@ -17,16 +17,18 @@ import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { plural, tr } from '@/i18n'
 import type { Progress, RunState, StageRun, Usage } from '../bridge'
 import { formatAmount, formatElapsed } from '../lib/format'
 import { UsageStatus } from './UsageStatus'
 
 export function StageRunIcon({ status, className = 'size-3.5' }: { status: StageRun['status']; className?: string }) {
-  if (status === 'running') return <Loader2 className={`${className} shrink-0 animate-spin text-primary`} aria-label="處理中" />
-  if (status === 'done') return <Check className={`${className} shrink-0 text-green-600`} aria-label="完成" />
-  if (status === 'error') return <X className={`${className} shrink-0 text-destructive`} aria-label="失敗" />
+  if (status === 'running')
+    return <Loader2 className={`${className} shrink-0 animate-spin text-primary`} aria-label={tr('處理中', 'Processing')} />
+  if (status === 'done') return <Check className={`${className} shrink-0 text-green-600`} aria-label={tr('完成', 'Done')} />
+  if (status === 'error') return <X className={`${className} shrink-0 text-destructive`} aria-label={tr('失敗', 'Failed')} />
   return (
-    <span className="flex size-3.5 shrink-0 items-center justify-center" aria-label="等待中">
+    <span className="flex size-3.5 shrink-0 items-center justify-center" aria-label={tr('等待中', 'Waiting')}>
       <span className="size-1.5 rounded-full bg-muted-foreground/40" />
     </span>
   )
@@ -57,14 +59,14 @@ interface Row {
 }
 
 /** 進度的說法去掉「階段「X」：」（每一列已經寫了是哪個階段）。 */
-const activity = (stage: string) => stage.replace(/^階段「[^」]*」：/, '')
+const activity = (stage: string) => stage.replace(/^(階段「[^」]*」：|Stage "[^"]*": )/, '') // i18n-ignore
 
 function statusText(row: Row) {
-  if (row.status === 'running') return '處理中…'
-  if (row.status === 'error') return '失敗'
-  if (row.status === 'waiting') return '等待中'
-  if (row.rows !== undefined && row.rows !== null) return `${row.rows.toLocaleString()} 列`
-  return '完成'
+  if (row.status === 'running') return tr('處理中…', 'Processing…')
+  if (row.status === 'error') return tr('失敗', 'Failed')
+  if (row.status === 'waiting') return tr('等待中', 'Waiting')
+  if (row.rows !== undefined && row.rows !== null) return tr(`${row.rows.toLocaleString()} 列`, plural(row.rows, 'row', 'rows'))
+  return tr('完成', 'Done')
 }
 
 export function RunDialog({ title, run, progress, usage, busy, result, failed, error, onClose }: Props) {
@@ -96,10 +98,13 @@ export function RunDialog({ title, run, progress, usage, busy, result, failed, e
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>
             {busy
-              ? `階段依序執行：${done} / ${run.stages.length} 完成・已經過 ${formatElapsed(elapsed)}`
+              ? tr(
+                  `階段依序執行：${done} / ${run.stages.length} 完成・已經過 ${formatElapsed(elapsed)}`,
+                  `Stages run in order: ${done} of ${run.stages.length} done · ${formatElapsed(elapsed)} elapsed`,
+                )
               : failed
-                ? '處理失敗'
-                : `完成・共 ${formatElapsed(elapsed)}`}
+                ? tr('處理失敗', 'Processing failed')
+                : tr(`完成・共 ${formatElapsed(elapsed)}`, `Done in ${formatElapsed(elapsed)}`)}
           </DialogDescription>
         </DialogHeader>
         {busy ? (
@@ -109,11 +114,16 @@ export function RunDialog({ title, run, progress, usage, busy, result, failed, e
                 <span className="font-medium">{activity(progress.stage)}</span>
                 <span className="min-w-0 flex-1 truncate text-muted-foreground">{progress.file}</span>
                 <span className="shrink-0 text-muted-foreground tabular-nums">
-                  {ratio !== null ? `${formatAmount(progress)}（${Math.round(ratio * 100)}%）` : '處理中…'}
+                  {ratio !== null
+                    ? tr(
+                        `${formatAmount(progress)}（${Math.round(ratio * 100)}%）`,
+                        `${formatAmount(progress)} (${Math.round(ratio * 100)}%)`,
+                      )
+                    : tr('處理中…', 'Processing…')}
                 </span>
               </div>
             ) : (
-              <div className="text-muted-foreground">處理中…</div>
+              <div className="text-muted-foreground">{tr('處理中…', 'Processing…')}</div>
             )}
             {/* 只有知道做到哪裡時才有進度條（寫出 Parquet、讀 Excel 這類不知道的，只寫「處理中…」）；不顯示時也留著位置 */}
             <div className={`h-1 overflow-hidden rounded bg-primary/15 ${ratio === null ? 'invisible' : ''}`}>
@@ -141,7 +151,7 @@ export function RunDialog({ title, run, progress, usage, busy, result, failed, e
             <p className="break-all">{error.message}</p>
             {error.onGo ? (
               <Button size="sm" variant="outline" onClick={error.onGo}>
-                前往這一步
+                {tr('前往這一步', 'Go to step')}
               </Button>
             ) : null}
           </div>
@@ -150,7 +160,7 @@ export function RunDialog({ title, run, progress, usage, busy, result, failed, e
         <DialogFooter>
           {usage ? <UsageStatus usage={usage} className="mr-auto self-center text-xs" /> : null}
           <Button onClick={onClose} disabled={busy}>
-            {busy ? '處理中…' : '關閉'}
+            {busy ? tr('處理中…', 'Processing…') : tr('關閉', 'Close')}
           </Button>
         </DialogFooter>
       </DialogContent>

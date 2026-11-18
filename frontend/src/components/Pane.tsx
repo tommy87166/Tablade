@@ -4,6 +4,7 @@ import type { ReactNode } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { tr } from '@/i18n'
 
 export const RAIL_WIDTH = 36
 
@@ -21,11 +22,11 @@ export function CollapseButton({ side, label, onClick }: { side: 'left' | 'right
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button variant="ghost" size="icon-xs" aria-label={`收合${label}`} onClick={onClick}>
+        <Button variant="ghost" size="icon-xs" aria-label={tr(`收合${label}`, `Collapse ${label.toLowerCase()}`)} onClick={onClick}>
           {side === 'left' ? <PanelLeftClose /> : <PanelRightClose />}
         </Button>
       </TooltipTrigger>
-      <TooltipContent>收合{label}</TooltipContent>
+      <TooltipContent>{tr(`收合${label}`, `Collapse ${label.toLowerCase()}`)}</TooltipContent>
     </Tooltip>
   )
 }
@@ -64,8 +65,8 @@ export function CollapsedRail({ side, label, onExpand }: { side: 'left' | 'right
   return (
     <button
       type="button"
-      aria-label={`展開${label}`}
-      title={`展開${label}`}
+      aria-label={tr(`展開${label}`, `Expand ${label.toLowerCase()}`)}
+      title={tr(`展開${label}`, `Expand ${label.toLowerCase()}`)}
       onClick={onExpand}
       className="flex h-full w-full flex-col items-center gap-2 bg-muted/30 pt-2 text-muted-foreground hover:bg-muted hover:text-foreground"
     >
