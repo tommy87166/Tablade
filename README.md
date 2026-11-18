@@ -361,10 +361,12 @@ tablade.spec          PyInstaller config (onefile / onedir via TABLADE_BUILD)
   Streaming export reports only the final row count, and its warnings cover the rows that are still
   in the output. Group-by and pivot previews are computed from the sample too (pivot reads its new
   columns from the preview data; values that only show up at export time are reported as warnings).
-- **Non-UTF-8 files are transcoded to a temporary UTF-8 copy first** (about 230 MB/s per core for cp950;
+- **Non-UTF-8 files are transcoded to a temporary copy first** (about 230 MB/s per core for cp950;
   files of 64 MB or more are split and transcoded by up to 8 processes at once, with the same result as a
-  single core; needs roughly 1.5× the file size in free temp space); the copy is deleted when the window closes, and copies left by a crash are
-  removed the next time Tablade starts.
+  single core). With `text_lines` the copy is compressed Parquet and needs only about 1/10 of the file
+  size in temp space; with `csv` it is a full UTF-8 copy and needs roughly 1.5× (prefer `text_lines` for
+  large files). The copy is deleted when the window closes, and copies left by a crash are removed the
+  next time Tablade starts.
 - **`csv` reader line numbers assume no multi-line fields**; use `text_lines` for such files.
 - **onefile starts slowly** because it unpacks itself on every launch, and some antivirus or
   AppLocker setups block programs running from the temp folder. Only onefile is released for Windows;

@@ -166,6 +166,10 @@ def run_selftest() -> dict[str, Any]:
                 digest = sources._transcode_parallel(
                     src, "cp950", parallel, None, 16_384, pool=pool
                 )
+                # 逐行讀取的暫存（一段一個 Parquet）也用工作程序轉一次：打包後寫得了 Parquet、內容一致
+                _, staged, lines = sources._stage_lines(
+                    src, "cp950", Path(tmp) / "staged", None, pool=pool, segment=16_384
+                )
             except sources.PoolUnavailable:  # 只有開不了工作程序才算；讀寫檔的錯誤照原樣回報
                 sources._pool_failed = True  # 這次執行之後的大檔都用單核心，不再重試
                 return t(
@@ -181,6 +185,12 @@ def run_selftest() -> dict[str, Any]:
             assert parallel.read_bytes() == single.read_bytes(), t(
                 "平行轉碼的結果和單核心不同",
                 "Parallel transcoding gave a different result than single-core",
+            )
+            expected = pl.scan_lines(single, name="line").collect()["line"]
+            got = pl.scan_parquet(list(staged)).collect()["line"]
+            assert len(staged) > 1 and lines == len(expected) and got.equals(expected), t(
+                "逐行讀取的 Parquet 暫存和轉碼的結果不同",
+                "The Parquet staging for line-by-line reading differs from the transcoded text",
             )
             workers = plural(SELFTEST_WORKERS, "worker process", "worker processes")
             return t(
@@ -287,9 +297,9 @@ def run_selftest() -> dict[str, Any]:
             (
                 t("多核心轉碼", "Multi-core transcoding"),
                 t(
-                    "大檔可以用多個程序同時轉碼，結果和單核心相同",
+                    "大檔可以用多個程序同時轉碼，結果和單核心相同；逐行讀取的暫存寫得成 Parquet",
                     "Large files can be transcoded by several processes at once, "
-                    "with the same result as single-core",
+                    "with the same result as single-core; line-by-line staging can be written as Parquet",
                 ),
                 parallel_transcode,
             ),

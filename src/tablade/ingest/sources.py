@@ -2,9 +2,13 @@
 
 幾 GB 的檔案也要在固定記憶體內處理：
 - **不把整個檔案讀進記憶體。** 以 1 MB 為單位分塊讀取（``transcode.CHUNK``），同時算 SHA-256、檢查是不是 UTF-8。
-- UTF-8 檔直接交給 Polars 的 ``scan_lines`` / ``scan_csv``（lazy、可串流）。
-- 其他編碼（cp950 等）或有單獨 ``\\r`` 換行的檔案，先分塊轉成 UTF-8 暫存檔再掃描。
-  暫存檔放在暫存資料夾，依「路徑＋大小＋修改時間＋編碼」快取，關閉視窗或程式結束時刪除；
+- UTF-8 檔直接交給 Polars 的 ``scan_lines`` / ``scan_csv``（lazy、可串流），不寫暫存檔。
+- 其他編碼（cp950 等）或有單獨 ``\\r`` 換行的檔案要先轉碼：
+  - 逐行讀取：在換行處切段、轉成 UTF-8，一段一段寫成 zstd 壓縮的 Parquet（``_stage_lines``），
+    暫存大約只有原檔的 1/10；轉碼途中的文字段最多「工作程序數 × 2」段（``_segments``）。
+  - CSV：轉成一整份 UTF-8 的文字暫存檔再 ``scan_csv``（Polars 一定要讀一整份檔；
+    docs/parquet-staging-plan.md 的「CSV 為什麼不改」）。
+  暫存檔放在暫存資料夾，依「路徑＋大小＋修改時間＋編碼＋讀取方式」快取，關閉視窗或程式結束時刪除；
   當掉或被強制結束時留下的資料夾，下次啟動時清掉（資料夾裡的鎖檔沒有人鎖著，就代表沒人在用）。
 - 每個來源檔各自一個 LazyFrame（``scan_parts``，依路徑排序、行號排好），欄位對齊成同一組；
   引擎讓每個檔各自跑步驟，到「合併來源檔」或寫出前才接起來（DESIGN.md §8）。
@@ -14,6 +18,7 @@ from __future__ import annotations
 
 import atexit
 import codecs
+import collections
 import contextlib
 import glob
 import hashlib
@@ -24,10 +29,11 @@ import re
 import shutil
 import tempfile
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import wait as wait_futures
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -101,15 +107,22 @@ class SourceFile:
 @dataclass(frozen=True)
 class Prepared:
     effective: Path
-    """要交給 Polars 掃描的 UTF-8 檔（原檔或暫存檔）。"""
+    """要交給 Polars 掃描的 UTF-8 檔（原檔或暫存檔）；暫存成 Parquet 時是放那些 Parquet 的資料夾。"""
     encoding: str
     sha256: str
     bytes: int
     bom: bool
     lines: int
+    parquet: tuple[Path, ...] = ()
+    """逐行讀取、要轉碼的檔：依序的暫存 Parquet（一段一個，``line`` 一欄）；其他情況是空的。"""
 
 
-_cache: dict[tuple[str, int, int, str], Prepared] = {}
+def _alive(prepared: Prepared) -> bool:
+    """快取的暫存檔還在（暫存資料夾可能被清掉）。"""
+    return prepared.effective.exists() and all(f.exists() for f in prepared.parquet)
+
+
+_cache: dict[tuple[str, int, int, str, bool], Prepared] = {}
 _lock = threading.Lock()
 _staging: Path | None = None
 _staging_lock: Any = None
@@ -513,8 +526,189 @@ def _count_lines(path: Path) -> int:
     return pl.scan_lines(path).select(pl.len()).collect(engine="streaming").item()
 
 
-def prepare(path: Path, encoding: str = "auto", progress: Progress = None) -> Prepared:
-    """確保檔案可以用 UTF-8 掃描：必要時轉碼成暫存檔。結果會快取。"""
+LINES_ROW_GROUP = 8_192
+"""逐行讀取的暫存 Parquet 每個 row group 最多幾行：讀回來時一次解開一個 row group，記憶體才固定。"""
+
+
+def _give_up_pool() -> None:
+    """開不了工作程序（或工作程序意外結束）：這次開著的期間都用單核心，不再重試。"""
+    global _pool_failed
+    _pool_failed = True
+    _shutdown_pool()
+
+
+def _hash_in_background(path: Path) -> tuple[threading.Thread, Any]:
+    """另開一條執行緒從頭讀到尾算 SHA-256（轉碼是分段做的，SHA-256 一定要依序讀整個檔）。"""
+    digest = hashlib.sha256()
+
+    def run() -> None:
+        with path.open("rb") as f:
+            while chunk := f.read(CHUNK):
+                digest.update(chunk)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread, digest
+
+
+def _segments(
+    path: Path,
+    encoding: str,
+    folder: Path,
+    progress: Progress,
+    segment: int,
+    pool: ProcessPoolExecutor | None,
+    ahead: int,
+) -> Iterator[Path]:
+    """在換行處切段、轉成 UTF-8，依檔案順序一段一段交出（每段一個文字檔，呼叫的人用完就刪）。
+
+    ``pool`` 是工作程序時同時轉好幾段，但在路上（轉碼中，或轉好了還沒交出）的段最多 ``ahead`` 個：
+    前面的段交出去了才送下一段，轉碼途中的暫存文字不會累積成一整份。``pool`` 是 None 時在這個程序依序轉。
+
+    轉不了的字依檔案順序回報第一個（和單核心相同的訊息）；開不了工作程序、工作程序意外結束時丟出
+    ``PoolUnavailable``。結束時（包括出錯、呼叫的人提早停下）刪掉還沒交出的段。
+    """
+    total = path.stat().st_size
+    cuts = segment_bounds(str(path), total, segment)
+    # 中間的段不是檔案開頭：utf-8-sig 不能在那裡拿掉 BOM
+    middle = "utf-8" if encoding == "utf-8-sig" else encoding
+    jobs = [
+        (
+            str(path),
+            encoding if i == 0 else middle,
+            cuts[i],
+            cuts[i + 1],
+            str(folder / f"{i:06d}.txt"),
+        )
+        for i in range(len(cuts) - 1)
+    ]
+    label = t("轉碼", "Transcoding")
+    pending: collections.deque[tuple[int, Any]] = collections.deque()
+
+    def submit(i: int) -> None:
+        try:
+            pending.append((i, pool.submit(transcode_segment, jobs[i])))  # type: ignore[union-attr]
+        except (OSError, RuntimeError, BrokenProcessPool) as err:  # 開不了工作程序
+            raise PoolUnavailable(str(err)) from err
+
+    try:
+        if pool is None:
+            for i, job in enumerate(jobs):
+                failure = transcode_segment(job)
+                if failure is not None:
+                    raise _decode_error(path, encoding, failure)
+                _report(progress, label, path.name, cuts[i + 1], total)
+                yield Path(job[4])
+            return
+        following = 0
+        while following < len(jobs) and len(pending) < ahead:
+            submit(following)
+            following += 1
+        while pending:
+            i, future = pending.popleft()
+            try:
+                failure = future.result()
+            except BrokenProcessPool as err:  # 工作程序意外結束（例如被系統擋掉）
+                raise PoolUnavailable(str(err)) from err
+            if failure is not None:
+                raise _decode_error(path, encoding, failure)
+            _report(progress, label, path.name, cuts[i + 1], total)
+            yield Path(jobs[i][4])
+            if following < len(jobs):
+                submit(following)
+                following += 1
+    finally:
+        for _, future in pending:  # 還沒開始的段不用做了；正在轉的等它寫完再刪
+            future.cancel()
+        with contextlib.suppress(Exception):
+            wait_futures([future for _, future in pending])
+        for job in jobs:
+            with contextlib.suppress(OSError):  # Windows 上刪不掉的留給暫存資料夾清
+                Path(job[4]).unlink(missing_ok=True)
+
+
+def _write_lines(
+    path: Path,
+    encoding: str,
+    folder: Path,
+    progress: Progress,
+    segment: int,
+    pool: ProcessPoolExecutor | None,
+    ahead: int,
+) -> list[Path]:
+    """每取到一段轉好的文字，就寫成一個 Parquet（``line`` 一欄）並刪掉那段文字。"""
+    folder.mkdir(parents=True, exist_ok=True)
+    files: list[Path] = []
+    with contextlib.closing(
+        _segments(path, encoding, folder, progress, segment, pool, ahead)
+    ) as segments:
+        for i, text in enumerate(segments):
+            target = folder / f"{i:06d}.parquet"
+            pl.scan_lines(text, name="line").sink_parquet(
+                target, compression="zstd", row_group_size=LINES_ROW_GROUP
+            )
+            text.unlink()
+            files.append(target)
+    return files
+
+
+def _stage_lines(
+    path: Path,
+    encoding: str,
+    folder: Path,
+    progress: Progress,
+    *,
+    pool: ProcessPoolExecutor | None = None,
+    parallel_min: int | None = None,
+    segment: int | None = None,
+) -> tuple[str, tuple[Path, ...], int]:
+    """逐行讀取、要轉碼的檔：轉成 UTF-8 後一段一段寫成 zstd 壓縮的 Parquet，放在 ``folder``。
+
+    回傳（原檔的 sha256, 依序的 Parquet 檔, 行數）。讀出來的 ``line`` 和把整份轉成 UTF-8 文字再
+    ``scan_lines`` 完全一樣（每段都在 ``\\n`` 後面結束）；行數直接看 Parquet 記的列數，不用再讀一遍。
+
+    大檔用多個工作程序同時轉（``pool`` 預設是共用的工作程序；自我檢測傳自己開的）；開不了工作程序時
+    改用單核心重來，這次開著的期間都不再試（自我檢測傳了 ``pool`` 時照原樣丟出 ``PoolUnavailable``）。
+    解碼失敗丟出 ``DecodeError``；出錯時 ``folder`` 整個刪掉，不留半套暫存。
+    """
+    size = path.stat().st_size
+    minimum = PARALLEL_MIN if parallel_min is None else parallel_min
+    step = segment or SEGMENT
+    workers = pool
+    if workers is None and _workers() and size >= minimum:
+        try:
+            workers = _get_pool()
+        except (OSError, RuntimeError, BrokenProcessPool):  # 例如公司電腦不讓開新程序
+            _give_up_pool()
+    count = getattr(workers, "_max_workers", 1) if workers is not None else 1
+    ahead = 2 * count
+    hasher, digest = _hash_in_background(path)
+    try:
+        try:
+            files = _write_lines(path, encoding, folder, progress, step, workers, ahead)
+        except PoolUnavailable:
+            if pool is not None:
+                raise
+            _give_up_pool()
+            shutil.rmtree(folder, ignore_errors=True)
+            files = _write_lines(path, encoding, folder, progress, step, None, 2)
+    except BaseException:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+    finally:
+        hasher.join()
+    lines = pl.scan_parquet(files).select(pl.len()).collect().item() if files else 0
+    return digest.hexdigest(), tuple(files), lines
+
+
+def prepare(
+    path: Path, encoding: str = "auto", progress: Progress = None, lines: bool = False
+) -> Prepared:
+    """確保檔案可以用 UTF-8 掃描：必要時轉碼成暫存檔。結果會快取。
+
+    ``lines``：逐行讀取用。要轉碼時暫存成一段一段的 Parquet（``_stage_lines``，小很多）；
+    否則（CSV）暫存成一整份 UTF-8 文字。不用轉碼的 UTF-8 檔兩種都直接讀原檔。
+    """
     if encoding not in SUPPORTED:
         raise DecodeError(
             t(
@@ -523,12 +717,23 @@ def prepare(path: Path, encoding: str = "auto", progress: Progress = None) -> Pr
             )
         )
     stat = path.stat()
-    key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns, encoding)
+    key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns, encoding, lines)
     with _lock:
-        if key in _cache and _cache[key].effective.exists():
+        if key in _cache and _alive(_cache[key]):
             return _cache[key]
 
-    staged = staging_dir() / f"{hashlib.sha256(repr(key).encode()).hexdigest()[:24]}.txt"
+    name = hashlib.sha256(repr(key).encode()).hexdigest()[:24]
+
+    def convert(candidate: str) -> Prepared:
+        """用 candidate 轉碼成暫存：逐行讀取是 Parquet，CSV 是 UTF-8 文字。"""
+        if lines:
+            folder = staging_dir() / name
+            digest, files, count = _stage_lines(path, candidate, folder, progress)
+            return Prepared(folder, candidate, digest, stat.st_size, False, count, files)
+        staged = staging_dir() / f"{name}.txt"
+        digest = _transcode(path, candidate, staged, progress)
+        return Prepared(staged, candidate, digest, stat.st_size, False, _count_lines(staged))
+
     if stat.st_size == 0:
         prepared = Prepared(path, "utf-8", hashlib.sha256().hexdigest(), 0, False, 0)
     elif encoding in ("auto", "utf-8", "utf-8-sig"):
@@ -537,14 +742,8 @@ def prepare(path: Path, encoding: str = "auto", progress: Progress = None) -> Pr
             detected = "utf-8-sig" if bom else "utf-8"
             prepared = Prepared(path, detected, digest, stat.st_size, bom, _count_lines(path))
         elif error is None:  # UTF-8，但有單獨的 \r 換行：轉成暫存檔統一換行
-            _transcode(path, "utf-8-sig", staged, progress)
-            prepared = Prepared(
-                staged,
-                "utf-8-sig" if bom else "utf-8",
-                digest,
-                stat.st_size,
-                False,
-                _count_lines(staged),
+            prepared = replace(
+                convert("utf-8-sig"), encoding="utf-8-sig" if bom else "utf-8", sha256=digest
             )
         elif encoding != "auto":
             raise DecodeError(error)
@@ -552,13 +751,10 @@ def prepare(path: Path, encoding: str = "auto", progress: Progress = None) -> Pr
             failures = [error]
             for candidate in AUTO_ORDER[1:]:
                 try:
-                    digest = _transcode(path, candidate, staged, progress)
+                    prepared = convert(candidate)
                 except DecodeError as err:
                     failures.append(str(err))
                     continue
-                prepared = Prepared(
-                    staged, candidate, digest, stat.st_size, False, _count_lines(staged)
-                )
                 break
             else:
                 raise DecodeError(
@@ -566,8 +762,7 @@ def prepare(path: Path, encoding: str = "auto", progress: Progress = None) -> Pr
                     + t("；", "; ").join(failures)
                 )
     else:
-        digest = _transcode(path, encoding, staged, progress)
-        prepared = Prepared(staged, encoding, digest, stat.st_size, False, _count_lines(staged))
+        prepared = convert(encoding)
 
     with _lock:
         _cache[key] = prepared
@@ -579,9 +774,12 @@ def _scan_one(prepared: Prepared, reader: str, name: str) -> tuple[pl.LazyFrame,
         empty = {SOURCE_FILE: pl.String, LINE_NO: pl.Int64}
         return pl.LazyFrame(schema=empty if reader == "csv" else {**empty, "line": pl.String}), 0
     if reader == "text_lines":
-        lf = pl.scan_lines(
-            prepared.effective, name="line", row_index_name=LINE_NO, row_index_offset=1
-        )
+        if prepared.parquet:  # 轉碼後的暫存：一段一個 Parquet，依序接起來編行號
+            lf = pl.scan_parquet(list(prepared.parquet), row_index_name=LINE_NO, row_index_offset=1)
+        else:
+            lf = pl.scan_lines(
+                prepared.effective, name="line", row_index_name=LINE_NO, row_index_offset=1
+            )
         line = pl.col("line")
         if prepared.bom:
             line = pl.when(pl.col(LINE_NO) == 1).then(line.str.strip_prefix("﻿")).otherwise(line)
@@ -700,7 +898,7 @@ def scan_parts(
             parts.append((name, lf))
             files.append(info)
             continue
-        prepared = prepare(path, encoding, progress)
+        prepared = prepare(path, encoding, progress, lines=reader == "text_lines")
         lf, rows = _scan_one(prepared, reader, name)
         parts.append((name, lf))
         files.append(SourceFile(name, prepared.bytes, prepared.sha256, prepared.encoding, rows))

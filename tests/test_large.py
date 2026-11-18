@@ -1184,3 +1184,162 @@ def test_stream_matches_eager_with_hard_values_and_summaries(workdir):
         workdir, "data/難搞_*.csv", "csv", steps, "hard_sum", same_warnings=False
     )
     assert out.height > 0 and out["門市"].null_count() == 0
+
+
+# ── 逐行讀取的暫存改存 Parquet（docs/parquet-staging-plan.md）──────────────────────
+
+REPORT_LIKE = [
+    "門市：北區門市",
+    "",
+    "115/01/05 A001 原子筆   3",
+    "  小計  3",
+    "",
+    "",
+    "*** 報表結束 ***",
+]
+
+
+def _text(lines: list[str], newline: str = "\r\n", last_newline: bool = False) -> str:
+    return newline.join(lines * 300) + (newline if last_newline else "")
+
+
+def _read_lines(tmp_path: Path, name: str) -> tuple[list, list, int]:
+    lf, files = scan(name, "text_lines", "auto", tmp_path)
+    out = lf.collect()
+    return out["line"].to_list(), out["__line_no"].to_list(), files[0].rows
+
+
+@pytest.mark.parametrize("last_newline", [True, False])
+@pytest.mark.parametrize("newline", ["\r\n", "\n"])
+def test_lines_staging_reads_the_same_as_utf8(tmp_path, monkeypatch, newline, last_newline):
+    """cp950 的檔用逐行讀取：暫存成一段一段的 Parquet，讀出來的行、行號、行數和同內容的 UTF-8 檔
+    （不轉碼、直接讀）完全一樣；空行、最後一行沒有換行都保留。"""
+    monkeypatch.setattr(sources, "SEGMENT", 512)  # 切成很多段
+    text = _text(REPORT_LIKE, newline, last_newline)
+    (tmp_path / "big5.txt").write_bytes(text.encode("cp950"))
+    (tmp_path / "utf8.txt").write_bytes(text.encode("utf-8"))
+    got = _read_lines(tmp_path, "big5.txt")
+    assert got == _read_lines(tmp_path, "utf8.txt")
+    prepared = prepare(tmp_path / "big5.txt", lines=True)
+    assert len(prepared.parquet) > 10 and prepared.encoding == "cp950"
+
+
+def test_lines_staging_handles_bom_and_lone_carriage_returns(tmp_path, monkeypatch):
+    """UTF-8 但有單獨的 \\r 換行（要轉碼統一換行）：BOM 拿掉、\\r 當成換行，和換行統一過的檔一樣。"""
+    monkeypatch.setattr(sources, "SEGMENT", 256)
+    lines = ["第一行\r\n", "第二\r第三\n", "x\r\n"] * 400 + ["結尾\r"]
+    (tmp_path / "mixed.txt").write_bytes(b"\xef\xbb\xbf" + "".join(lines).encode("utf-8"))
+    tidy = "".join(lines).replace("\r\n", "\n").replace("\r", "\n")
+    (tmp_path / "tidy.txt").write_bytes(b"\xef\xbb\xbf" + tidy.encode("utf-8"))
+    assert _read_lines(tmp_path, "mixed.txt") == _read_lines(tmp_path, "tidy.txt")
+    assert prepare(tmp_path / "mixed.txt", lines=True).parquet
+
+
+def test_lines_staging_in_parallel_matches_single_core(tmp_path):
+    """用工作程序同時轉（切成很小的段）和單核心依序轉：每段的 Parquet 接起來完全一樣。"""
+    from tablade.fixtures import write_big_messy_export
+
+    src = write_big_messy_export(tmp_path / "明細.csv", 30_000, encoding="cp950")
+    single = sources._stage_lines(src, "cp950", tmp_path / "single", None, segment=4096)
+    pool = sources.new_pool(2)
+    try:
+        parallel = sources._stage_lines(
+            src, "cp950", tmp_path / "parallel", None, pool=pool, segment=4096
+        )
+    finally:
+        pool.shutdown(wait=True)
+    read = lambda files: pl.scan_parquet(list(files)).collect()["line"]  # noqa: E731
+    assert len(parallel[1]) > 10 and read(parallel[1]).equals(read(single[1]))
+    assert parallel[0] == single[0] == hashlib.sha256(src.read_bytes()).hexdigest()
+    assert parallel[2] == single[2] == read(single[1]).len()
+
+
+def test_lines_staging_leaves_only_small_parquet(tmp_path):
+    """轉完之後暫存資料夾裡只有 Parquet（沒有文字段、沒有整份的 .txt），而且比原檔小很多。"""
+    from tablade.fixtures import write_big_messy_export
+
+    src = write_big_messy_export(tmp_path / "明細.csv", 50_000, encoding="cp950")
+    prepared = prepare(src, lines=True)
+    left = [p for p in prepared.effective.rglob("*") if p.is_file()]
+    assert left and all(p.suffix == ".parquet" for p in left)
+    assert sum(p.stat().st_size for p in left) * 3 < src.stat().st_size
+    assert not prepared.effective.with_suffix(".txt").exists()  # 沒有另外留一整份文字
+
+
+def test_lines_staging_keeps_few_text_segments_at_once(tmp_path, monkeypatch):
+    """平行轉碼時，同時在暫存資料夾裡的文字段不超過「工作程序數 × 2」（不會累積成一整份）。"""
+    from tablade.fixtures import write_big_messy_export
+
+    seen = []
+    original = sources._segments
+
+    def spy(path, encoding, folder, *args):
+        for segment in original(path, encoding, folder, *args):
+            seen.append(len(list(folder.glob("*.txt"))))
+            yield segment
+
+    monkeypatch.setattr(sources, "_segments", spy)
+    src = write_big_messy_export(tmp_path / "明細.csv", 30_000, encoding="cp950")
+    pool = sources.new_pool(2)
+    try:
+        sources._stage_lines(src, "cp950", tmp_path / "staged", None, pool=pool, segment=4096)
+    finally:
+        pool.shutdown(wait=True)
+    assert len(seen) > 20 and max(seen) <= 4
+    assert not list((tmp_path / "staged").glob("*.txt"))
+
+
+def test_lines_staging_reports_the_first_error_and_leaves_nothing(tmp_path):
+    """轉不了的字：平行、單核心、整份文字的訊息都一樣（第幾行），失敗後不留任何暫存。"""
+    good = ("115/01/05,北區門市,原子筆\r\n" * 300).encode("cp950")
+    src = tmp_path / "bad.txt"
+    src.write_bytes(good + b"\xff\xff bad\r\n" + good + b"\xff again\r\n" + good)
+    errors = []
+    with pytest.raises(DecodeError) as err:
+        sources._transcode_single(src, "cp950", tmp_path / "a.txt", None)
+    errors.append(str(err.value))
+    with pytest.raises(DecodeError) as err:
+        sources._stage_lines(src, "cp950", tmp_path / "single", None, segment=512)
+    errors.append(str(err.value))
+    pool = sources.new_pool(2)
+    try:
+        with pytest.raises(DecodeError) as err:
+            sources._stage_lines(src, "cp950", tmp_path / "parallel", None, pool=pool, segment=512)
+        errors.append(str(err.value))
+    finally:
+        pool.shutdown(wait=True)
+    assert len(set(errors)) == 1 and "第 301 行" in errors[0]
+    assert not (tmp_path / "single").exists() and not (tmp_path / "parallel").exists()
+
+
+def test_lines_and_csv_staging_are_cached_separately(tmp_path):
+    """同一個 cp950 檔用逐行讀取與 CSV 讀：各自有自己的暫存（Parquet／文字），兩種都讀得對，再讀一次用快取。"""
+    from tablade.fixtures import write_simple_csv
+
+    src = write_simple_csv(tmp_path / "a.csv", n=20)
+    as_lines = prepare(src, lines=True)
+    as_csv = prepare(src)
+    assert as_lines.parquet and not as_csv.parquet and as_csv.effective.suffix == ".txt"
+    assert prepare(src, lines=True) is as_lines and prepare(src) is as_csv
+    lines, _, rows = _read_lines(tmp_path, "a.csv")
+    csv, files = scan("a.csv", "csv", "auto", tmp_path)
+    assert rows == 21 and files[0].rows == 20 and csv.collect().height == 20
+    assert lines[0].startswith("日期")
+
+
+def test_lines_staging_falls_back_to_single_core(tmp_path, monkeypatch):
+    """開不了工作程序時改用單核心（結果一樣），這次開著的期間都不再試。"""
+    from tablade.fixtures import write_big_messy_export
+
+    def no_pool():
+        raise OSError("不能開新程序")
+
+    monkeypatch.setattr(sources, "_get_pool", no_pool)
+    monkeypatch.setattr(sources, "_workers", lambda: 2)
+    monkeypatch.setattr(sources, "_pool_failed", False)
+    monkeypatch.setattr(sources, "PARALLEL_MIN", 0)
+    src = write_big_messy_export(tmp_path / "明細.csv", 20_000, encoding="cp950")
+    prepared = prepare(src, lines=True)
+    expected = src.read_bytes().decode("cp950").replace("\r\n", "\n").rstrip("\n").split("\n")
+    assert pl.scan_parquet(list(prepared.parquet)).collect()["line"].to_list() == expected
+    assert sources._pool_failed

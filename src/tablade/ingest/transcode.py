@@ -1,4 +1,7 @@
-"""把非 UTF-8 的檔轉成 UTF-8（DESIGN.md §8）。
+"""把非 UTF-8 的檔轉成 UTF-8（DESIGN.md §5.4、§8）。
+
+逐行讀取時每段轉好的文字由主程序寫成 Parquet（``sources._stage_lines``），CSV 時接成一整份文字
+（``sources._transcode``）；這裡只負責「把一段轉成 UTF-8 文字」，兩種都用。
 
 只用標準函式庫、不載入 Polars：平行轉碼的工作程序也載入這個檔，要啟動得快、佔的記憶體少。
 
