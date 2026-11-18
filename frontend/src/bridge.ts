@@ -191,6 +191,13 @@ export interface SourceFile {
   sheet?: string | null
 }
 
+/** 用樣本算的步驟：目前階段（stage 是空字串）的第幾步，或往上讀到、結合到的階段的第幾步 */
+export interface SampledStep {
+  stage: string
+  number: number
+  label: string
+}
+
 export interface ViewState {
   version: { tablade: string; recipe: string }
   recipe: {
@@ -260,8 +267,8 @@ export interface ViewState {
     input_rows: number | null
     /** 完整模式讀的是匯出檔時：匯出檔、列數、處理了幾行輸入、匯出時間、警告總數 */
     full: { path: string; rows: number; input_rows: number; time: string; warning_count: number } | null
-    /** 抽樣模式下，選的那一步之前（含）第一個要看整個來源檔的步驟名稱（例如「群組彙總」） */
-    sampled_step: string | null
+    /** 抽樣模式下，用樣本算、數字會不準的步驟（要看整個來源檔的：移除重複、群組彙總、樞紐）；沒有時是空的 */
+    sampled_steps: SampledStep[]
   }
   can_undo: boolean
   can_redo: boolean

@@ -324,7 +324,7 @@ class Api:
 
     @_wrap
     def full_run(self, index: int) -> dict[str, Any]:
-        """「完整跑一次」：用全部資料跑到這個階段，預覽改用完整的結果（結合的右表）。"""
+        """「完整跑一次」：用全部資料算出這個階段（只跑它和它用到的階段），預覽改用完整的結果（結合的右表）。"""
         self._session.full_run(int(index))
         return self._state()
 

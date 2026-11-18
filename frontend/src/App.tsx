@@ -37,6 +37,7 @@ import {
   onProgress,
   onRun,
   type RunState,
+  type SampledStep,
   waitForApi,
   type Issue,
   type Progress,
@@ -66,6 +67,9 @@ type Status = { text: string; error?: boolean }
 const cleanError = (message: string) => message.replace(/^[A-Za-z]+Error: /, '')
 /** 路徑只留檔名（狀態列放不下完整路徑；完整路徑在最上面 Recipe 名稱的提示裡）。 */
 const fileName = (path: string | null | undefined) => (path ?? '').split(/[\\/]/).pop() ?? ''
+
+/** 「第 16 步「移除重複」」；前面階段的步驟前面加「階段「文字明細」」 */
+const sampledStepText = (s: SampledStep) => `${s.stage ? `階段「${s.stage}」` : ''}第 ${s.number} 步「${s.label}」`
 const SMOKE_TIMEOUT_MS = 30_000
 
 /** 下方面板標題列的分頁按鈕（警告、型別）。 */
@@ -726,18 +730,29 @@ export default function App() {
                         </TooltipContent>
                       </Tooltip>
                     ) : null}
-                    {state.preview.sampled_step ? (
+                    {/* 抽樣模式下有要看整個來源檔的步驟：紅色警告，滑鼠移上去列出是哪幾步 */}
+                    {state.preview.sampled_steps.length > 0 ? (
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <Badge
-                            variant="outline"
-                            className="border-amber-600 bg-amber-500/20 font-medium text-amber-800 dark:text-amber-300"
-                          >
-                            「{state.preview.sampled_step}」用樣本算
-                          </Badge>
+                          <Badge variant="destructive">警告：預覽結果可能不正確</Badge>
                         </TooltipTrigger>
-                        <TooltipContent className="max-w-80">
-                          「{state.preview.sampled_step}」要看整個來源檔的每一列：用樣本算出來的筆數、加總、彙總結果不是全部資料的。
+                        <TooltipContent className="max-w-80 flex-col items-start gap-1">
+                          {state.preview.sampled_steps.length === 1 ? (
+                            <div>
+                              {sampledStepText(state.preview.sampled_steps[0])}
+                              要看整個來源檔的每一列：用樣本算出來的筆數、加總、彙總結果不是全部資料的。
+                            </div>
+                          ) : (
+                            <>
+                              <div>下面這些步驟要看整個來源檔的每一列，用樣本算出來的筆數、加總、彙總結果不是全部資料的：</div>
+                              <ul className="list-disc pl-4">
+                                {state.preview.sampled_steps.map((s) => (
+                                  <li key={`${s.stage}:${s.number}`}>{sampledStepText(s)}</li>
+                                ))}
+                              </ul>
+                            </>
+                          )}
+                          <div className="opacity-80">按「處理並匯出資料」看完整結果。</div>
                         </TooltipContent>
                       </Tooltip>
                     ) : null}

@@ -1282,7 +1282,7 @@ class Session:
                 if shown is not None
                 else None,
                 "full": None,
-                "sampled_step": self._sampled_step(requested) if sampled else None,
+                "sampled_steps": self._sampled_steps(requested) if sampled else [],
             }
             if full is not None:
                 schema = pl.read_parquet_schema(full["path"])
@@ -1297,7 +1297,7 @@ class Session:
                     warnings=[w.__dict__ for w in full["warnings"][:200]],
                     blocked=None,
                     mode="full",
-                    sampled_step=None,
+                    sampled_steps=[],
                     full={
                         k: full[k] for k in ("path", "rows", "input_rows", "time", "warning_count")
                     },
@@ -1366,13 +1366,24 @@ class Session:
         full = self._showing_full()
         return (pl.scan_parquet(full["path"]), full) if full is not None else None
 
-    def _sampled_step(self, upto: int) -> str | None:
-        """第 upto 步之前（含）第一個要看整個來源檔的步驟（樣本算的數字不準）。"""
-        for raw in self.steps[: upto + 1]:
-            cls = _safe_get(raw.get("type"))
-            if cls is not None and cls.whole_source and raw.get("enabled", True) is not False:
-                return cls.label
-        return None
+    def _sampled_steps(self, upto: int) -> list[dict[str, Any]]:
+        """用樣本算、數字會不準的步驟（要看整個來源檔的：移除重複、群組彙總、樞紐），依階段與步驟順序。
+
+        目前階段算到第 upto 步（含）；往上讀到、結合到的階段結果還是樣本時，它的步驟也算
+        （資料不大或已經「完整跑一次」的階段不算）。``stage`` 是空字串代表目前的階段。
+        """
+        out = []
+        for si in self._upstream(self.current):
+            current = si == self.current
+            if not current and not self._stage_result(si)[2]:
+                continue
+            steps = self.stages[si]["steps"]
+            for i, raw in enumerate(steps[: upto + 1] if current else steps):
+                cls = _safe_get(raw.get("type"))
+                if cls is not None and cls.whole_source and raw.get("enabled", True) is not False:
+                    name = "" if current else self.stages[si]["name"]
+                    out.append({"stage": name, "number": i + 1, "label": cls.label})
+        return out
 
     def rows(self, index: int, offset: int, limit: int) -> dict[str, Any]:
         with self._lock:

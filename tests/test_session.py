@@ -584,9 +584,9 @@ def test_sample_mode_and_full_mode_after_export(data, monkeypatch):
     s.update_step(n + 1, {"by": ["門市"], "aggregations": [total]})
     s.select(len(s.steps))  # 輸出資料
     preview = s.state()["preview"]
-    assert (preview["mode"], preview["sampled_step"], preview["full"]) == (
+    assert (preview["mode"], preview["sampled_steps"], preview["full"]) == (
         "sample",
-        "群組彙總",
+        [{"stage": "", "number": n + 2, "label": "群組彙總"}],
         None,
     )
     sampled = s.frame_at(n + 1)["合計"].sum()
@@ -597,7 +597,7 @@ def test_sample_mode_and_full_mode_after_export(data, monkeypatch):
     preview = s.state()["preview"]
     assert preview["mode"] == "full" and preview["step"] == len(s.steps)
     assert preview["full"]["rows"] == exported.height and preview["full"]["input_rows"] == 94
-    assert preview["sampled_step"] is None and preview["blocked"] is None
+    assert preview["sampled_steps"] == [] and preview["blocked"] is None
     assert [c["name"] for c in preview["columns"]] == exported.columns
     page = s.rows(len(s.steps), 0, 100)
     assert page["total"] == exported.height
@@ -812,6 +812,33 @@ def test_recipe_dict_and_old_format(data, tmp_path):
     )
     with pytest.raises(RecipeError, match="舊的 Recipe 寫法"):
         Session().load_recipe(old)
+
+
+def test_sampled_steps_lists_every_whole_source_step(data, monkeypatch):
+    """抽樣模式下列出每一個用樣本算的步驟（移除重複、群組彙總、樞紐），包括往上讀到的階段的；
+    停用的、還沒算到的不算，已經「完整跑一次」的階段也不算。"""
+    from tablade import session as session_module
+
+    monkeypatch.setattr(session_module, "SAMPLE_THRESHOLD", 5)
+    monkeypatch.setattr(session_module, "SAMPLE_HEAD", 2)
+    monkeypatch.setattr(session_module, "SAMPLE_TAIL", 1)
+    s = combined(data)
+    s.select_stage(1)  # 文字明細
+    s.add_step("dedupe", index=len(s.steps))
+    upstream = {"stage": "文字明細", "number": len(s.steps), "label": "移除重複"}
+    s.select_stage(3)  # 預設階段：讀 @文字明細、@Excel明細
+    n = len(s.steps)
+    s.add_step("dedupe", index=n)
+    s.add_step("dedupe", index=n + 1)
+    s.toggle_step(n + 1)  # 停用
+    s.select(len(s.steps))
+    own = {"stage": "", "number": n + 1, "label": "移除重複"}
+    assert s.state()["preview"]["sampled_steps"] == [upstream, own]
+    s.select(n - 1)  # 還沒算到這個階段自己的移除重複
+    assert s.state()["preview"]["sampled_steps"] == [upstream]
+    s.full_run(1)  # 文字明細用全部資料算過
+    s.select(len(s.steps))
+    assert s.state()["preview"]["sampled_steps"] == [own]
 
 
 def test_full_run_only_runs_the_stages_it_needs(data, monkeypatch):

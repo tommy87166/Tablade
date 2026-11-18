@@ -60,7 +60,7 @@ const current = () => {
       mode: null,
       full: null,
       input_rows: null,
-      sampled_step: null,
+      sampled_steps: [],
     }
     state.stages = state.stages.map((s) => ({ ...s, status: 'waiting', status_text: '還沒載入資料', rows: null, columns: null }))
     state.steps = state.steps.map((s) => ({ ...s, status: 'waiting', rows: null, files: null }))
