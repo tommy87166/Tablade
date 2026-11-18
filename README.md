@@ -225,6 +225,7 @@ The skill's version is the recipe format version, so a skill always writes recip
 | 2 × 1.5 GB UTF-8 files — example recipe, streaming run | 29 s | 2.4 GB |
 | 200 × 10 MB files — same | 23 s | 1.3 GB |
 | 1,000 × 100 KB files — same | 15 s | 0.7 GB |
+| 2 × 2 GB cp950 files — example recipe plus “merge source files”, streaming run | 40 s (was 119 s) | 1.3 GB (was 2.9 GB) |
 | before the streaming rewrite: 1 GB cp950 | 96 s | 10.2 GB |
 
 Windows (CI): onefile 68.7 MB zipped. The onefile build is confirmed to open on a locked-down company computer (M0 done); start-up time not measured yet.

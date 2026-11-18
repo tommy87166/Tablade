@@ -335,6 +335,65 @@ def test_stream_matches_eager_with_pivot_and_unpivot_after_merge(workdir):
     assert {w.message for w in pivot.warnings} == {"這一組有沒轉成欄的「通路」：電話"}
 
 
+def test_stream_warnings_come_from_staged_segments(workdir, monkeypatch):
+    """需要先算警告的地方（合併來源檔、群組彙總之前）先寫成一段暫存檔，警告從暫存檔算：
+    不會每項警告條件都從原始檔重跑整條流程；結果、警告都和整份讀進記憶體一樣。"""
+    plans: list[str] = []
+    original = engine_run.collect_warnings
+
+    def spy(items, frame, limit, progress=None):
+        if isinstance(frame, pl.LazyFrame):  # 串流執行時（整份讀進記憶體時是 DataFrame）
+            plans.append(frame.explain())
+        return original(items, frame, limit, progress)
+
+    monkeypatch.setattr(engine_run, "collect_warnings", spy)
+    steps = [
+        AMOUNT,
+        BAD_NUMBER,
+        {"id": "m", "type": "merge_files"},
+        {"id": "bad2", "type": "parse_number", "columns": ["品名"]},  # 合併之後的警告
+        {
+            "id": "g",
+            "type": "group_by",
+            "by": ["門市"],
+            "aggregations": [{"column": "金額", "op": "sum", "name": "合計"}],
+        },
+    ]
+    b, _, streamed = run_both(workdir, steps, "segments")
+    assert b.height == 3
+    assert next(s for s in streamed.steps if s.id == "bad").warning_count == 70
+    assert next(s for s in streamed.steps if s.id == "bad2").warning_count == 70
+    # 每次算警告都是讀暫存的 Parquet：兩段（合併、群組彙總之前）加上最後的結果
+    assert len(plans) == 3 and all(p.startswith("Parquet SCAN") for p in plans)
+    assert [("segment-1" in p, "segment-2" in p) for p in plans] == [
+        (True, False),
+        (False, True),
+        (False, False),
+    ]
+    # 進度：分成 3 段寫，每段各自從 0 到全部
+    seen: list[dict] = []
+    path = workdir / "segments.recipe.json"
+    execute(
+        parse_recipe(load_json(path)),
+        workdir,
+        output=workdir / "p.parquet",
+        mode="stream",
+        progress=seen.append,
+    )
+    labels = list(dict.fromkeys(p["stage"] for p in seen if p["stage"].startswith("執行")))
+    assert labels == [f"執行（串流，第 {n} / 3 段）" for n in (1, 2, 3)]
+
+
+def test_stream_segment_with_no_rows(workdir):
+    """寫成一段暫存檔時沒有任何列：後面照樣接得下去。"""
+    steps = [
+        {"id": "z", "type": "remove_top_rows", "n": 1_000_000},
+        {"id": "m", "type": "merge_files"},
+    ]
+    b, _, streamed = run_both(workdir, steps, "empty_segment")
+    assert b.height == 0 and streamed.rows == 0 and "金額" in b.columns
+
+
 def test_stream_matches_eager_with_dedupe_then_whole_file_summary(workdir):
     """移除重複每個來源檔各自找；合併之後不指定分組欄就是整份彙總成一列。"""
     steps = [
@@ -445,7 +504,15 @@ def test_stream_reports_progress_in_rows_and_cleans_up(workdir, monkeypatch):
     assert [p["done"] for p in run] == sorted(p["done"] for p in run)
     assert run[0]["done"] == 0 and run[-1]["done"] == report.input_rows
     units = {p["stage"].split(" ")[0]: p["unit"] for p in seen if p["total"]}
-    assert units == {"檢查編碼": "bytes", "轉碼": "bytes", "準備": "files", "執行（串流）": "rows"}
+    assert units == {
+        "檢查編碼": "bytes",
+        "轉碼": "bytes",
+        "準備": "files",
+        "執行（串流）": "rows",
+        "檢查警告": "checks",  # 範例有 3 項警告條件：第幾項
+    }
+    checks = [p["done"] for p in seen if p["stage"] == "檢查警告"]
+    assert checks == [0, 1, 2, 3] and all(p["total"] == 3 for p in seen if p["stage"] == "檢查警告")
     assert (
         pl.read_parquet(workdir / "s.parquet").drop("__source_file", "__line_no").to_dicts()
         == EXPECTED

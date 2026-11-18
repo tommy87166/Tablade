@@ -201,6 +201,7 @@ Tablade 會從步驟 registry 產生 [Agent Skills](https://learn.microsoft.com/
 | 2 個 1.5 GB UTF-8 檔：範例 Recipe 串流執行 | 29 秒 | 2.4 GB |
 | 200 個 10 MB 的檔：同上 | 23 秒 | 1.3 GB |
 | 1000 個 100 KB 的檔：同上 | 15 秒 | 0.7 GB |
+| 2 個 2 GB cp950 檔：範例 Recipe 最後加「合併來源檔」，串流執行 | 40 秒（改進前 119 秒） | 1.3 GB（改進前 2.9 GB） |
 | 改寫前：1 GB cp950 | 96 秒 | 10.2 GB |
 
 Windows（CI）：onefile 壓縮後 68.7 MB。已在權限受管控的公司電腦上確認 onefile 版可以開啟（M0 完成）；啟動時間還沒量。

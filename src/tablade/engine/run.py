@@ -6,6 +6,8 @@
 - ``stream``：資料很大時的完整執行。整條 lazy 查詢用串流引擎寫成暫存 Parquet（記憶體用量固定），
   再從暫存檔取出警告、寫出最後的結果。每一步的列數只在 eager / sample 模式提供。
   暫存結果分成很多個檔寫，另一條執行緒看寫完了幾個來回報進度（``engine/progress.py``）。
+  需要先算警告的地方（彙總、合併來源檔之前，結合檢查輸入之前）把前面的結果寫成一段暫存檔，
+  警告從暫存檔取、後面的步驟從暫存檔接著跑：每一列只從原始檔算一次（不會每項警告條件都重跑）。
 
 三種模式都「各檔分開處理」：資料是一串 part（每個來源檔一個），分檔的步驟一次只套在一個 part 上，
 到「合併來源檔」（``combines``）或寫出前才接起來（DESIGN.md §8）。
@@ -63,6 +65,10 @@ SAMPLE_THRESHOLD = 200_000
 SAMPLE_HEAD = 100_000
 SAMPLE_TAIL = 1_000
 PART = f"{TEMP_PREFIX}part"
+STAGED_ROW_GROUP = 8_192
+"""暫存 Parquet 每個 row group 最多幾列。串流讀回來時每條執行緒一次解開一個 row group：
+預設的 row group 很大（一個檔一個），範例資料 530 萬列讀回來接成一份要 3.2 GB；
+改成 8,192 列約 0.8 GB，速度差不多（實測記錄在 improve.md 第 1 項）。"""
 """串流執行時，中間階段的暫存結果裡每一列屬於第幾個 part（下一個階段讀回來時依它分開）。"""
 
 Mode = Literal["auto", "eager", "sample", "stream"]
@@ -258,42 +264,80 @@ _WHERE = (SHEET, STAGE, ORIG_SOURCE_FILE, ORIG_LINE_NO, ORIG_SHEET, ORIG_STAGE)
 """警告除了來源檔與行號，另外帶的位置（有這些欄位時）。"""
 
 
-def _warnings(
-    step: Step, frame: pl.DataFrame | pl.LazyFrame, limit: int, on_input: bool = False
-) -> tuple[int, list[RowWarning]]:
-    """依步驟的警告條件找出要警告的列；``on_input`` 是對這一步的輸入檢查的那些條件。"""
-    total, found = 0, []
-    lazy = frame.lazy()
-    names = lazy.collect_schema().names()
+def _checks(step: Step, on_input: bool = False) -> list[Any]:
+    """步驟的警告條件；``on_input`` 是對這一步的輸入檢查的那些（結合沒對到的列）。"""
     try:
-        checks = [c for c in step.warning_checks() if c.on_input == on_input]
+        return [c for c in step.warning_checks() if c.on_input == on_input]
     except (StepError, EffectError) as err:
         raise RunError(step, str(err)) from None
-    for check in checks:
+
+
+Found = dict[str, tuple[int, list[RowWarning]]]
+"""每一步的（警告總數、前幾則警告）；對輸入檢查的鍵是「步驟 id:input」。"""
+
+
+def collect_warnings(
+    items: list[tuple[str, Step, bool]],
+    frame: pl.DataFrame | pl.LazyFrame,
+    limit: int,
+    progress: Progress = None,
+) -> Found:
+    """依好幾步的警告條件找出要警告的列。``items`` 是（鍵、步驟、是不是對輸入檢查）。
+
+    每項條件一次查詢（列數和前幾筆一起算）；條件不只一項時回報「檢查警告」第幾項。
+    """
+    lazy = frame.lazy()
+    names = lazy.collect_schema().names()
+    jobs = [
+        (key, step, check) for key, step, on_input in items for check in _checks(step, on_input)
+    ]
+    out: Found = {key: (0, []) for key, _, _ in items}
+
+    def report(done: int) -> None:
+        if progress is not None and len(jobs) > 1:
+            progress(
+                {
+                    "stage": "檢查警告",
+                    "file": "",
+                    "done": done,
+                    "total": len(jobs),
+                    "unit": "checks",
+                }
+            )
+
+    for i, (key, step, check) in enumerate(jobs):
+        report(i)
         detail = check.detail if check.detail is not None else pl.lit(None)
         hits = lazy.filter(check.condition.fill_null(False))
-        total += hits.select(pl.len()).collect(engine="streaming").item()
-        rows = (
-            hits.select(
-                pl.col(SOURCE_FILE) if SOURCE_FILE in names else pl.lit(None).alias(SOURCE_FILE),
-                pl.col(LINE_NO) if LINE_NO in names else pl.lit(None).alias(LINE_NO),
-                detail.alias("__detail"),
-                *[pl.col(c) if c in names else pl.lit(None).alias(c) for c in _WHERE],
-            )
-            .head(limit)
-            .collect(engine="streaming")
+        count, rows = pl.collect_all(
+            [
+                hits.select(pl.len()),
+                hits.select(
+                    pl.col(SOURCE_FILE)
+                    if SOURCE_FILE in names
+                    else pl.lit(None).alias(SOURCE_FILE),
+                    pl.col(LINE_NO) if LINE_NO in names else pl.lit(None).alias(LINE_NO),
+                    detail.alias("__detail"),
+                    *[pl.col(c) if c in names else pl.lit(None).alias(c) for c in _WHERE],
+                ).head(limit),
+            ],
+            engine="streaming",
         )
+        total, found = out[key]
         for source_file, line_no, value, *where in rows.iter_rows():
             message = check.message.format(value) if "{}" in check.message else check.message
             found.append(RowWarning(step.id, message, source_file, line_no, *where))
-    return total, found
+        out[key] = (total + count.item(), found)
+    if jobs:
+        report(len(jobs))
+    return out
 
 
-def _has_input_checks(step: Step) -> bool:
-    try:
-        return any(c.on_input for c in step.warning_checks())
-    except (StepError, EffectError) as err:
-        raise RunError(step, str(err)) from None
+def _warnings(
+    step: Step, frame: pl.DataFrame | pl.LazyFrame, limit: int, on_input: bool = False
+) -> tuple[int, list[RowWarning]]:
+    """一步的警告（``on_input`` 是對這一步的輸入檢查的那些條件）。"""
+    return collect_warnings([(step.id, step, on_input)], frame, limit)[step.id]
 
 
 Tables = dict[str, pl.DataFrame] | dict[str, pl.LazyFrame]
@@ -311,7 +355,7 @@ def apply_step(
     ``tables`` 是前面階段的結果（結合的右表）。
     """
     step = step.bind(tables)
-    before = _warnings(step, frame, limit, on_input=True) if _has_input_checks(step) else (0, [])
+    before = _warnings(step, frame, limit, on_input=True)
     try:
         if step.per_file or step.combines:
             lf = concat_parts(apply_parts(step, split_parts(frame)), step)
@@ -500,6 +544,24 @@ def _strip_stage(name: str, stages: list[str]) -> str:
     return name
 
 
+def _cuts(steps: list[Step]) -> list[bool]:
+    """每一步之前要不要先把前面的結果寫成一段暫存檔，從暫存檔算警告。
+
+    彙總類的步驟與合併來源檔之前，要先算好之前步驟的警告（之後列的意義或行號變了）；
+    對輸入檢查的警告（結合沒對到的列）在套用那一步之前算。前面沒有要算的警告就不用切。
+    """
+    cuts, pending = [], False
+    for step in steps:
+        cut = ((step.reshapes or step.combines) and pending) or bool(_checks(step, on_input=True))
+        cuts.append(cut)
+        pending = (pending and not cut) or bool(_checks(step))
+    return cuts
+
+
+Cut = Any
+"""``cut(parts, last)``：把 parts 寫成一段暫存檔，回傳（從暫存檔讀回來的 parts、整段的 LazyFrame）。"""
+
+
 def _stream_steps(
     stage: Stage,
     parts: list[Part],
@@ -507,34 +569,64 @@ def _stream_steps(
     limit: int,
     progress: Progress,
     report: Any,
-) -> tuple[list[Part], dict[str, tuple[int, list[RowWarning]]], list[Step], Step | None]:
+    cut: Cut,
+) -> tuple[list[Part], Found, list[Step], Step | None]:
     """一個階段的步驟接成串流查詢。回傳（parts、已經先算好的警告、要從結果算警告的步驟、最後一步）。
 
-    彙總類的步驟與合併來源檔之前，先算好之前步驟的警告（之後列的意義或行號變了）；
-    對輸入檢查的警告（結合沒對到的列）在套用那一步之前算。每項檢查另外串流掃一次資料。
+    需要先算警告的地方（``_cuts``）先把前面的結果寫成一段暫存檔（``cut``），警告從暫存檔算，
+    後面的步驟從暫存檔接著跑：原始檔只讀一次，不會每項警告條件都從頭重跑整條流程。
     """
-    found: dict[str, tuple[int, list[RowWarning]]] = {}
+    found: Found = {}
     pending: list[Step] = []
     last: Step | None = None
-    for step in stage.enabled_steps():
-        bound = step.bind(tables)
-        if (step.reshapes or step.combines) and pending:
-            report("檢查警告")
-            before = concat_parts(parts, last)
-            for done in pending:
-                found[done.id] = _warnings(done, before, limit)
+    steps = [step.bind(tables) for step in stage.enabled_steps()]
+    for bound, cut_here in zip(steps, _cuts(steps), strict=True):
+        if cut_here:
+            parts, staged = cut(parts, last)
+            items = [(done.id, done, False) for done in pending]
+            items.append((f"{bound.id}:input", bound, True))
+            found.update(collect_warnings(items, staged, limit, progress))
             pending = []
-        if _has_input_checks(bound):
-            report("檢查警告")
-            found[f"{step.id}:input"] = _warnings(
-                bound, concat_parts(parts, last), limit, on_input=True
-            )
-        report(f"準備 {step.id}")
+        report(f"準備 {bound.id}")
         # 每個檔各自一條流水線；暫存欄位（__w_）一路保留到最後，才能取出警告
         parts = apply_parts(bound, parts, progress)
         pending.append(bound)
-        last = step
+        last = bound
     return parts, found, pending, last
+
+
+def _sink(
+    lf: pl.LazyFrame, folder: Path, sources: list[SourceFile], progress: Progress, label: str
+) -> pl.LazyFrame:
+    """串流寫成暫存 Parquet（分成很多個檔寫，另一條執行緒看寫完了幾個來回報進度），回傳讀回來的結果。"""
+    rows = sum(f.rows for f in sources)
+    with Watcher(folder, sources, progress, label) as watcher:
+        try:
+            lf.sink_parquet(
+                pl.PartitionBy(folder, max_rows_per_file=rows_per_file(rows)),
+                row_group_size=STAGED_ROW_GROUP,
+                engine="streaming",
+                mkdir=True,
+            )
+        except pl.exceptions.PolarsError as err:
+            raise RuntimeError(f"執行失敗：{type(err).__name__}: {err}") from None
+    watcher.poll(finished=True)
+    if progress is not None:
+        progress({"stage": label, "file": "", "done": rows, "total": rows, "unit": "rows"})
+    # 檔名是補零的流水號（00000000.parquet…），排序就是寫出的順序；沒有列時也有一個空檔
+    return pl.scan_parquet(sorted(folder.glob("*.parquet")))
+
+
+def _with_part(parts: list[Part]) -> list[Part]:
+    """記下每一列屬於第幾個 part，讀回來時依它分開（每個來源各自處理）。"""
+    return [
+        (n, lf.with_columns(pl.lit(i, dtype=pl.Int32).alias(PART)))
+        for i, (n, lf) in enumerate(parts)
+    ]
+
+
+def _split_part(result: pl.LazyFrame, parts: list[Part]) -> list[Part]:
+    return [(n, result.filter(pl.col(PART) == i).drop(PART)) for i, (n, _) in enumerate(parts)]
 
 
 def _execute_stream(
@@ -561,7 +653,15 @@ def _execute_stream(
         for k, stage in enumerate(recipe.stages):
             final = k == len(recipe.stages) - 1
             tracker.start(k)
-            label = f"階段「{stage.name}」：執行（串流）" if multi else "執行（串流）"
+            where = f"階段「{stage.name}」：" if multi else ""
+            bound = [step.bind(tables) for step in stage.enabled_steps()]
+            segments = 1 + sum(_cuts(bound))
+
+            def label(n: int, where: str = where, segments: int = segments) -> str:
+                if segments == 1:
+                    return f"{where}執行（串流）"
+                return f"{where}執行（串流，第 {n} / {segments} 段）"
+
             if stage.name in scanned:
                 parts, sources = scanned[stage.name]
                 # 每一列帶著在這個階段的輸入裡的位置，執行中才能回報進度（寫出前拿掉）
@@ -574,44 +674,34 @@ def _execute_stream(
                     for (name, _), n in zip(parts, counts, strict=True)
                 ]
                 parts = with_row_positions(parts, counts)
+            written = 0
+
+            def cut(
+                parts: list[Part],
+                last: Step | None,
+                k: int = k,
+                sources: list[SourceFile] = sources,
+                label: Any = label,
+            ) -> tuple[list[Part], pl.LazyFrame]:
+                nonlocal written
+                written += 1
+                folder = staged / f"stage-{k}-segment-{written}"
+                result = _sink(
+                    concat_parts(_with_part(parts), last), folder, sources, progress, label(written)
+                )
+                return _split_part(result, parts), result
+
             parts, early, pending, last = _stream_steps(
-                stage, parts, tables, limit, progress, report
+                stage, parts, tables, limit, progress, report, cut
             )
             found.update(early)
             if not final:
-                # 記下每一列屬於第幾個 part，讀回來時依它分開（每個來源各自處理）
-                parts = [
-                    (n, lf.with_columns(pl.lit(i, dtype=pl.Int32).alias(PART)))
-                    for i, (n, lf) in enumerate(parts)
-                ]
+                parts = _with_part(parts)
             lf = concat_parts(parts, last)
-            folder = staged / f"stage-{k}"
-            stage_rows = sum(f.rows for f in sources)
-            # 分成很多個檔寫（大約每 1% 一個），另一條執行緒看寫完了幾個來回報進度
-            with Watcher(folder, sources, progress, label) as watcher:
-                try:
-                    lf.sink_parquet(
-                        pl.PartitionBy(folder, max_rows_per_file=rows_per_file(stage_rows)),
-                        engine="streaming",
-                        mkdir=True,
-                    )
-                except pl.exceptions.PolarsError as err:
-                    raise RuntimeError(f"執行失敗：{type(err).__name__}: {err}") from None
-            watcher.poll(finished=True)
-            if progress is not None:
-                progress(
-                    {
-                        "stage": label,
-                        "file": "",
-                        "done": stage_rows,
-                        "total": stage_rows,
-                        "unit": "rows",
-                    }
-                )
-            # 檔名是補零的流水號（00000000.parquet…），排序就是寫出的順序
-            result = pl.scan_parquet(sorted(folder.glob("*.parquet")))
-            for step in pending:
-                found[step.id] = _warnings(step, result, limit)
+            result = _sink(lf, staged / f"stage-{k}", sources, progress, label(written + 1))
+            found.update(
+                collect_warnings([(s.id, s, False) for s in pending], result, limit, progress)
+            )
             names = result.collect_schema().names()
             clean = [c for c in names if not c.startswith(TEMP_PREFIX)]
             if final:

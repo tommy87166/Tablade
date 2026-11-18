@@ -72,6 +72,7 @@ function formatAmount(progress: Progress) {
   const { done, total, unit } = progress
   if (unit === 'rows') return `${done.toLocaleString()} / ${total.toLocaleString()} 行`
   if (unit === 'files') return `第 ${done + 1} / ${total} 個檔`
+  if (unit === 'checks') return `檢查警告 ${done} / ${total} 項`
   return `${formatBytes(done)} / ${formatBytes(total)}`
 }
 

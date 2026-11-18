@@ -9,7 +9,7 @@
 | 批 | improve.md | 內容 | 依賴 |
 |---|---|---|---|
 | 1 | 第 1 項 | 串流匯出的「檢查警告」只跑一次、有進度 | — |
-| 2 | 第 3、4 項 | 每個階段都能寫檔、檔名寫在輸出設定、處理紀錄放 `log/` | — |
+| 2 | 第 3、4 項 | 每個階段都能寫檔、檔名寫在輸出設定、輸出放 `output/`、處理紀錄放 `log/` | — |
 | 3 | 第 2、6、7 項 | 工具列兩顆按鈕、不用先載入就能匯出、進度只在彈出視窗 | 2（匯出不再開存檔對話框） |
 | 4 | 第 8 項 | 「這一步還算不出來」的顯示 | — |
 | 5 | 第 9 項 | 抽樣模式／完整模式，匯出後顯示完整結果 | 2、3 |
@@ -20,6 +20,8 @@
 ---
 
 ## 第 1 批：檢查警告只跑一次（`engine/run.py`）
+
+狀態：已完成（實測見 improve.md 第 1 項）。另外把暫存 Parquet 的 row group 改成 8,192 列（`STAGED_ROW_GROUP`）：只照計畫做的話 2 GB 資料記憶體反而從 2.2 GB 升到 3.2 GB，原因是串流讀回暫存檔時每條執行緒一次解開一整個 row group。
 
 **現況**：`_stream_steps` 在 `reshapes`／`combines` 的步驟前（以及有 `on_input` 警告的步驟前），用 `_warnings()` 對還沒跑過的整條流程查詢，每項警告條件跑 2 次（`pl.len()`、`head(limit)`），每次都從原始檔重跑。
 
@@ -45,59 +47,59 @@
 
 ---
 
-## 第 2 批：每個階段都能寫檔、檔名在輸出設定、處理紀錄放 `log/`
+## 第 2 批：每個階段都能寫檔、檔名在輸出設定、輸出放 `output/`、處理紀錄放 `log/`
 
 ### Recipe 格式（`recipe/schema.py`、`recipe/validator.py`）
 
-- `Stage` 新增 `output_file: str = ""`（title「輸出檔名」，description「只填檔名，存在 Recipe 檔所在的資料夾；空白代表不寫檔」）。
-  - 中間階段：空白＝不寫檔（跟現在一樣是暫存的）。輸出設定打開「寫出檔案」時，檔名欄自動帶入「Recipe 名稱_階段名稱.parquet」（例如 `明細_品項對照.parquet`，同一個資料夾放好幾份 Recipe 也不會互相覆蓋），可以改；把檔名清空就等於關掉。Recipe 裡只存 `output_file` 一個欄位，不會有「要寫檔但沒有檔名」的狀態。
-  - 最後一個階段一定寫檔：空白時用 Recipe 檔名（`明細.recipe.json` → `明細.parquet`，跟現在 CLI 的預設一樣），舊的 Recipe 不用改。
+- `Stage` 新增 `output_file: str = ""`（title「輸出檔名」，description「只填檔名，存到 Recipe 所在資料夾底下的 output 資料夾」）。
+  - 中間階段：有填就寫檔，空白就不寫（跟現在一樣是暫存的）。沒有開關，也不自動帶檔名。
+  - 最後一個階段一定寫檔：空白時用預設檔名＝Recipe 名稱（`明細.recipe.json` → `output/明細.parquet`），舊的 Recipe 不用改。
   - 沒有 `.parquet` 結尾時自動補上（session 存的時候補；validator 只檢查補完的結果）。
 - 頂層 `output`（格式、保留系統欄位、處理紀錄）維持，套用到每個寫出的檔。
 - `validator.link_issues` 加檢查（只用標準函式庫）：
   - 檔名不能有路徑字元（`/ \ : * ? " < > |`）、不能是 `.` 開頭、不能是空白加副檔名。
   - 同一個 Recipe 裡（補完 `.parquet` 後，不分大小寫）不能重複；最後一個階段的預設檔名也算進去。
-  - 不能跟 Recipe 自己或任何一個階段的輸入檔同名（避免覆蓋輸入）。
+  - 寫出的位置（`output/檔名`）不能是任何一個階段的輸入檔（例如另一份 Recipe 讀 `output/` 裡的檔時，避免覆蓋輸入）；Recipe 本身不會在 `output/` 裡，不用另外檢查。
 - `uv run python -c "from tablade.recipe.spec import write_lock; write_lock()"` 重新產生 lock。
 
 ### 引擎（`engine/run.py`、`export/manifest.py`）
 
-- `execute(recipe, base_dir, *, output_dir=None, ...)`：取代現在的 `output`。寫出的位置是 `output_dir / stage.output_file`（`output_dir` 預設是 Recipe 所在的資料夾，CLI 可以改）。
+- `execute(recipe, base_dir, *, out_dir=None, ...)`：取代現在的 `output`。寫出的位置是 `out_dir / "output" / 檔名`，處理紀錄是 `out_dir / "log" / 檔名.manifest.json`（`out_dir` 預設是 Recipe 所在的資料夾，CLI 可以改）；兩個資料夾不存在就建立。
 - 每個要寫檔的階段：
   - eager：階段算完就寫（`write_parquet` 到暫存檔再 `replace`，跟現在一樣不會留下寫一半的檔）。
   - stream：中間階段本來就 sink 到 `staged/stage-{k}/`；要寫檔時再從那裡 `select(要保留的欄).sink_parquet(暫存檔)` → `replace`。最後一個階段照現在。
   - 已經存在就直接覆蓋。檔案被別的程式鎖住（Windows）時報「「結果.parquet」寫不進去：可能被別的程式開著」。
 - `RunReport` 新增 `outputs: list[OutputReport]`（階段、路徑、列數、欄位、處理紀錄位置）；`rows`、`columns`、`output` 維持是最後一個階段的（相容現在的呼叫端）。
 - 處理紀錄：
-  - `manifest_path(output)` → `output.parent / "log" / f"{output.stem}.manifest.json"`；`log/` 不存在就建立。
+  - `manifest_path(out_dir, output)` → `out_dir / "log" / f"{output.stem}.manifest.json"`（`output/` 與 `log/` 是 Recipe 資料夾底下並排的兩個資料夾）。
   - 每個輸出檔一份，只記跟它有關的：這個階段和它往上引用到的階段（遞迴）的輸入檔、步驟、警告，以及這個輸出檔的 SHA-256。另外記 `stage`（寫出這個檔的階段）。
   - `MANIFEST_VERSION` 維持 `"1.0"`（還沒發版），內容多 `stage` 欄位。
 
 ### 畫面與 API（`session.py`、`api.py`、`SourcePanel.tsx`）
 
 - `session.set_stage_output(index, file)`：改檔名（補 `.parquet`、驗證錯誤一樣在 state 的 issues 裡）。
-- `session.export()` 不再收 `target`：寫到 Recipe 所在的資料夾；回傳每個輸出檔。`export_suggestion()` 拿掉。
+- `session.export()` 不再收 `target`：寫到 Recipe 所在資料夾底下的 `output/`；回傳每個輸出檔。`export_suggestion()` 拿掉。
 - `api.export_parquet()` 不開存檔對話框（還沒存過的新 Recipe 不會發生：新增 Recipe 時就選了位置）。
 - `OutputPanel`：
-  - 每個階段都顯示「輸出設定」：中間階段多一個「寫出檔案」開關，打開才有檔名欄；最後一個階段一定有檔名欄（placeholder 是預設檔名）。
-  - 檔名欄旁顯示完整位置（灰字）與「已存在，匯出時會覆蓋」的提示。
-  - 中間階段的說明改成「後面的階段用 @名稱 讀這個階段的結果；打開「寫出檔案」也會另外存成檔案」。
-  - 處理紀錄開關的說明改成「在輸出檔旁邊的 log 資料夾寫一份 .manifest.json…」。
+  - 每個階段都顯示「輸出檔名」欄（只填檔名，後面固定顯示「.parquet」）：中間階段的提示是「填了才另外存成檔案」；最後一個階段的 placeholder 是預設檔名（Recipe 名稱）。
+  - 檔名欄下面顯示寫出的位置（灰字，例如「output/明細.parquet」）與「已存在，匯出時會覆蓋」的提示。
+  - 中間階段的說明改成「後面的階段用 @名稱 讀這個階段的結果；填了輸出檔名也會另外存成檔案」。
+  - 處理紀錄開關的說明改成「在 log 資料夾寫一份 .manifest.json…」。
 - 階段面板：有寫檔的階段在名稱旁加一個小的檔案圖示。
 
 ### CLI、skill、範例
 
-- `tablade run recipe.json [--out-dir 資料夾]`：`-o/--output` 拿掉（輸出檔名寫在 Recipe 裡）；印出每個輸出檔與處理紀錄。
+- `tablade run recipe.json [--out-dir 資料夾]`：`-o/--output` 拿掉（輸出檔名寫在 Recipe 裡）；`output/`、`log/` 建在 `--out-dir` 底下（預設是 Recipe 所在的資料夾）；印出每個輸出檔與處理紀錄。
 - `skill.py`：說明 `output_file`、處理紀錄在 `log/`。
-- `examples/`：`sales_combined` 的「品項對照」打開寫檔當範例；其他維持預設檔名。
+- `examples/`：`sales_combined` 的「品項對照」填上輸出檔名當範例；其他維持預設檔名。`.gitignore` 已經有 `output/`，再加 `log/`（跑範例時會產生在 `examples/` 底下）。
 - `selftest.py`：處理紀錄改到 `log/` 找。
 
 **驗證**：
 
-- `test_recipe.py`：檔名的各種錯誤（路徑字元、重複、跟輸入同名）、最後一個階段空白用預設檔名、補 `.parquet`。
+- `test_recipe.py`：檔名的各種錯誤（路徑字元、重複、寫出位置是輸入檔）、最後一個階段空白用預設檔名、中間階段空白不寫檔、補 `.parquet`。
 - `test_large.py`：中間階段寫檔，stream＝eager（檔案內容一樣），後面的階段照樣讀得到；覆蓋已存在的檔。
-- `test_manifest.py`：位置在 `log/`；每份只記自己上游的輸入與步驟。
-- `test_session.py`：`export()` 寫到 Recipe 旁邊；改檔名的驗證錯誤。
+- `test_manifest.py`：輸出在 `output/`、處理紀錄在 `log/`；每份只記自己上游的輸入與步驟。
+- `test_session.py`：`export()` 寫到 Recipe 資料夾的 `output/`；改檔名的驗證錯誤。
 - `test_app.py`：`API_METHODS` 與 `bridge.ts` 一致。
 - 畫面：dev 預覽看輸出設定（中間階段、最後階段、檔名錯誤）。
 

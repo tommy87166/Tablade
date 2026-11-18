@@ -251,7 +251,7 @@ export interface Progress {
   done: number
   total: number
   /** done / total 的單位：檔案大小、行數或檔案數；total 是 0 時不知道總量 */
-  unit?: 'bytes' | 'rows' | 'files'
+  unit?: 'bytes' | 'rows' | 'files' | 'checks'
 }
 
 /** 處理中每個階段的狀態（Python 推送到 window.state.stages；engine/run.py 的 StageTracker） */
