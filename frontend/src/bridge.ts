@@ -378,7 +378,7 @@ export interface TabladeApi {
   smoke_example(): Promise<WithState<{ issues: Issue[] }>>
   state(): Promise<WithState>
   /** 切換畫面的語言（不記住，下次開啟又跟作業系統的語言） */
-  set_language(lang: Lang): Promise<WithState>
+  set_language(lang: Lang): Promise<WithState<{ catalog: CatalogItem[] }>>
   rows(step: number, offset: number, limit: number): Promise<Result<RowsPage>>
   column_info(step: number): Promise<Result<ColumnsInfo>>
   find_row(

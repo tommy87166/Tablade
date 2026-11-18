@@ -7,6 +7,7 @@ from typing import Literal
 import polars as pl
 from pydantic import Field
 
+from tablade.i18n import en, t
 from tablade.ingest.sources import Part, concat
 
 from .base import (
@@ -34,15 +35,31 @@ class MergeFiles(Step):
         default_factory=list,
         title="來源檔順序",
         description="沒列到的來源檔依原本的順序接在後面",
-        json_schema_extra={"ui": "source_files"},
+        json_schema_extra={
+            "ui": "source_files",
+            **en(
+                "Source file order",
+                description="Source files not listed follow in their original order",
+            ),
+        },
     )
-    name: NonEmpty = Field(default="合併", title="合併後的來源檔名稱")
+    name: NonEmpty = Field(
+        default="合併",  # i18n-ignore：預設的來源檔名稱會寫進 Recipe（也是 __source_file 的值）
+        title="合併後的來源檔名稱",
+        json_schema_extra=en("Name of the combined source file"),
+    )
 
     label = "合併來源檔"
+    label_en = "Combine source files"
+    doc_en = (
+        "Appends all source files into one in the given order and renumbers lines from 1 "
+        "(the original source file and line number are kept in system columns)."
+    )
     category = "合併"
     per_file = True
     combines = True
     scope_note = "之後的步驟不再分來源檔"
+    scope_note_en = "Later steps no longer split by source file"
     ai_notes = (
         "多個來源檔要當成一份連續的資料處理時使用（例如分成好幾個檔匯出的同一份報表）。"
         "之後的 __source_file 都是 name、__line_no 從 1 重新編號，原本的來源檔、行號（工作表、階段）"
@@ -101,5 +118,11 @@ class MergeFiles(Step):
         return self.combine([("", lf)])[0][1]
 
     def describe(self) -> str:
-        how = f"依「{'、'.join(self.order)}」的順序" if self.order else "依原本的順序"
-        return f"{how}合併成「{self.name}」"
+        if self.order:
+            how = t(
+                f"依「{'、'.join(self.order)}」的順序",
+                f'in the order "{", ".join(self.order)}"',
+            )
+        else:
+            how = t("依原本的順序", "in the original order")
+        return t(f"{how}合併成「{self.name}」", f'Combine into "{self.name}" {how}')

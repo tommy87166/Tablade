@@ -7,6 +7,8 @@ from typing import Literal
 import polars as pl
 from pydantic import Field
 
+from tablade.i18n import en, plural, t
+
 from .base import (
     ROW_INDEX,
     Example,
@@ -26,9 +28,22 @@ class PromoteHeaders(Step):
     """用目前的第一列當欄名，並移除那一列。欄名在新增步驟時就決定好；之後資料的標題不同時會警告，但仍用原本的欄名。"""
 
     type: Literal["promote_headers"] = "promote_headers"
-    names: NewColumns = Field(title="欄名", description="建立步驟時從第一列讀出，之後固定")
+    names: NewColumns = Field(
+        title="欄名",
+        description="建立步驟時從第一列讀出，之後固定",
+        json_schema_extra=en(
+            "Column names",
+            description="Read from the first row when the step is created, then fixed",
+        ),
+    )
 
     label = "把第一列作為欄位標題"
+    label_en = "Promote headers"
+    doc_en = (
+        "Use the current first row as column names and remove that row. The names are set when the "
+        "step is added; if a later file's header row is different, you get a warning but the "
+        "original names are kept."
+    )
     per_file = True
     category = "欄"
     effect = {"kind": "rename_data", "names": "$names"}
@@ -59,9 +74,9 @@ class PromoteHeaders(Step):
         names: list[str] = []
         for i, value in enumerate(first_row, start=1):
             base = str(value).strip() if value is not None else ""
-            base = base or f"欄{i}"
+            base = base or f"欄{i}"  # i18n-ignore：自動產生的欄名是資料（寫進 Recipe）
             if base.startswith("__"):
-                base = base.lstrip("_") or f"欄{i}"
+                base = base.lstrip("_") or f"欄{i}"  # i18n-ignore：自動產生的欄名是資料
             name, k = base, 2
             while name in names:
                 name, k = f"{base}_{k}", k + 1
@@ -71,7 +86,13 @@ class PromoteHeaders(Step):
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
         columns = data_columns(lf)
         if len(columns) != len(self.names):
-            raise StepError(f"目前有 {len(columns)} 個資料欄，但 names 有 {len(self.names)} 個")
+            raise StepError(
+                t(
+                    f"目前有 {len(columns)} 個資料欄，但 names 有 {len(self.names)} 個",
+                    f"The data has {plural(len(columns), 'column', 'columns')}, "
+                    f"but {plural(len(self.names), 'name is', 'names are')} given",
+                )
+            )
         order = self.output_order(lf)
         flag = self.temp("mismatch")
         # 這個檔的第一列（只讀開頭）和 recipe 記錄的欄名不同時，在下一列標記警告
@@ -94,9 +115,16 @@ class PromoteHeaders(Step):
         return [
             WarningCheck(
                 condition=pl.col(self.temp("mismatch")),
-                message="這個檔案的標題列和 recipe 記錄的欄名不同，仍照 recipe 命名",
+                message=t(
+                    "這個檔案的標題列和 recipe 記錄的欄名不同，仍照 recipe 命名",
+                    "This file's header row differs from the column names in the Recipe; "
+                    "the Recipe's names are used",
+                ),
             )
         ]
 
     def describe(self) -> str:
-        return f"用第一列當欄名（{quote_list(self.names)}）"
+        return t(
+            f"用第一列當欄名（{quote_list(self.names)}）",
+            f"Use the first row as column names ({quote_list(self.names)})",
+        )

@@ -26,6 +26,73 @@ def test_frontend_has_no_untranslated_chinese():
     assert found == []
 
 
+def test_python_ui_text_is_translated():
+    """Python 產生、畫面上看得到的中文都包在 t("中文", "English") 的第一個參數裡（PY_MODULES、steps/）。"""
+    found = []
+    for path in check_i18n.python_files():
+        text = path.read_text(encoding="utf-8")
+        only = check_i18n._functions_only(path)
+        found += [
+            f"{path.relative_to(ROOT)}:{no}: {line}"
+            for no, line in check_i18n.python_violations(text, only)
+        ]
+    assert found == []
+
+
+CJK_TEXT = __import__("re").compile(r"[\u3400-\u9fff]")
+CJK_RUN = __import__("re").compile(r"[\u3400-\u9fff]+")
+
+
+def _quotes_only(english: str, chinese: str) -> bool:
+    """英文裡的中文字都是照抄中文原文的一部分（例如比對資料用的正規表示式裡的「年」「月」）。"""
+    return all(run in chinese for run in CJK_RUN.findall(english))
+
+
+def _untranslated(schema: object, path: str = "") -> list[str]:
+    """schema 裡有中文標題、說明、選項文字，卻沒有對應英文（json_schema_extra 的 en）的地方。"""
+    out: list[str] = []
+    if isinstance(schema, dict):
+        text = schema.get("en") or {}
+        for key in ("title", "description"):
+            value = schema.get(key)
+            if isinstance(value, str) and CJK_TEXT.search(value):
+                english = text.get(key)
+                if not english or CJK_TEXT.search(english):
+                    out.append(f"{path}.{key}：{value}")
+        for key in ("ui_labels", "ui_option_hints"):  # 選項文字、選項下面的說明
+            labels = schema.get(key)
+            if isinstance(labels, dict) and any(CJK_TEXT.search(str(v)) for v in labels.values()):
+                english = text.get(key) or {}
+                if set(english) != set(labels) or any(
+                    not _quotes_only(str(v), str(labels[k])) for k, v in english.items()
+                ):
+                    out.append(f"{path}.{key}")
+        for key, value in schema.items():
+            if key != "en":
+                out += _untranslated(value, f"{path}.{key}")
+    elif isinstance(schema, list):
+        for i, value in enumerate(schema):
+            out += _untranslated(value, f"{path}[{i}]")
+    return out
+
+
+def test_every_step_has_english_names_and_form_text():
+    """每種步驟都有英文名稱、說明；參數表單的每個欄位標題、說明、選項文字都有英文。"""
+    from tablade.steps import all_steps
+
+    missing = []
+    for cls in all_steps():
+        name = cls.type_name()
+        if not cls.label_en or CJK_TEXT.search(cls.label_en):
+            missing.append(f"{name}.label_en")
+        if not cls.doc_en or CJK_TEXT.search(cls.doc_en):
+            missing.append(f"{name}.doc_en")
+        if cls.scope_note and (not cls.scope_note_en or CJK_TEXT.search(cls.scope_note_en)):
+            missing.append(f"{name}.scope_note_en")
+        missing += [f"{name}{where}" for where in _untranslated(cls.model_json_schema())]
+    assert missing == []
+
+
 def test_checker_finds_chinese_outside_tr():
     source = "\n".join(
         [

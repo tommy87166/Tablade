@@ -8,6 +8,8 @@ from typing import Literal
 import polars as pl
 from pydantic import Field
 
+from tablade.i18n import en, plural, t
+
 from .base import (
     ColumnRef,
     Example,
@@ -25,6 +27,10 @@ from .registry import register
 
 OnExtra = Literal["warn", "merge"]
 ON_EXTRA_LABELS = {"warn": "產生警告並捨棄多的段", "merge": "多的段併入最後一欄"}
+ON_EXTRA_LABELS_EN = {
+    "warn": "Warn and drop the extra parts",
+    "merge": "Merge extra parts into the last column",
+}
 
 
 _REGEX_META = set("\\.^$|?*+()[]{}-/#&~")
@@ -61,18 +67,37 @@ class SplitDelimited(Step):
     """把逐行讀取（爛格式檔案）依分隔符號拆成多欄，會處理引號。"""
 
     type: Literal["split_delimited"] = "split_delimited"
-    column: ColumnRef = Field(default="line", title="要拆的欄位")
-    delimiter: str = Field(default=",", title="分隔符號", min_length=1, max_length=1)
+    column: ColumnRef = Field(
+        default="line", title="要拆的欄位", json_schema_extra=en("Column to split")
+    )
+    delimiter: str = Field(
+        default=",", title="分隔符號", min_length=1, max_length=1, json_schema_extra=en("Delimiter")
+    )
     quote: str = Field(
-        default='"', title="引號字元", max_length=1, description="空字串代表不處理引號"
+        default='"',
+        title="引號字元",
+        max_length=1,
+        description="空字串代表不處理引號",
+        json_schema_extra=en("Quote character", description="Leave empty to ignore quotes"),
     )
-    columns: NewColumns = Field(title="拆出來的欄名")
+    columns: NewColumns = Field(title="拆出來的欄名", json_schema_extra=en("New column names"))
     on_extra: OnExtra = Field(
-        default="warn", title="段數比欄名多時", json_schema_extra={"ui_labels": ON_EXTRA_LABELS}
+        default="warn",
+        title="段數比欄名多時",
+        json_schema_extra={
+            "ui_labels": ON_EXTRA_LABELS,
+            **en("When there are more parts than names", ui_labels=ON_EXTRA_LABELS_EN),
+        },
     )
-    keep_source: bool = Field(default=False, title="保留原欄位")
+    keep_source: bool = Field(
+        default=False, title="保留原欄位", json_schema_extra=en("Keep original column")
+    )
 
     label = "依分隔符號拆成多欄"
+    label_en = "Split into columns by delimiter"
+    doc_en = (
+        "Split lines read line by line (messy files) into columns by a delimiter; handles quotes."
+    )
     category = "欄"
     effect = {
         "kind": "split",
@@ -117,7 +142,7 @@ class SplitDelimited(Step):
     ) -> list[str]:
         """建立步驟時掃描資料，依最多的段數產生暫時欄名。"""
         width = max((len(_parse_line(v, delimiter, quote)) for v in lines), default=1)
-        return [f"欄{i}" for i in range(1, max(width, 1) + 1)]
+        return [f"欄{i}" for i in range(1, max(width, 1) + 1)]  # i18n-ignore：暫時的欄名是資料
 
     def fields(self) -> pl.Expr:
         """每一行拆成欄位的 list（Polars 原生正規表示式，可以串流處理幾 GB 的檔案）。
@@ -167,13 +192,21 @@ class SplitDelimited(Step):
         return [
             WarningCheck(
                 condition=pl.col(self.temp("fields")) > len(self.columns),
-                message=f"這一列拆出 {{}} 段，超過 {len(self.columns)} 個欄位，多的段已捨棄",
+                message=t(
+                    f"這一列拆出 {{}} 段，超過 {len(self.columns)} 個欄位，多的段已捨棄",
+                    f"This row split into {{}} parts, more than "
+                    f"{plural(len(self.columns), 'column', 'columns')}; the extra parts were dropped",
+                ),
                 detail=pl.col(self.temp("fields")),
             )
         ]
 
     def describe(self) -> str:
-        return f"把「{self.column}」依「{self.delimiter}」拆成 {len(self.columns)} 欄（{quote_list(self.columns)}）"
+        return t(
+            f"把「{self.column}」依「{self.delimiter}」拆成 {len(self.columns)} 欄（{quote_list(self.columns)}）",
+            f'Split "{self.column}" by "{self.delimiter}" into '
+            f"{plural(len(self.columns), 'column', 'columns')} ({quote_list(self.columns)})",
+        )
 
 
 @register
@@ -181,16 +214,27 @@ class SplitColumn(Step):
     """把某一欄依分隔符號再拆成多欄。"""
 
     type: Literal["split_column"] = "split_column"
-    column: ColumnRef = Field(title="要拆的欄位")
-    delimiter: str = Field(title="分隔符號", min_length=1)
-    names: NewColumns = Field(title="拆出來的欄名")
+    column: ColumnRef = Field(title="要拆的欄位", json_schema_extra=en("Column to split"))
+    delimiter: str = Field(title="分隔符號", min_length=1, json_schema_extra=en("Delimiter"))
+    names: NewColumns = Field(title="拆出來的欄名", json_schema_extra=en("New column names"))
     on_extra: OnExtra = Field(
-        default="warn", title="段數比欄名多時", json_schema_extra={"ui_labels": ON_EXTRA_LABELS}
+        default="warn",
+        title="段數比欄名多時",
+        json_schema_extra={
+            "ui_labels": ON_EXTRA_LABELS,
+            **en("When there are more parts than names", ui_labels=ON_EXTRA_LABELS_EN),
+        },
     )
-    trim: bool = Field(default=True, title="去掉每段前後的空白")
-    keep_source: bool = Field(default=False, title="保留原欄位")
+    trim: bool = Field(
+        default=True, title="去掉每段前後的空白", json_schema_extra=en("Trim spaces from each part")
+    )
+    keep_source: bool = Field(
+        default=False, title="保留原欄位", json_schema_extra=en("Keep original column")
+    )
 
     label = "拆欄"
+    label_en = "Split column"
+    doc_en = "Split a column into more columns by a delimiter."
     category = "欄"
     effect = {
         "kind": "split",
@@ -229,7 +273,9 @@ class SplitColumn(Step):
 
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
         if self.column not in data_columns(lf):
-            raise StepError(f"欄位「{self.column}」不存在")
+            raise StepError(
+                t(f"欄位「{self.column}」不存在", f'Column "{self.column}" does not exist')
+            )
         n = len(self.names)
         source = pl.col(self.column).cast(pl.String)
         parts = (
@@ -253,10 +299,18 @@ class SplitColumn(Step):
         return [
             WarningCheck(
                 condition=pl.col(self.temp("parts")) > len(self.names),
-                message=f"「{self.column}」拆出 {{}} 段，超過 {len(self.names)} 個新欄位，多的段已捨棄",
+                message=t(
+                    f"「{self.column}」拆出 {{}} 段，超過 {len(self.names)} 個新欄位，多的段已捨棄",
+                    f'"{self.column}" split into {{}} parts, more than '
+                    f"{plural(len(self.names), 'new column', 'new columns')}; "
+                    "the extra parts were dropped",
+                ),
                 detail=pl.col(self.temp("parts")),
             )
         ]
 
     def describe(self) -> str:
-        return f"把「{self.column}」依「{self.delimiter}」拆成 {quote_list(self.names)}"
+        return t(
+            f"把「{self.column}」依「{self.delimiter}」拆成 {quote_list(self.names)}",
+            f'Split "{self.column}" by "{self.delimiter}" into {quote_list(self.names)}',
+        )

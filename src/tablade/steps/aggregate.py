@@ -14,6 +14,8 @@ from typing import Literal
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
+from tablade.i18n import en, t
+
 from .base import (
     LINE_NO,
     POSITION,
@@ -48,6 +50,16 @@ OP_LABELS = {
     "first": "第一筆",
     "last": "最後一筆",
 }
+OP_LABELS_EN = {
+    "sum": "Sum",
+    "mean": "Average",
+    "max": "Max",
+    "min": "Min",
+    "count": "Count of values",
+    "n_unique": "Count distinct",
+    "first": "First",
+    "last": "Last",
+}
 PivotOp = Literal["sum", "mean", "max", "min", "count", "first", "last"]
 NUMERIC_OPS = {"sum", "mean"}
 KEY_TYPES = (pl.String, pl.Date, pl.Null)
@@ -56,29 +68,47 @@ KEY_TYPES = (pl.String, pl.Date, pl.Null)
 
 def _dtype_text(dtype: pl.DataType) -> str:
     if dtype.is_numeric():
-        return "數字"
+        return t("數字", "number")
     if dtype.is_temporal():
-        return "日期"
-    return "文字" if dtype == pl.String else str(dtype)
+        return t("日期", "date")
+    return t("文字", "text") if dtype == pl.String else str(dtype)
 
 
 def check_columns(lf: pl.LazyFrame, columns: list[str]) -> pl.Schema:
     missing = [c for c in dict.fromkeys(columns) if c not in data_columns(lf)]
     if missing:
-        raise StepError(f"欄位不存在：{'、'.join(missing)}")
+        raise StepError(
+            t(
+                f"欄位不存在：{'、'.join(missing)}",
+                f"{'Column' if len(missing) == 1 else 'Columns'} not found: {', '.join(missing)}",
+            )
+        )
     return lf.collect_schema()
 
 
 def check_keys(schema: pl.Schema, keys: list[str], what: str) -> None:
-    bad = [f"{k}（{_dtype_text(schema[k])}）" for k in keys if schema[k] not in KEY_TYPES]
+    bad = [
+        t(f"{k}（{_dtype_text(schema[k])}）", f"{k} ({_dtype_text(schema[k])})")
+        for k in keys
+        if schema[k] not in KEY_TYPES
+    ]
     if bad:
-        raise StepError(f"{what}只能是文字或日期欄：{'、'.join(bad)}")
+        raise StepError(
+            t(
+                f"{what}只能是文字或日期欄：{'、'.join(bad)}",
+                f"{what} must be text or date columns: {', '.join(bad)}",
+            )
+        )
 
 
 def check_numeric(schema: pl.Schema, column: str, op: str) -> None:
     if op in NUMERIC_OPS and not schema[column].is_numeric():
         raise StepError(
-            f"「{column}」是{_dtype_text(schema[column])}，{OP_LABELS[op]}要先用「文字轉數字」"
+            t(
+                f"「{column}」是{_dtype_text(schema[column])}，{OP_LABELS[op]}要先用「文字轉數字」",
+                f'"{column}" is a {_dtype_text(schema[column])} column; '
+                f'to use {OP_LABELS_EN[op]}, first convert it with "Text to number"',
+            )
         )
 
 
@@ -127,12 +157,31 @@ class Unpivot(Step):
     """取消樞紐（寬轉長）：把好幾欄攤開成「名稱、值」兩欄，每一列展開成好幾列。"""
 
     type: Literal["unpivot"] = "unpivot"
-    columns: ColumnRefs = Field(title="要攤開的欄位", description="例如 1月、2月、3月")
-    name_column: NonEmpty = Field(default="名稱", title="放原本欄名的新欄")
-    value_column: NonEmpty = Field(default="值", title="放值的新欄")
-    skip_empty: bool = Field(default=False, title="值是空白的不展開")
+    columns: ColumnRefs = Field(
+        title="要攤開的欄位",
+        description="例如 1月、2月、3月",
+        json_schema_extra=en("Columns to unpivot", description="For example Jan, Feb, Mar"),
+    )
+    name_column: NonEmpty = Field(
+        default="名稱",  # i18n-ignore：預設的新欄名會寫進 Recipe
+        title="放原本欄名的新欄",
+        json_schema_extra=en("New column for column names"),
+    )
+    value_column: NonEmpty = Field(
+        default="值",  # i18n-ignore：預設的新欄名會寫進 Recipe
+        title="放值的新欄",
+        json_schema_extra=en("New column for values"),
+    )
+    skip_empty: bool = Field(
+        default=False, title="值是空白的不展開", json_schema_extra=en("Skip blank values")
+    )
 
     label = "取消樞紐"
+    label_en = "Unpivot"
+    doc_en = (
+        'Unpivot (wide to long): turns several columns into two columns, "name" and "value"; '
+        "each row expands into several rows."
+    )
     category = "彙總"
     reshapes = True
     effect = {
@@ -187,8 +236,9 @@ class Unpivot(Step):
         return out.select(order)
 
     def describe(self) -> str:
-        return (
-            f"取消樞紐：{quote_list(self.columns)} → 「{self.name_column}」「{self.value_column}」"
+        return t(
+            f"取消樞紐：{quote_list(self.columns)} → 「{self.name_column}」「{self.value_column}」",
+            f'Unpivot: {quote_list(self.columns)} → "{self.name_column}", "{self.value_column}"',
         )
 
 
@@ -196,11 +246,20 @@ class Unpivot(Step):
 
 
 class Aggregation(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, title="彙總")
+    model_config = ConfigDict(
+        extra="forbid", strict=True, title="彙總", json_schema_extra=en("Aggregation")
+    )
 
-    column: ColumnRef = Field(title="欄位")
-    op: Op = Field(default="sum", title="方式", json_schema_extra={"ui_labels": OP_LABELS})
-    name: NonEmpty = Field(title="新欄名")
+    column: ColumnRef = Field(title="欄位", json_schema_extra=en("Column"))
+    op: Op = Field(
+        default="sum",
+        title="方式",
+        json_schema_extra={
+            "ui_labels": OP_LABELS,
+            **en("Operation", ui_labels=OP_LABELS_EN),
+        },
+    )
+    name: NonEmpty = Field(title="新欄名", json_schema_extra=en("New column name"))
 
 
 @register
@@ -212,14 +271,35 @@ class GroupBy(Step):
         default_factory=list,
         title="分組欄",
         description="只能是文字或日期欄；不選代表整個來源檔彙總成一列",
-        json_schema_extra={"ui": "columns"},
+        json_schema_extra={
+            "ui": "columns",
+            **en(
+                "Group by",
+                description="Text or date columns only; "
+                "leave empty to summarize the whole source file into one row",
+            ),
+        },
     )
-    aggregations: list[Aggregation] = Field(default_factory=list, title="彙總")
+    aggregations: list[Aggregation] = Field(
+        default_factory=list, title="彙總", json_schema_extra=en("Aggregations")
+    )
     count_as: str = Field(
-        default="筆數", title="另外加一欄筆數", description="這一組有幾列；空白代表不加"
+        default="筆數",  # i18n-ignore：預設的新欄名會寫進 Recipe
+        title="另外加一欄筆數",
+        description="這一組有幾列；空白代表不加",
+        json_schema_extra=en(
+            "Add a row count column",
+            description="Number of rows in each group; leave blank to skip",
+        ),
     )
 
     label = "群組彙總"
+    label_en = "Group and summarize"
+    doc_en = (
+        "Group and summarize: groups rows by the group-by columns and computes each group's "
+        "sum, average, row count…; with no group-by columns, the whole source file "
+        "is summarized into one row."
+    )
     per_file = True
     whole_source = True
     category = "彙總"
@@ -248,13 +328,15 @@ class GroupBy(Step):
         column = context.get("column")
         by = [column] if column in frame.columns and frame.schema[column] in KEY_TYPES else []
         numbers = [c for c, t in frame.schema.items() if not c.startswith("__") and t.is_numeric()]
-        aggregations = [{"column": c, "op": "sum", "name": f"{c}合計"} for c in numbers[:1]]
+        aggregations = [  # i18n-ignore：建議的新欄名會寫進 Recipe
+            {"column": c, "op": "sum", "name": f"{c}合計"} for c in numbers[:1]
+        ]
         return {"by": by, "aggregations": aggregations}
 
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
         by = list(dict.fromkeys(self.by))
         schema = check_columns(lf, by + [a.column for a in self.aggregations])
-        check_keys(schema, by, "分組欄")
+        check_keys(schema, by, t("分組欄", "Group by columns"))
         aggs = []
         for a in self.aggregations:
             check_numeric(schema, a.column, a.op)
@@ -264,11 +346,20 @@ class GroupBy(Step):
         return group_rows(lf, by, aggs).select(self.reshape_order(lf))
 
     def describe(self) -> str:
-        what = [f"{OP_LABELS[a.op]}({a.column})" for a in self.aggregations]
+        what = [
+            t(f"{OP_LABELS[a.op]}({a.column})", f"{OP_LABELS_EN[a.op]}({a.column})")
+            for a in self.aggregations
+        ]
         if self.count_as:
-            what.append("筆數")
-        by = f"依 {quote_list(self.by)} 分組" if self.by else "整個來源檔"
-        return f"群組彙總（{by}）：{quote_list(what) or '沒有彙總'}"
+            what.append(t("筆數", "Row count"))
+        if self.by:
+            by = t(f"依 {quote_list(self.by)} 分組", f"by {quote_list(self.by)}")
+        else:
+            by = t("整個來源檔", "whole source file")
+        return t(
+            f"群組彙總（{by}）：{quote_list(what) or '沒有彙總'}",
+            f"Group and summarize ({by}): {quote_list(what) or 'no aggregations'}",
+        )
 
 
 # ── 樞紐 ──────────────────────────────────────────────────────
@@ -283,23 +374,48 @@ class Pivot(Step):
         default_factory=list,
         title="樞紐表格列依據欄位",
         description="只能是文字或日期欄；不選代表整個來源檔一列",
-        json_schema_extra={"ui": "columns"},
+        json_schema_extra={
+            "ui": "columns",
+            **en(
+                "Row fields",
+                description="Text or date columns only; leave empty for one row per source file",
+            ),
+        },
     )
-    on: ColumnRef = Field(title="樞紐表格欄依據欄位")
-    values: ColumnRef = Field(title="樞紐表格值依據欄位")
+    on: ColumnRef = Field(title="樞紐表格欄依據欄位", json_schema_extra=en("Column field"))
+    values: ColumnRef = Field(title="樞紐表格值依據欄位", json_schema_extra=en("Value field"))
     op: PivotOp = Field(
         default="sum",
         title="彙總方式",
-        json_schema_extra={"ui_labels": {k: v for k, v in OP_LABELS.items() if k != "n_unique"}},
+        json_schema_extra={
+            "ui_labels": {k: v for k, v in OP_LABELS.items() if k != "n_unique"},
+            **en(
+                "Summarize by",
+                ui_labels={k: v for k, v in OP_LABELS_EN.items() if k != "n_unique"},
+            ),
+        },
     )
     columns: list[NonEmpty] = Field(
         min_length=1,
         title="要變成欄的值",
         description="從「樞紐表格欄依據欄位」的資料讀出；資料裡多出來的值會產生警告",
-        json_schema_extra={"ui": "data_values", "ui_from": "on"},
+        json_schema_extra={
+            "ui": "data_values",
+            "ui_from": "on",
+            **en(
+                "Values to turn into columns",
+                description='Read from the data in "Column field"; '
+                "values in the data that aren't listed produce a warning",
+            ),
+        },
     )
 
     label = "樞紐"
+    label_en = "Pivot"
+    doc_en = (
+        "Pivot (long to wide): turns the values of one column into new column names, "
+        "one row per group; the column names are read from the data when the step is created."
+    )
     per_file = True
     whole_source = True
     category = "彙總"
@@ -342,7 +458,7 @@ class Pivot(Step):
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
         index = list(dict.fromkeys(self.index))
         schema = check_columns(lf, [*index, self.on, self.values])
-        check_keys(schema, index, "樞紐表格列依據欄位")
+        check_keys(schema, index, t("樞紐表格列依據欄位", "Row fields"))
         check_numeric(schema, self.values, self.op)
         on = pl.col(self.on).cast(pl.String)
         aggs = []
@@ -353,7 +469,7 @@ class Pivot(Step):
             aggs.append(pl.when(match.sum() > 0).then(value).otherwise(None).alias(name))
         extra = self.temp("extra")
         unknown = on.filter(on.is_not_null() & ~on.is_in(list(self.columns)))
-        aggs.append(unknown.unique(maintain_order=True).str.join("、").alias(extra))
+        aggs.append(unknown.unique(maintain_order=True).str.join(t("、", ", ")).alias(extra))
         return group_rows(lf, index, aggs).select(self.reshape_order(lf, [extra]))
 
     def warning_checks(self):
@@ -361,14 +477,22 @@ class Pivot(Step):
         return [
             WarningCheck(
                 condition=extra.is_not_null() & (extra != ""),
-                message=f"這一組有沒轉成欄的「{self.on}」：{{}}",
+                message=t(
+                    f"這一組有沒轉成欄的「{self.on}」：{{}}",
+                    f'This group has "{self.on}" values not turned into columns: {{}}',
+                ),
                 detail=extra,
             )
         ]
 
     def describe(self) -> str:
-        by = f"依 {quote_list(self.index)}" if self.index else "整個來源檔"
-        return (
+        if self.index:
+            by = t(f"依 {quote_list(self.index)}", f"by {quote_list(self.index)}")
+        else:
+            by = t("整個來源檔", "whole source file")
+        return t(
             f"樞紐（{by}）：「{self.on}」的 {quote_list(self.columns)} 變成欄，"
-            f"值是「{self.values}」的{OP_LABELS[self.op]}"
+            f"值是「{self.values}」的{OP_LABELS[self.op]}",
+            f'Pivot ({by}): {quote_list(self.columns)} of "{self.on}" become columns; '
+            f'values: {OP_LABELS_EN[self.op]} of "{self.values}"',
         )

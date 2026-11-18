@@ -628,8 +628,13 @@ tablade/
 - 前端每個字串寫成 `tr('中文', 'English')`（`frontend/src/i18n.ts`，不用 i18n 套件），兩種語言放在一起。
   - 不能在模組最上層用 `tr()` 算常數，要寫成函式或在元件裡算。
   - `tests/test_i18n.py`（`scripts/check_i18n.py`）檢查前端的中文只出現在 `tr()` 的第一個參數；拿 Python 產生的中文比對的那一行標 `i18n-ignore`。
-- Python 產生的文字（步驟名稱、表單欄位、狀態說明、進度、錯誤與警告）分批改成兩種語言。
-  - Recipe 檔、AI skill、CLI、處理紀錄維持中文。
+- Python 產生、畫面上看得到的文字寫成 `t("中文", "English")`（`tablade/i18n.py`；模組層級的語言，`Session.set_language` 切換，切換後清掉算好的每一步、用新的語言重算）。
+  - 步驟：`label_en`、`doc_en`、每個參數欄位的 `json_schema_extra=en("English", ui_labels=…)`；送給前端時 `localize_schema()` 依語言換上英文，`api.set_language` 一起回傳那個語言的步驟目錄。AI skill 與 schema lock 用的規格會先拿掉 `en`（`strip_en`），維持中文、lock 不變。
+  - `recipe/validator.py` 不能 import tablade，自己有 `LANG` 與 `t()`；`i18n.set_lang()` 一起設，命令列（AI skill）維持中文。
+  - 進度視窗的「準備檔案」「試跑」用代碼（`prepare`、`trial`）辨認，畫面上的字另外產生。
+  - 不翻：會變成資料的字串（程式產生的欄名、來源檔名稱、參數預設值），那一行標 `# i18n-ignore`。
+  - Recipe 檔、AI skill（下載時用 `i18n.using("zh")`）、CLI 維持中文；處理紀錄的欄位名稱是中文，裡面的警告是匯出當時畫面的語言。
+  - `tests/test_i18n.py`：前端與 Python 的中文都要在 `tr()`／`t()` 的第一個參數（步驟檔只看函式裡），每種步驟都有英文名稱、說明與表單文字。
 
 ## 17. AI skill：讓 AI 助理撰寫 recipe
 

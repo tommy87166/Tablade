@@ -7,6 +7,8 @@ from typing import Literal
 import polars as pl
 from pydantic import Field
 
+from tablade.i18n import en, plural, t
+
 from .base import (
     Example,
     NonEmpty,
@@ -19,15 +21,19 @@ from .base import (
 )
 from .registry import register
 
+KEEP_LABELS_EN = {"first": "First", "last": "Last"}
+
 
 @register
 class RemoveTopRows(Step):
     """移除最前面的 N 列（以目前剩下的列計算）。"""
 
     type: Literal["remove_top_rows"] = "remove_top_rows"
-    n: int = Field(title="列數", ge=0)
+    n: int = Field(title="列數", ge=0, json_schema_extra=en("Number of rows"))
 
     label = "移除前 N 列"
+    label_en = "Remove top rows"
+    doc_en = "Remove the first N rows (counting only the rows that remain at this point)."
     per_file = True
     category = "列"
     ai_notes = (
@@ -53,7 +59,10 @@ class RemoveTopRows(Step):
         return lf.slice(self.n)
 
     def describe(self) -> str:
-        return f"移除每個檔案的前 {self.n} 列"
+        return t(
+            f"移除每個檔案的前 {self.n} 列",
+            f"Remove the top {plural(self.n, 'row', 'rows')} of each file",
+        )
 
 
 @register
@@ -61,9 +70,11 @@ class RemoveBottomRows(Step):
     """移除最後面的 N 列（以目前剩下的列計算）。"""
 
     type: Literal["remove_bottom_rows"] = "remove_bottom_rows"
-    n: int = Field(title="列數", ge=0)
+    n: int = Field(title="列數", ge=0, json_schema_extra=en("Number of rows"))
 
     label = "移除後 N 列"
+    label_en = "Remove bottom rows"
+    doc_en = "Remove the last N rows (counting only the rows that remain at this point)."
     per_file = True
     category = "列"
     ai_notes = "用來去掉報表結尾的合計、頁尾或「共 N 筆」。多個檔案時每個檔案各自移除。"
@@ -86,7 +97,10 @@ class RemoveBottomRows(Step):
         return lf.head(max(count - self.n, 0))
 
     def describe(self) -> str:
-        return f"移除每個檔案的後 {self.n} 列"
+        return t(
+            f"移除每個檔案的後 {self.n} 列",
+            f"Remove the bottom {plural(self.n, 'row', 'rows')} of each file",
+        )
 
 
 @register
@@ -96,6 +110,8 @@ class RemoveBlankRows(Step):
     type: Literal["remove_blank_rows"] = "remove_blank_rows"
 
     label = "移除空白列"
+    label_en = "Remove blank rows"
+    doc_en = "Remove rows where every data column is blank (null or only whitespace)."
     category = "列"
     ai_notes = "只看資料欄位，系統欄位（__ 開頭）不算。只有空白字元的列也算空白。"
     examples = (
@@ -115,7 +131,7 @@ class RemoveBlankRows(Step):
         return lf.filter(~blank)
 
     def describe(self) -> str:
-        return "移除空白列"
+        return t("移除空白列", "Remove blank rows")
 
 
 @register
@@ -127,15 +143,30 @@ class Dedupe(Step):
         default_factory=list,
         title="依哪些欄判斷重複",
         description="不選代表整列（所有資料欄）都一樣才算重複",
-        json_schema_extra={"ui": "columns"},
+        json_schema_extra={
+            "ui": "columns",
+            **en(
+                "Columns to compare",
+                description="Leave empty to count rows as duplicates only when "
+                "the whole row (every data column) is the same",
+            ),
+        },
     )
     keep: Literal["first", "last"] = Field(
         default="first",
         title="保留",
-        json_schema_extra={"ui_labels": {"first": "第一筆", "last": "最後一筆"}},
+        json_schema_extra={
+            "ui_labels": {"first": "第一筆", "last": "最後一筆"},
+            **en("Keep", ui_labels=KEEP_LABELS_EN),
+        },
     )
 
     label = "移除重複"
+    label_en = "Remove duplicates"
+    doc_en = (
+        "Remove duplicates: rows with the same values in the chosen columns are duplicates; "
+        "keep only the first (or last) one. Each source file is checked separately."
+    )
     per_file = True
     whole_source = True
     category = "列"
@@ -162,13 +193,19 @@ class Dedupe(Step):
         available = data_columns(lf)
         missing = [c for c in self.columns if c not in available]
         if missing:
-            raise StepError(f"欄位不存在：{'、'.join(missing)}")
+            noun = "Column" if len(missing) == 1 else "Columns"
+            raise StepError(
+                t(f"欄位不存在：{'、'.join(missing)}", f"{noun} not found: {', '.join(missing)}")
+            )
         subset = list(dict.fromkeys(self.columns)) or available
         if not subset:
             return lf
         return lf.unique(subset, keep=self.keep, maintain_order=True)
 
     def describe(self) -> str:
-        which = "第一筆" if self.keep == "first" else "最後一筆"
-        by = f"依 {quote_list(self.columns)}" if self.columns else "整列相同"
-        return f"移除重複（{by}，保留{which}）"
+        which = t("第一筆", "first") if self.keep == "first" else t("最後一筆", "last")
+        if self.columns:
+            by = t(f"依 {quote_list(self.columns)}", f"by {quote_list(self.columns)}")
+        else:
+            by = t("整列相同", "whole row")
+        return t(f"移除重複（{by}，保留{which}）", f"Remove duplicates ({by}, keep {which})")

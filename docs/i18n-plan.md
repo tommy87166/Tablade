@@ -59,8 +59,11 @@
    - `api.py`
    - `engine/run.py`、`ingest/`：進度文字、讀檔與轉碼錯誤
    - `export/`、`selftest.py`、`dtypes.py`（型別名稱）、`profile.py`（型別分頁）
-3. **步驟的名稱與表單**：每個步驟的名稱、分類、參數欄位的標題、說明、選項，`describe()`。
-4. **步驟的警告與錯誤、驗證器的訊息**：`warning_checks()`、`StepError`、`EffectError`、`recipe/schema.py`、`recipe/validator.py`。
+3. **步驟與 Recipe 驗證**（✅ 已完成；原本的第 3、4 批一起做：都在同一批步驟檔裡）
+   - 每個步驟的名稱、分類、說明（`label_en`、`doc_en`、`display_*()`）、參數欄位的標題、說明、選項（`en()`）、`describe()`、警告與錯誤訊息。
+   - `recipe/validator.py`、`recipe/schema.py` 的驗證訊息；`schema.py` 的欄位標題只給 AI skill 用，維持中文。
+   - 切換語言時 `api.set_language` 一起回傳那個語言的步驟目錄（`catalog`）。
+   - 參數的預設值（例如預設的新欄名「名稱」「值」「筆數」）會寫進 Recipe，維持中文。
 
 每一批都要：
 

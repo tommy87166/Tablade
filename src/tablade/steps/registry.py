@@ -17,6 +17,10 @@ def register(cls: type[Step]) -> type[Step]:
         raise ValueError(f"{name} 缺少 label 或 category")
     if not cls.__doc__:
         raise ValueError(f"{name} 缺少說明（docstring）")
+    if not cls.label_en or not cls.doc_en:
+        raise ValueError(f"{name} 缺少英文的名稱或說明（label_en、doc_en；docs/i18n-plan.md）")
+    if cls.scope_note and not cls.scope_note_en:
+        raise ValueError(f"{name} 缺少 scope_note_en")
     if not cls.examples:
         raise ValueError(f"{name} 至少要有一個範例（同時是單元測試）")
     if cls.effect.get("kind") not in EFFECT_KINDS:

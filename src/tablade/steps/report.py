@@ -14,6 +14,8 @@ from typing import Literal
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
+from tablade.i18n import en, plural, t
+
 from .base import (
     ColumnRef,
     Example,
@@ -30,18 +32,30 @@ from .filter import Condition
 from .registry import register
 
 MATCH_LABELS = {"all": "全部符合", "any": "任一符合"}
+MATCH_LABELS_EN = {"all": "All conditions", "any": "Any condition"}
 
 
 # ── 將列進行分類 ───────────────────────────────────────────────────
 
 
 class Rule(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, title="分類規則")
+    model_config = ConfigDict(
+        extra="forbid", strict=True, title="分類規則", json_schema_extra=en("Classification rule")
+    )
 
-    label: str = Field(title="類別", min_length=1, description="符合這條規則的列標成這個類別")
-    conditions: list[Condition] = Field(title="條件", min_length=1)
+    label: str = Field(
+        title="類別",
+        min_length=1,
+        description="符合這條規則的列標成這個類別",
+        json_schema_extra=en("Category", description="Rows that match this rule get this category"),
+    )
+    conditions: list[Condition] = Field(
+        title="條件", min_length=1, json_schema_extra=en("Conditions")
+    )
     match: Literal["all", "any"] = Field(
-        default="all", title="條件組合", json_schema_extra={"ui_labels": MATCH_LABELS}
+        default="all",
+        title="條件組合",
+        json_schema_extra={"ui_labels": MATCH_LABELS, **en("Match", ui_labels=MATCH_LABELS_EN)},
     )
 
     def expr(self) -> pl.Expr:
@@ -54,13 +68,33 @@ class ClassifyRows(Step):
     """將列進行分類：依規則替每一列標上類別（例如段落標題、明細、小計），結果放在新的一欄。"""
 
     type: Literal["classify_rows"] = "classify_rows"
-    column: NonEmpty = Field(default="類型", title="新欄位名稱")
-    rules: list[Rule] = Field(
-        title="分類規則", min_length=1, description="由上往下比對，第一條符合的就是這一列的類別"
+    column: NonEmpty = Field(
+        default="類型",  # i18n-ignore：預設的新欄名是資料（寫進 Recipe）
+        title="新欄位名稱",
+        json_schema_extra=en("New column name"),
     )
-    otherwise: str = Field(default="其他", title="都不符合時的類別", description="空白代表空值")
+    rules: list[Rule] = Field(
+        title="分類規則",
+        min_length=1,
+        description="由上往下比對，第一條符合的就是這一列的類別",
+        json_schema_extra=en(
+            "Rules",
+            description="Checked from top to bottom; the first rule that matches sets the category",
+        ),
+    )
+    otherwise: str = Field(
+        default="其他",  # i18n-ignore：預設的類別是資料（寫進 Recipe）
+        title="都不符合時的類別",
+        description="空白代表空值",
+        json_schema_extra=en("Category if no rule matches", description="Leave empty for null"),
+    )
 
     label = "將列進行分類"
+    label_en = "Classify rows"
+    doc_en = (
+        "Classify rows: label each row with a category by rules (for example section header, "
+        "detail, subtotal), in a new column."
+    )
     category = "列"
     effect = {"kind": "add", "names": "$column"}
     ai_notes = (
@@ -112,7 +146,11 @@ class ClassifyRows(Step):
 
     def describe(self) -> str:
         labels = quote_list([r.label for r in self.rules])
-        return f"將列分類到「{self.column}」：{labels}，其他是「{self.otherwise or '空值'}」"
+        other = f'"{self.otherwise}"' if self.otherwise else "null"
+        return t(
+            f"將列分類到「{self.column}」：{labels}，其他是「{self.otherwise or '空值'}」",
+            f'Classify rows into "{self.column}": {labels}; the rest are {other}',
+        )
 
 
 # ── 用正規表示式擷取 ───────────────────────────────────────────
@@ -123,7 +161,9 @@ def regex_groups(pattern: str) -> int:
     try:
         groups = pl.Series([""], dtype=pl.String).str.extract_groups(pattern)
     except pl.exceptions.PolarsError as err:
-        raise ValueError(f"正規表示式有誤：{err}") from None
+        raise ValueError(
+            t(f"正規表示式有誤：{err}", f"Invalid regular expression: {err}")
+        ) from None
     return len(groups.struct.fields)
 
 
@@ -132,17 +172,34 @@ class ExtractRegex(Step):
     """用正規表示式擷取：從一欄抓出一或多個值（每個群組一欄），放到新的欄。"""
 
     type: Literal["extract_regex"] = "extract_regex"
-    column: ColumnRef = Field(title="從哪一欄擷取")
+    column: ColumnRef = Field(title="從哪一欄擷取", json_schema_extra=en("Extract from column"))
     pattern: str = Field(
         title="正規表示式",
         min_length=1,
         description="每個括號群組變成一個新欄，例如 門市：(.+)",
-        json_schema_extra={"ui": "regex"},
+        json_schema_extra={
+            "ui": "regex",
+            **en(
+                "Regular expression",
+                description="Each group in parentheses becomes a new column, e.g. Store: (.+)",
+            ),
+        },
     )
-    names: NewColumns = Field(title="新欄位名稱", description="依序對應每個群組")
-    keep_source: bool = Field(default=True, title="保留原欄位")
+    names: NewColumns = Field(
+        title="新欄位名稱",
+        description="依序對應每個群組",
+        json_schema_extra=en("New column names", description="One for each group, in order"),
+    )
+    keep_source: bool = Field(
+        default=True, title="保留原欄位", json_schema_extra=en("Keep original column")
+    )
 
     label = "用正規表示式擷取"
+    label_en = "Extract with regex"
+    doc_en = (
+        "Extract with a regular expression: capture one or more values from a column "
+        "(one column per group) into new columns."
+    )
     category = "欄"
     effect = {
         "kind": "split",
@@ -173,9 +230,21 @@ class ExtractRegex(Step):
         if pattern:
             groups = regex_groups(pattern)
             if groups == 0:
-                raise ValueError("正規表示式沒有括號群組：要擷取的部分請用 ( ) 括起來")
+                raise ValueError(
+                    t(
+                        "正規表示式沒有括號群組：要擷取的部分請用 ( ) 括起來",
+                        "The regular expression has no groups: put the part to extract in ( )",
+                    )
+                )
             if groups != len(value):
-                raise ValueError(f"正規表示式有 {groups} 個群組，但列了 {len(value)} 個新欄名")
+                raise ValueError(
+                    t(
+                        f"正規表示式有 {groups} 個群組，但列了 {len(value)} 個新欄名",
+                        f"The regular expression has {plural(groups, 'group', 'groups')}, "
+                        f"but {plural(len(value), 'new column name is', 'new column names are')} "
+                        "given",
+                    )
+                )
         return value
 
     @classmethod
@@ -185,13 +254,18 @@ class ExtractRegex(Step):
 
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
         if self.column not in data_columns(lf):
-            raise StepError(f"欄位「{self.column}」不存在")
+            raise StepError(
+                t(f"欄位「{self.column}」不存在", f'Column "{self.column}" does not exist')
+            )
         source = pl.col(self.column).cast(pl.String)
         exprs = [source.str.extract(self.pattern, i + 1).alias(n) for i, n in enumerate(self.names)]
         return lf.with_columns(exprs).select(self.output_order(lf))
 
     def describe(self) -> str:
-        return f"從「{self.column}」擷取 {quote_list(self.names)}（/{self.pattern}/）"
+        return t(
+            f"從「{self.column}」擷取 {quote_list(self.names)}（/{self.pattern}/）",
+            f'Extract {quote_list(self.names)} from "{self.column}" (/{self.pattern}/)',
+        )
 
 
 # ── 依固定位置拆欄 ─────────────────────────────────────────────
@@ -242,18 +316,38 @@ class SplitFixedWidth(Step):
     """依固定位置拆欄：列印格式的報表用空白對齊欄位，依每一欄的開始位置拆開（中文字算 2 格寬）。"""
 
     type: Literal["split_fixed_width"] = "split_fixed_width"
-    column: ColumnRef = Field(default="line", title="要拆的欄位")
+    column: ColumnRef = Field(
+        default="line", title="要拆的欄位", json_schema_extra=en("Column to split")
+    )
     starts: list[int] = Field(
         title="每一欄的開始位置",
         min_length=1,
         description="第幾個字寬，從 1 起；中文字算 2 格寬。最後一欄到行尾",
-        json_schema_extra={"ui": "int_list"},
+        json_schema_extra={
+            "ui": "int_list",
+            **en(
+                "Start position of each column",
+                description="In character widths, starting at 1; a Chinese character is 2 wide. "
+                "The last column runs to the end of the line",
+            ),
+        },
     )
-    names: NewColumns = Field(title="拆出來的欄名")
-    trim: bool = Field(default=True, title="去掉每一欄前後的空白")
-    keep_source: bool = Field(default=False, title="保留原欄位")
+    names: NewColumns = Field(title="拆出來的欄名", json_schema_extra=en("New column names"))
+    trim: bool = Field(
+        default=True,
+        title="去掉每一欄前後的空白",
+        json_schema_extra=en("Trim spaces from each column"),
+    )
+    keep_source: bool = Field(
+        default=False, title="保留原欄位", json_schema_extra=en("Keep original column")
+    )
 
     label = "依固定位置拆欄"
+    label_en = "Split by fixed width"
+    doc_en = (
+        "Split by fixed width: printed reports line up columns with spaces; split at the start "
+        "position of each column (a Chinese character is 2 wide)."
+    )
     category = "欄"
     effect = {
         "kind": "split",
@@ -286,9 +380,9 @@ class SplitFixedWidth(Step):
     @classmethod
     def _increasing(cls, value: list[int]) -> list[int]:
         if any(p < 1 for p in value):
-            raise ValueError("開始位置從 1 起算")
+            raise ValueError(t("開始位置從 1 起算", "Start positions begin at 1"))
         if any(b <= a for a, b in pairwise(value)):
-            raise ValueError("開始位置要由小到大")
+            raise ValueError(t("開始位置要由小到大", "Start positions must be in increasing order"))
         return value
 
     @field_validator("names")
@@ -296,7 +390,13 @@ class SplitFixedWidth(Step):
     def _same_count(cls, value: list[str], info: ValidationInfo) -> list[str]:
         starts = info.data.get("starts")
         if starts is not None and len(starts) != len(value):
-            raise ValueError(f"有 {len(starts)} 個開始位置，但列了 {len(value)} 個欄名")
+            raise ValueError(
+                t(
+                    f"有 {len(starts)} 個開始位置，但列了 {len(value)} 個欄名",
+                    f"{plural(len(starts), 'start position', 'start positions')}, "
+                    f"but {plural(len(value), 'column name', 'column names')} given",
+                )
+            )
         return value
 
     @classmethod
@@ -308,12 +408,14 @@ class SplitFixedWidth(Step):
         return {
             "column": column,
             "starts": starts,
-            "names": [f"欄{i}" for i in range(1, len(starts) + 1)],
+            "names": [f"欄{i}" for i in range(1, len(starts) + 1)],  # i18n-ignore：暫時的欄名是資料
         }
 
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
         if self.column not in data_columns(lf):
-            raise StepError(f"欄位「{self.column}」不存在")
+            raise StepError(
+                t(f"欄位「{self.column}」不存在", f'Column "{self.column}" does not exist')
+            )
         # 寬字後面補一個佔位字元：之後「第幾個字元」就是「第幾格寬」
         cells = pl.col(self.column).cast(pl.String).str.replace_all(f"({WIDE})", f"${{1}}{FILLER}")
         exprs = []
@@ -327,5 +429,8 @@ class SplitFixedWidth(Step):
         return lf.with_columns(exprs).select(self.output_order(lf))
 
     def describe(self) -> str:
-        where = "、".join(str(p) for p in self.starts)
-        return f"把「{self.column}」依位置 {where} 拆成 {quote_list(self.names)}"
+        where = t("、", ", ").join(str(p) for p in self.starts)
+        return t(
+            f"把「{self.column}」依位置 {where} 拆成 {quote_list(self.names)}",
+            f'Split "{self.column}" at positions {where} into {quote_list(self.names)}',
+        )

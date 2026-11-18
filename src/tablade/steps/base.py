@@ -34,6 +34,7 @@ from typing import Annotated, Any, ClassVar
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, StringConstraints
 
+from tablade.i18n import en, t, using
 from tablade.ingest.sources import Part
 from tablade.recipe.validator import apply_effect, resolve_effect
 
@@ -67,6 +68,10 @@ ColumnRefs = Annotated[list[NonEmpty], Field(min_length=1, json_schema_extra={"u
 NewColumns = Annotated[list[NonEmpty], Field(min_length=1, json_schema_extra={"ui": "new_columns"})]
 
 
+CATEGORY_EN = {"列": "Rows", "欄": "Columns", "彙總": "Summarize", "合併": "Combine"}
+"""步驟分類（新增步驟選單的分頁）的英文；分類本身是中文的代碼（``category``）。"""
+
+
 class StepError(ValueError):
     """步驟無法套用在目前的資料上（例如欄位數不符）。"""
 
@@ -93,16 +98,32 @@ class WarningCheck:
     """True：對這一步的**輸入**檢查（例如結合沒對到的列：內連接之後那些列就不在了）。"""
 
 
-class Step(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+def _doc_en(schema: dict[str, Any], cls: type) -> None:
+    """schema 最上層的 description 是 docstring（pydantic 放的）：英文放在旁邊的 ``en``（``doc_en``）。"""
+    if getattr(cls, "doc_en", ""):
+        schema.setdefault("en", {})["description"] = cls.doc_en
 
-    id: str = Field(title="步驟 id", min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
-    enabled: bool = Field(default=True, title="啟用")
+
+class Step(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, json_schema_extra=_doc_en)
+
+    id: str = Field(
+        title="步驟 id",
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
+        json_schema_extra=en("Step id"),
+    )
+    enabled: bool = Field(default=True, title="啟用", json_schema_extra=en("Enabled"))
 
     _tables: dict[str, pl.LazyFrame] = PrivateAttr(default_factory=dict)
     """引擎套用前交給步驟的其他階段的結果（``bind()``）；步驟自己不讀檔。"""
 
     label: ClassVar[str] = ""
+    label_en: ClassVar[str] = ""
+    """英文的步驟名稱（畫面切成英文時用；docs/i18n-plan.md）。"""
+    doc_en: ClassVar[str] = ""
+    """英文的步驟說明（docstring 的英文）。"""
     category: ClassVar[str] = ""
     effect: ClassVar[dict[str, Any]] = {"kind": "keep"}
     examples: ClassVar[tuple[Example, ...]] = ()
@@ -112,6 +133,7 @@ class Step(BaseModel):
     False：一列一列處理，結果與來源檔怎麼分檔無關（有測試檢查）。"""
     scope_note: ClassVar[str] = ""
     """不是單純「分別處理／無關」時，畫面上改顯示這句（例如合併來源檔）。"""
+    scope_note_en: ClassVar[str] = ""
     combines: ClassVar[bool] = False
     """True：把所有 part 接成新的 part（引擎呼叫 ``combine()``，不呼叫 ``apply()``）。"""
     reshapes: ClassVar[bool] = False
@@ -130,15 +152,34 @@ class Step(BaseModel):
 
     @classmethod
     def scope(cls) -> str:
-        """是否每個來源檔分別處理（畫面上接在步驟名稱後面）。"""
+        """是否每個來源檔分別處理（畫面上接在步驟名稱後面；依畫面的語言）。"""
         if cls.scope_note:
-            return cls.scope_note
-        return "每個來源檔分別處理" if cls.per_file else "與來源檔分檔無關"
+            return t(cls.scope_note, cls.scope_note_en or cls.scope_note)
+        if cls.per_file:
+            return t("每個來源檔分別處理", "Each source file separately")
+        return t("與來源檔分檔無關", "Independent of source files")
 
     @classmethod
     def summary(cls) -> str:
-        """純文字的步驟說明＋[scope]：給 spec 與 AI skill。"""
-        return f"{(cls.__doc__ or '').strip()}[{cls.scope()}]"
+        """純文字的步驟說明＋[scope]：給 spec 與 AI skill（一律中文）。"""
+        with using("zh"):
+            return f"{(cls.__doc__ or '').strip()}[{cls.scope()}]"
+
+    @classmethod
+    def display_label(cls) -> str:
+        """畫面上的步驟名稱（依畫面的語言）。"""
+        return t(cls.label, cls.label_en or cls.label)
+
+    @classmethod
+    def display_category(cls) -> str:
+        """畫面上的分類（新增步驟選單的分頁）。"""
+        return t(cls.category, CATEGORY_EN.get(cls.category, cls.category))
+
+    @classmethod
+    def display_doc(cls) -> str:
+        """畫面上的步驟說明（docstring；英文看 ``doc_en``）。"""
+        zh = (cls.__doc__ or "").strip()
+        return t(zh, cls.doc_en or zh)
 
     @classmethod
     def suggest(cls, frame: pl.DataFrame, context: dict[str, Any]) -> dict[str, Any]:
@@ -181,7 +222,7 @@ class Step(BaseModel):
     def table(self, name: str) -> pl.LazyFrame:
         """其他階段的結果（含系統欄位）。"""
         if name not in self._tables:
-            raise StepError(f"沒有階段「{name}」的結果")
+            raise StepError(t(f"沒有階段「{name}」的結果", f'No result for stage "{name}"'))
         return self._tables[name]
 
     def output_order(self, lf: pl.LazyFrame) -> list[str]:
@@ -214,10 +255,14 @@ def source_name(columns: list[str]) -> pl.Expr:
     從前面的階段讀進來時前面加「@階段／」。"""
     name = pl.col(SOURCE_FILE)
     if SHEET in columns:
-        labeled = pl.concat_str([name, pl.lit("［"), pl.col(SHEET), pl.lit("］")])
+        labeled = pl.concat_str(
+            [name, pl.lit("［"), pl.col(SHEET), pl.lit("］")]
+        )  # i18n-ignore：來源的名稱是資料
         name = pl.when(pl.col(SHEET).is_null()).then(name).otherwise(labeled)
     if STAGE in columns:
-        staged = pl.concat_str([pl.lit("@"), pl.col(STAGE), pl.lit("／"), name])
+        staged = pl.concat_str(
+            [pl.lit("@"), pl.col(STAGE), pl.lit("／"), name]
+        )  # i18n-ignore：來源的名稱是資料
         name = pl.when(pl.col(STAGE).is_null()).then(name).otherwise(staged)
     return name
 
@@ -265,7 +310,10 @@ def too_many_values(column: str, count: int) -> str | None:
     limit = MAX_DATA_VALUES
     if count <= limit:
         return None
-    return f"「{column}」有 {count:,} 個不同的值，超過 {limit} 個；請先篩選，或換一欄"
+    return t(
+        f"「{column}」有 {count:,} 個不同的值，超過 {limit} 個；請先篩選，或換一欄",
+        f'"{column}" has {count:,} distinct values, more than {limit}; filter first, or pick another column',
+    )
 
 
 def guess_delimiter(
@@ -291,5 +339,5 @@ def guess_delimiter(
 
 
 def quote_list(names: list[str], limit: int = 4) -> str:
-    shown = "、".join(names[:limit])
+    shown = t("、", ", ").join(names[:limit])
     return shown + ("…" if len(names) > limit else "")

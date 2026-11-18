@@ -300,7 +300,7 @@ tablade.spec          PyInstaller 設定（以 TABLADE_BUILD 切換 onefile / on
 | M3 在地格式與追溯 | `parse_number`、`parse_date`（民國）、`trim_clean`、`replace_values`、`remove_columns`、`select_columns`、`rename_columns`、型別分頁、manifest | 輸出附 manifest，警告附行號 ✅ |
 | M4 多檔與 Excel | glob、diagonal concat、Excel 讀取、`classify_rows`、`extract_regex`、`split_fixed_width` | 分段報表的範例可以完整攤平 ✅ |
 | M5 進階步驟 | `dedupe`、`unpivot`、`group_by`、`pivot`、多階段 Recipe、`parquet` 讀取、`join`、附加查詢（讀好幾個階段＋合併來源檔） | 範例 `sales_combined`：文字匯出檔與 Excel 各自整理後附加，再到品項對照表查類別 ✅ |
-| M6 多語言 | 畫面可以切換繁體中文與英文（「⋯」左邊的按鈕；預設跟作業系統語言） | 每個畫面都有英文（進行中：前端自己的文字已完成，接著是 Python 產生的文字：步驟名稱、表單、狀態、錯誤訊息） |
+| M6 多語言 | 畫面可以切換繁體中文與英文（「⋯」左邊的按鈕；預設跟作業系統語言） | 每個畫面都有英文 ✅（Recipe 檔、AI skill、CLI 維持中文） |
 
 ---
 

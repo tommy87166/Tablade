@@ -19,10 +19,14 @@ _lang = "zh"
 
 
 def set_lang(lang: str) -> None:
+    """切換語言；recipe/validator.py（不能 import tablade，自己有 t()）也一起換。"""
     global _lang
     if lang not in LANGS:
         raise ValueError(f"不支援的語言：{lang}（可用：{'、'.join(LANGS)}）")
     _lang = lang
+    from tablade.recipe import validator
+
+    validator.LANG = lang
 
 
 def lang() -> str:
@@ -48,3 +52,49 @@ def using(lang: str) -> Iterator[None]:
         yield
     finally:
         set_lang(previous)
+
+
+def en(
+    title: str | None = None,
+    description: str | None = None,
+    ui_labels: dict[str, str] | None = None,
+    ui_option_hints: dict[str, str] | None = None,
+) -> dict[str, dict[str, object]]:
+    """步驟參數欄位的英文：``Field(title="中文", json_schema_extra=en("English"))``。
+
+    放在 JSON schema 的 ``"en"`` 裡；送給前端時依語言換掉 title、description、ui_labels、ui_option_hints
+    （選項下面的說明）（``localize_schema``）。
+    已經有其他 json_schema_extra 時合在一起：``json_schema_extra={"ui_labels": LABELS, **en("…", ui_labels=…)}``。
+    """
+    text: dict[str, object] = {}
+    if title is not None:
+        text["title"] = title
+    if description is not None:
+        text["description"] = description
+    if ui_labels is not None:
+        text["ui_labels"] = ui_labels
+    if ui_option_hints is not None:
+        text["ui_option_hints"] = ui_option_hints
+    return {"en": text}
+
+
+def localize_schema(value: object) -> object:
+    """JSON schema 依目前的語言換上英文（每個有 ``"en"`` 的地方），並拿掉 ``"en"``（回傳新的物件）。"""
+    if isinstance(value, dict):
+        out = {k: localize_schema(v) for k, v in value.items() if k != "en"}
+        text = value.get("en")
+        if _lang == "en" and isinstance(text, dict):
+            out.update(text)
+        return out
+    if isinstance(value, list):
+        return [localize_schema(v) for v in value]
+    return value
+
+
+def strip_en(value: object) -> object:
+    """拿掉 JSON schema 裡的 ``"en"``（AI skill 與 schema lock 用：維持中文、不受英文影響）。"""
+    if isinstance(value, dict):
+        return {k: strip_en(v) for k, v in value.items() if k != "en"}
+    if isinstance(value, list):
+        return [strip_en(v) for v in value]
+    return value

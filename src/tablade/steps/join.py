@@ -13,6 +13,7 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from tablade.dtypes import type_label
+from tablade.i18n import en, t
 
 from .base import (
     LINE_NO,
@@ -31,11 +32,18 @@ from .base import (
 from .registry import register
 
 HOW_LABELS = {"left": "左連接", "inner": "內連接", "anti": "檢查", "semi": "篩選"}
+HOW_LABELS_EN = {"left": "Left join", "inner": "Inner join", "anti": "Check", "semi": "Filter"}
 HOW_HINTS = {
     "left": "以這一張表為準，保留這一張表每一列，加入另一張表的欄。",
     "inner": "取交集，只留下兩張表都有的列，加入另一張表的欄。",
     "anti": "以這一張表為準，只留沒對到另一張表的列。",
     "semi": "以這一張表為準，只留有對到另一張表的列。",
+}
+HOW_HINTS_EN = {
+    "left": "Keeps every row of this table and adds columns from the other table.",
+    "inner": "Keeps only rows found in both tables and adds columns from the other table.",
+    "anti": "Keeps only rows of this table that have no match in the other table.",
+    "semi": "Keeps only rows of this table that have a match in the other table.",
 }
 HOW_ICONS = {
     "left": "venn_left",
@@ -51,10 +59,12 @@ SHOWN_DUPLICATES = 5
 
 
 class JoinKey(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, title="鍵")
+    model_config = ConfigDict(extra="forbid", strict=True, title="鍵", json_schema_extra=en("Key"))
 
-    left: ColumnRef = Field(title="這一張表")
-    right: NonEmpty = Field(title="另一張表", json_schema_extra={"ui": "right_column"})
+    left: ColumnRef = Field(title="這一張表", json_schema_extra=en("This table"))
+    right: NonEmpty = Field(
+        title="另一張表", json_schema_extra={"ui": "right_column", **en("Other table")}
+    )
 
 
 @register
@@ -62,11 +72,19 @@ class Join(Step):
     """結合：依兩張表相同鍵值進行結合。"""
 
     type: Literal["join"] = "join"
-    right: NonEmpty = Field(title="另一張表（來自前面階段）", json_schema_extra={"ui": "stage"})
+    right: NonEmpty = Field(
+        title="另一張表（來自前面階段）",
+        json_schema_extra={"ui": "stage", **en("Other table (from an earlier stage)")},
+    )
     on: list[JoinKey] = Field(
         min_length=1,
         title="鍵值",
         description="這一張表的欄＝另一張表的欄；可以有好幾組（全部相同才算對到）",
+        json_schema_extra=en(
+            "Keys",
+            description="Column in this table = column in the other table; "
+            "add several pairs to match on all of them",
+        ),
     )
     how: Literal["left", "inner", "anti", "semi"] = Field(
         default="left",
@@ -76,21 +94,34 @@ class Join(Step):
             "ui_labels": HOW_LABELS,
             "ui_option_hints": HOW_HINTS,
             "ui_option_icons": HOW_ICONS,
+            **en("Join kind", ui_labels=HOW_LABELS_EN, ui_option_hints=HOW_HINTS_EN),
         },
     )
     columns: list[NonEmpty] = Field(
         default_factory=list,
         title="要帶進來的欄",
-        json_schema_extra={"ui": "right_columns", "ui_show_if": {"how": list(BRINGS)}},
+        json_schema_extra={
+            "ui": "right_columns",
+            "ui_show_if": {"how": list(BRINGS)},
+            **en("Columns to bring in"),
+        },
     )
     warn_unmatched: bool = Field(
         default=True,
         title="沒對到的列產生警告",
         description="當這一張表的鍵值在另一張表找不到時，產生警告",
-        json_schema_extra={"ui_show_if": {"how": list(BRINGS)}},
+        json_schema_extra={
+            "ui_show_if": {"how": list(BRINGS)},
+            **en(
+                "Warn about unmatched rows",
+                description="Warns when a key in this table isn't found in the other table",
+            ),
+        },
     )
 
     label = "結合"
+    label_en = "Join"
+    doc_en = "Join: combines two tables on matching key values."
     category = "合併"
     effect = {"kind": "join", "stage": "$right", "how": "$how", "names": "$columns", "on": "$on"}
     ai_notes = (
@@ -151,16 +182,30 @@ class Join(Step):
         lefts, rights = [k.left for k in self.on], [k.right for k in self.on]
         missing = [c for c in dict.fromkeys(lefts) if c not in data_columns(lf)]
         if missing:
-            raise StepError(f"欄位不存在：{'、'.join(missing)}")
+            raise StepError(
+                t(
+                    f"欄位不存在：{'、'.join(missing)}",
+                    f"{'Column' if len(missing) == 1 else 'Columns'} not found: {', '.join(missing)}",
+                )
+            )
         bring = self._bring()
         keyed = [c for c in bring if c in rights]
         if keyed:
-            raise StepError(f"「{'、'.join(keyed)}」是另一張表的鍵值，不用帶進來")
+            raise StepError(
+                t(
+                    f"「{'、'.join(keyed)}」是另一張表的鍵值，不用帶進來",
+                    f"No need to bring in the other table's keys: {', '.join(keyed)}",
+                )
+            )
         right_names = data_columns(right)
         missing = [c for c in dict.fromkeys(rights + bring) if c not in right_names]
         if missing:
             raise StepError(
-                f"@{self.right} 沒有欄位：{'、'.join(missing)}（它的欄位：{quote_list(right_names, 12)}）"
+                t(
+                    f"@{self.right} 沒有欄位：{'、'.join(missing)}（它的欄位：{quote_list(right_names, 12)}）",
+                    f"Not found in @{self.right}: {', '.join(missing)} "
+                    f"(its columns: {quote_list(right_names, 12)})",
+                )
             )
         left_schema, right_schema = lf.collect_schema(), right.collect_schema()
         types = []
@@ -168,8 +213,12 @@ class Join(Step):
             a, b = left_schema[key.left], right_schema[key.right]
             if a != b and pl.Null not in (a, b):
                 raise StepError(
-                    f"鍵的型別不一樣：「{key.left}」是{type_label(a)}，@{self.right} 的「{key.right}」"
-                    f"是{type_label(b)}；請先轉成一樣的型別"
+                    t(
+                        f"鍵的型別不一樣：「{key.left}」是{type_label(a)}，@{self.right} 的「{key.right}」"
+                        f"是{type_label(b)}；請先轉成一樣的型別",
+                        f'Key types differ: "{key.left}" is {type_label(a)}, but "{key.right}" '
+                        f"in @{self.right} is {type_label(b)}; convert them to the same type first",
+                    )
                 )
             types.append(b if a == pl.Null else a)
         return types
@@ -192,15 +241,24 @@ class Join(Step):
             return
         shown = []
         for row in found.iter_rows(named=True):
-            value = "、".join(str(row[c]) for c in rights)
+            value = t("、", ", ").join(str(row[c]) for c in rights)
             place = ""
             if "lines" in row:
-                lines = "、".join(str(n) for n in row["lines"])
-                place = f"（{row.get('file') or ''} 第 {lines} 行）".replace("（ ", "（")
-            shown.append(f"「{value}」{place}")
+                lines = t("、", ", ").join(str(n) for n in row["lines"])
+                file = row.get("file") or ""
+                line_word = "line" if len(row["lines"]) == 1 else "lines"
+                place = t(
+                    f"（{row.get('file') or ''} 第 {lines} 行）".replace("（ ", "（"),
+                    f" ({file}, {line_word} {lines})" if file else f" ({line_word} {lines})",
+                )
+            shown.append(t(f"「{value}」{place}", f'"{value}"{place}'))
         raise StepError(
-            f"@{self.right} 的鍵「{'、'.join(rights)}」重複：{'；'.join(shown)}。"
-            f"請先在階段「{self.right}」移除重複或修正資料"
+            t(
+                f"@{self.right} 的鍵「{'、'.join(rights)}」重複：{'；'.join(shown)}。"
+                f"請先在階段「{self.right}」移除重複或修正資料",
+                f'Key "{", ".join(rights)}" has duplicates in @{self.right}: {"; ".join(shown)}. '
+                f'Remove duplicates or fix the data in stage "{self.right}" first',
+            )
         )
 
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
@@ -249,23 +307,44 @@ class Join(Step):
         lefts = [k.left for k in self.on]
         key = self._key(lefts)
         shown = pl.concat_str(
-            [pl.col(c).cast(pl.String).fill_null("（空值）") for c in lefts], separator="、"
+            [pl.col(c).cast(pl.String).fill_null(t("（空值）", "(null)")) for c in lefts],
+            separator=t("、", ", "),
         )
         return [
             WarningCheck(
                 condition=key.is_null() | ~key.is_in(self._right_keys.implode()),
-                message=f"「{'、'.join(lefts)}」的「{{}}」在 @{self.right} 找不到",
+                message=t(
+                    f"「{'、'.join(lefts)}」的「{{}}」在 @{self.right} 找不到",
+                    f'"{", ".join(lefts)}" value "{{}}" not found in @{self.right}',
+                ),
                 detail=shown,
                 on_input=True,
             )
         ]
 
     def describe(self) -> str:
-        keys = "、".join(k.left if k.left == k.right else f"{k.left}＝{k.right}" for k in self.on)
+        keys = t("、", ", ").join(
+            k.left if k.left == k.right else t(f"{k.left}＝{k.right}", f"{k.left} = {k.right}")
+            for k in self.on
+        )
         if self.how == "anti":
-            return f"只留在 @{self.right} 找不到的列（{keys}）"
+            return t(
+                f"只留在 @{self.right} 找不到的列（{keys}）",
+                f"Keep rows not found in @{self.right} ({keys})",
+            )
         if self.how == "semi":
-            return f"只留在 @{self.right} 找得到的列（{keys}）"
-        way = "左連接" if self.how == "left" else "內連接"
-        bring = f"：帶進 {quote_list(self.columns)}" if self.columns else ""
-        return f"結合（{way} @{self.right}，{keys}）{bring}"
+            return t(
+                f"只留在 @{self.right} 找得到的列（{keys}）",
+                f"Keep rows found in @{self.right} ({keys})",
+            )
+        way = t("左連接", "left join") if self.how == "left" else t("內連接", "inner join")
+        if self.columns:
+            bring = t(
+                f"：帶進 {quote_list(self.columns)}", f": bring in {quote_list(self.columns)}"
+            )
+        else:
+            bring = ""
+        return t(
+            f"結合（{way} @{self.right}，{keys}）{bring}",
+            f"Join ({way} with @{self.right} on {keys}){bring}",
+        )

@@ -231,6 +231,7 @@ export default function App() {
       const first = await target.set_language(detected)
       if (first.ok) {
         setLang(first.state.lang)
+        setInfo({ ...ready, catalog: first.catalog }) // 步驟目錄也是那個語言的
         setState(first.state)
       }
       setStatus({ text: tr('就緒。先新增或開啟 Recipe。', 'Ready. Create or open a recipe to start.') })
@@ -354,7 +355,9 @@ export default function App() {
       if (!api || value === lang()) return
       setLang(value)
       const res = await call(tr('切換語言', 'Switch language'), () => api.set_language(value))
-      if (res) setStatus({ text: tr('已切換成中文。', 'Switched to English.') })
+      if (!res) return
+      setInfo((i) => i && { ...i, catalog: res.catalog }) // 步驟名稱、表單的欄位標題跟著換
+      setStatus({ text: tr('已切換成中文。', 'Switched to English.') })
     },
   }
 

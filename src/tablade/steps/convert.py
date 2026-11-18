@@ -14,6 +14,8 @@ from typing import Literal
 import polars as pl
 from pydantic import Field, ValidationInfo, field_validator
 
+from tablade.i18n import en, plural, t
+
 from .base import (
     ColumnRefs,
     Example,
@@ -28,8 +30,13 @@ from .registry import register
 
 NumberKind = Literal["decimal", "integer"]
 NUMBER_KIND_LABELS = {"decimal": "小數（精確，不會有浮點誤差）", "integer": "整數"}
+NUMBER_KIND_LABELS_EN = {
+    "decimal": "Decimal (exact, no floating-point error)",
+    "integer": "Integer",
+}
 Calendar = Literal["roc", "ad"]
 CALENDAR_LABELS = {"roc": "民國年（加 1911）", "ad": "西元年"}
+CALENDAR_LABELS_EN = {"roc": "ROC year (adds 1911)", "ad": "Gregorian year"}
 
 DatePattern = Literal["slash", "dash", "dot", "chinese", "compact", "custom"]
 DATE_PATTERNS: dict[str, str] = {
@@ -48,9 +55,20 @@ DATE_PATTERN_LABELS = {
     "compact": "連寫，月日各 2 碼（1150105、20260105）",
     "custom": "自訂正規表示式",
 }
+DATE_PATTERN_LABELS_EN = {
+    "slash": "Y/M/D (115/01/05, 2026/1/5)",
+    "dash": "Y-M-D (115-01-05, 2026-1-5)",
+    "dot": "Y.M.D (115.01.05, 2026.1.5)",
+    "chinese": "Chinese date (year, month, day characters)",
+    "compact": "No separators, 2-digit month and day (1150105, 20260105)",
+    "custom": "Custom regular expression",
+}
 DATE_PATTERN_HINTS = {key: f"正規表示式：{regex}" for key, regex in DATE_PATTERNS.items()} | {
     "custom": "在下面輸入正規表示式，要有三個群組，依序是年、月、日"
 }
+DATE_PATTERN_HINTS_EN = {
+    key: f"Regular expression: {regex}" for key, regex in DATE_PATTERNS.items()
+} | {"custom": "Enter a regular expression below with three groups: year, month, day"}
 YEAR_DIGITS = {"roc": (1, 3), "ad": (4, 4)}
 """民國年 1～3 位數、西元年 4 位數；不符合的算轉換失敗，不會變成錯的日期（例如西元 115 年）。"""
 
@@ -60,7 +78,9 @@ def date_groups(regex: str) -> int:
     try:
         groups = pl.Series([""], dtype=pl.String).str.extract_groups(regex)
     except pl.exceptions.PolarsError as err:
-        raise ValueError(f"正規表示式有誤：{err}") from None
+        raise ValueError(
+            t(f"正規表示式有誤：{err}", f"Invalid regular expression: {err}")
+        ) from None
     return len(groups.struct.fields)
 
 
@@ -89,7 +109,12 @@ class _Convert(Step):
         columns = list(dict.fromkeys(getattr(self, "columns", [])))
         missing = [c for c in columns if c not in data_columns(lf)]
         if missing:
-            raise StepError(f"欄位不存在：{'、'.join(missing)}")
+            raise StepError(
+                t(
+                    f"欄位不存在：{'、'.join(missing)}",
+                    f"{'Column' if len(missing) == 1 else 'Columns'} not found: {', '.join(missing)}",
+                )
+            )
         return columns
 
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
@@ -113,7 +138,10 @@ class _Convert(Step):
         return [
             WarningCheck(
                 condition=pl.col(self.temp(f"bad{i}")).is_not_null(),
-                message=f"「{column}」的「{{}}」不是{self.noun()}，已改成空值",
+                message=t(
+                    f"「{column}」的「{{}}」不是{self.noun()}，已改成空值",
+                    f'"{{}}" in "{column}" is not a valid {self.noun()}; replaced with null',
+                ),
                 detail=pl.col(self.temp(f"bad{i}")),
             )
             for i, column in enumerate(dict.fromkeys(getattr(self, "columns", [])))
@@ -130,9 +158,16 @@ class ParseNumber(_Convert):
     """文字轉數字：去掉千分位，括號 (1,000) 與尾端負號 1,000- 當成負數。"""
 
     type: Literal["parse_number"] = "parse_number"
-    columns: ColumnRefs = Field(title="要轉成數字的欄位")
+    columns: ColumnRefs = Field(
+        title="要轉成數字的欄位", json_schema_extra=en("Columns to convert")
+    )
     kind: NumberKind = Field(
-        default="decimal", title="轉成", json_schema_extra={"ui_labels": NUMBER_KIND_LABELS}
+        default="decimal",
+        title="轉成",
+        json_schema_extra={
+            "ui_labels": NUMBER_KIND_LABELS,
+            **en("Convert to", ui_labels=NUMBER_KIND_LABELS_EN),
+        },
     )
     scale: int = Field(
         default=2,
@@ -140,10 +175,18 @@ class ParseNumber(_Convert):
         le=9,
         title="小數位數",
         description="超過的位數四捨五入",
-        json_schema_extra={"ui_show_if": {"kind": "decimal"}},
+        json_schema_extra={
+            "ui_show_if": {"kind": "decimal"},
+            **en("Decimal places", description="Extra digits are rounded"),
+        },
     )
 
     label = "文字轉數字"
+    label_en = "Text to number"
+    doc_en = (
+        "Convert text to numbers: removes thousands separators; "
+        "(1,000) and a trailing minus (1,000-) are read as negative."
+    )
     category = "欄"
     ai_notes = (
         "原欄位直接換成數字（不新增欄位）。kind=decimal 是精確小數（Decimal，scale 位小數，"
@@ -170,7 +213,7 @@ class ParseNumber(_Convert):
     )
 
     def noun(self) -> str:
-        return "整數" if self.kind == "integer" else "數字"
+        return t("整數", "integer") if self.kind == "integer" else t("數字", "number")
 
     def convert(self, text: pl.Expr) -> pl.Expr:
         s = text.str.replace_all(r"[,\s]", "")
@@ -188,8 +231,13 @@ class ParseNumber(_Convert):
         return rounded.cast(pl.Decimal(PRECISION, self.scale), strict=False)
 
     def describe(self) -> str:
-        to = "整數" if self.kind == "integer" else f"數字（{self.scale} 位小數）"
-        return f"轉成{to}：{quote_list(self.columns)}"
+        if self.kind == "integer":
+            to = t("整數", "integer")
+        else:
+            places = plural(self.scale, "decimal place", "decimal places")
+            to = t(f"數字（{self.scale} 位小數）", f"number ({places})")
+        columns = quote_list(self.columns)
+        return t(f"轉成{to}：{columns}", f"Convert to {to}: {columns}")
 
 
 @register
@@ -197,21 +245,45 @@ class ParseDate(_Convert):
     """文字轉日期：先選樣式（每個樣式是一個正規表示式，也可以自訂），再選民國年或西元年。"""
 
     type: Literal["parse_date"] = "parse_date"
-    columns: ColumnRefs = Field(title="要轉成日期的欄位")
+    columns: ColumnRefs = Field(
+        title="要轉成日期的欄位", json_schema_extra=en("Columns to convert")
+    )
     pattern: DatePattern = Field(
         title="樣式",
-        json_schema_extra={"ui_labels": DATE_PATTERN_LABELS, "ui_option_hints": DATE_PATTERN_HINTS},
+        json_schema_extra={
+            "ui_labels": DATE_PATTERN_LABELS,
+            "ui_option_hints": DATE_PATTERN_HINTS,
+            **en("Format", ui_labels=DATE_PATTERN_LABELS_EN, ui_option_hints=DATE_PATTERN_HINTS_EN),
+        },
     )
     regex: str = Field(
         default="",
         validate_default=True,
         title="正規表示式",
         description="三個群組依序是年、月、日，例如 ^(\\d{3})年(\\d{2})月(\\d{2})日$",
-        json_schema_extra={"ui": "regex", "ui_show_if": {"pattern": "custom"}},
+        json_schema_extra={
+            "ui": "regex",
+            "ui_show_if": {"pattern": "custom"},
+            **en(
+                "Regular expression",
+                description="Three groups in order: year, month, day, e.g. ^(\\d{4})_(\\d{2})_(\\d{2})$",
+            ),
+        },
     )
-    calendar: Calendar = Field(title="年份", json_schema_extra={"ui_labels": CALENDAR_LABELS})
+    calendar: Calendar = Field(
+        title="年份",
+        json_schema_extra={
+            "ui_labels": CALENDAR_LABELS,
+            **en("Year", ui_labels=CALENDAR_LABELS_EN),
+        },
+    )
 
     label = "文字轉日期"
+    label_en = "Text to date"
+    doc_en = (
+        "Convert text to dates: pick a format (each one is a regular expression; "
+        "you can also write your own), then choose ROC or Gregorian years."
+    )
     category = "欄"
     ai_notes = (
         "原欄位直接換成日期（Date，不含時間）。pattern 一定要指定，不會自動判斷："
@@ -247,14 +319,24 @@ class ParseDate(_Convert):
         if info.data.get("pattern") != "custom":
             return value
         if not value.strip():
-            raise ValueError("選「自訂正規表示式」時要輸入正規表示式")
+            raise ValueError(
+                t(
+                    "選「自訂正規表示式」時要輸入正規表示式",
+                    'Enter a regular expression when "Custom regular expression" is selected',
+                )
+            )
         groups = date_groups(value)
         if groups != 3:
-            raise ValueError(f"要剛好三個群組（年、月、日），這個正規表示式有 {groups} 個")
+            raise ValueError(
+                t(
+                    f"要剛好三個群組（年、月、日），這個正規表示式有 {groups} 個",
+                    f"Needs exactly three groups (year, month, day); this regular expression has {groups}",
+                )
+            )
         return value
 
     def noun(self) -> str:
-        return "日期"
+        return t("日期", "date")
 
     def active_regex(self) -> str:
         return self.regex if self.pattern == "custom" else DATE_PATTERNS[self.pattern]
@@ -275,5 +357,13 @@ class ParseDate(_Convert):
         if self.pattern == "custom":
             shape = f"/{self.regex}/"
         else:
-            shape = DATE_PATTERN_LABELS[self.pattern].split("（")[0]
-        return f"轉成日期（{shape}，{'民國年' if self.calendar == 'roc' else '西元年'}）：{quote_list(self.columns)}"
+            shape = t(
+                DATE_PATTERN_LABELS[self.pattern].split("（")[0],
+                DATE_PATTERN_LABELS_EN[self.pattern].split(" (")[0],
+            )
+        year = t("民國年", "ROC year") if self.calendar == "roc" else t("西元年", "Gregorian year")
+        columns = quote_list(self.columns)
+        return t(
+            f"轉成日期（{shape}，{year}）：{columns}",
+            f"Convert to date ({shape}, {year}): {columns}",
+        )

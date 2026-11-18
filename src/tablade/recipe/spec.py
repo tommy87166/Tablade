@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from tablade.i18n import strip_en
 from tablade.steps import all_steps
 
 from .schema import READERS, RECIPE_VERSION, Recipe
@@ -16,7 +17,8 @@ _HUMAN_KEYS = {"title", "description", "ui_labels", "label", "category", "exampl
 
 
 def build_spec() -> dict[str, Any]:
-    schema = Recipe.model_json_schema()
+    """AI skill、驗證器與 schema lock 用的規格：一律中文（拿掉欄位的英文 ``"en"``）。"""
+    schema = strip_en(Recipe.model_json_schema())
     steps = {}
     for cls in all_steps():
         steps[cls.type_name()] = {

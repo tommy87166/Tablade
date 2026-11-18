@@ -237,7 +237,7 @@ export const mockApi: TabladeApi = sample
       set_language: (lang) => {
         mockLang = lang
         sample = samples[lang] ?? (samples.zh as Sample)
-        return withState()
+        return withState({ catalog: sample.ready.catalog })
       },
       rows: (step, offset, limit) => {
         const page = sample.rows[key(step)]

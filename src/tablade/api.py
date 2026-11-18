@@ -163,9 +163,12 @@ class Api:
 
     @_wrap
     def set_language(self, lang: str) -> dict[str, Any]:
-        """畫面的語言（zh、en）：前端啟動時送作業系統的語言，切換時再送一次。"""
+        """畫面的語言（zh、en）：前端啟動時送作業系統的語言，切換時再送一次。
+
+        回傳新的 ``state`` 與那個語言的步驟目錄（步驟名稱、表單的欄位標題跟著換）。
+        """
         self._session.set_language(str(lang))
-        return self._state()
+        return self._state(catalog=catalog())
 
     @_wrap
     def staging_info(self) -> dict[str, Any]:

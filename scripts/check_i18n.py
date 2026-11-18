@@ -39,7 +39,13 @@ PY_MODULES = [
     "selftest.py",
     "update.py",
 ]
-"""要檢查的 Python 檔（相對於 src/tablade）；之後幾批會再加上 steps/、recipe/。"""
+"""要檢查的 Python 檔（相對於 src/tablade）。"""
+PY_FUNCTION_MODULES = ["steps/*.py", "recipe/validator.py", "recipe/schema.py"]
+"""只檢查函式裡面的字串（describe、警告、錯誤訊息）：步驟名稱、欄位標題、選項文字這些寫在類別上的，
+英文寫在旁邊（label_en、doc_en、json_schema_extra 的 en），由 tests/test_i18n.py 檢查每一個都有英文。
+recipe/schema.py 的欄位標題只給 AI skill 用（畫面上的讀取與輸出設定是前端自己寫的），維持中文。"""
+PY_SKIP = {"steps/__init__.py", "steps/registry.py"}
+"""registry.py 的錯誤是寫程式時才會看到的（步驟登錄錯誤），不翻。"""
 
 
 def files() -> list[Path]:
@@ -123,17 +129,43 @@ class _Scanner:
 
 
 def python_files() -> list[Path]:
-    return [PY_SRC / name for name in PY_MODULES]
+    out = [PY_SRC / name for name in PY_MODULES]
+    for pattern in PY_FUNCTION_MODULES:
+        out += [p for p in sorted(PY_SRC.glob(pattern)) if _rel(p) not in PY_SKIP]
+    return out
 
 
-def python_violations(text: str) -> list[tuple[int, str]]:
-    """Python：沒有包在 t() 第一個參數裡的中文字串（docstring 不算）：[(行號, 那一行)]。"""
+def _rel(path: Path) -> str:
+    return path.resolve().relative_to(PY_SRC).as_posix()
+
+
+def _functions_only(path: Path) -> bool:
+    try:
+        rel = _rel(path)
+    except ValueError:
+        return False
+    return any(Path(rel).match(pattern) for pattern in PY_FUNCTION_MODULES)
+
+
+def python_violations(text: str, functions_only: bool = False) -> list[tuple[int, str]]:
+    """Python：沒有包在 t() 第一個參數裡的中文字串（docstring 不算）：[(行號, 那一行)]。
+
+    ``functions_only``：只看函式裡面的字串（步驟檔：寫在類別上的名稱、欄位標題另外檢查）。
+    """
     lines = text.split("\n")
     tree = ast.parse(text)
     parents: dict[ast.AST, ast.AST] = {}
     for node in ast.walk(tree):
         for child in ast.iter_child_nodes(node):
             parents[child] = node
+
+    def in_function(node: ast.AST) -> bool:
+        parent = parents.get(node)
+        while parent is not None:
+            if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                return True
+            parent = parents.get(parent)
+        return False
 
     def docstring(node: ast.AST) -> bool:
         return isinstance(parents.get(node), ast.Expr)
@@ -155,9 +187,15 @@ def python_violations(text: str) -> list[tuple[int, str]]:
             continue
         if not CJK.search(node.value) or docstring(node):
             continue
-        first = node.lineno
-        last = getattr(node, "end_lineno", first) or first
-        if any("i18n-ignore" in lines[i - 1] for i in range(first, last + 1)):
+        if functions_only and not in_function(node):
+            continue
+        # 同一個陳述式（格式化工具可能把它拆成好幾行）裡有 i18n-ignore 就不檢查
+        stmt: ast.AST = node
+        while stmt in parents and not isinstance(stmt, ast.stmt):
+            stmt = parents[stmt]
+        first = getattr(stmt, "lineno", node.lineno)
+        last = getattr(stmt, "end_lineno", first) or first
+        if any("i18n-ignore" in lines[i - 1] for i in range(first, min(last + 1, len(lines) + 1))):
             continue
         if not inside_t(node):
             bad.add(first)
@@ -178,8 +216,12 @@ def main(argv: list[str]) -> int:
     targets = [Path(a).resolve() for a in argv] if argv else files() + python_files()
     found = 0
     for path in targets:
-        check = python_violations if path.suffix == ".py" else violations
-        for no, line in check(path.read_text(encoding="utf-8")):
+        text = path.read_text(encoding="utf-8")
+        if path.suffix == ".py":
+            found_lines = python_violations(text, functions_only=_functions_only(path))
+        else:
+            found_lines = violations(text)
+        for no, line in found_lines:
             found += 1
             print(f"{path.relative_to(ROOT)}:{no}: {line}")
     if found:

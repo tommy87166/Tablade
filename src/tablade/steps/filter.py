@@ -7,6 +7,8 @@ from typing import Annotated, Literal
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
+from tablade.i18n import en, t
+
 from .base import ColumnRef, Example, Step, is_blank, pick_column
 from .registry import register
 
@@ -18,24 +20,41 @@ TEXT_OPS = {
     "starts_with": "開頭是",
     "ends_with": "結尾是",
 }
+TEXT_OPS_EN = {
+    "equals": "equals",
+    "not_equals": "does not equal",
+    "contains": "contains",
+    "not_contains": "does not contain",
+    "starts_with": "begins with",
+    "ends_with": "ends with",
+}
 REGEX_OPS = {"regex": "符合正規表示式", "not_regex": "不符合正規表示式"}
+REGEX_OPS_EN = {"regex": "matches regex", "not_regex": "does not match regex"}
 EMPTY_OPS = {"is_empty": "是空白", "is_not_empty": "不是空白"}
+EMPTY_OPS_EN = {"is_empty": "is blank", "is_not_empty": "is not blank"}
+MATCH_LABELS_EN = {"all": "All conditions", "any": "Any condition"}
+KEEP_LABELS_EN = {"matching": "Matching rows", "non_matching": "Non-matching rows"}
 NUMBER_OPS = {"gt": ">", "ge": "≥", "lt": "<", "le": "≤", "num_equals": "="}
 
 
 class _Condition(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    column: ColumnRef = Field(title="欄位")
+    column: ColumnRef = Field(title="欄位", json_schema_extra=en("Column"))
 
 
 class TextCondition(_Condition):
-    model_config = ConfigDict(title="文字")
+    model_config = ConfigDict(title="文字", json_schema_extra=en("Text"))
 
     op: Literal["equals", "not_equals", "contains", "not_contains", "starts_with", "ends_with"] = (
-        Field(title="條件", json_schema_extra={"ui_labels": TEXT_OPS})
+        Field(
+            title="條件",
+            json_schema_extra={"ui_labels": TEXT_OPS, **en("Operator", ui_labels=TEXT_OPS_EN)},
+        )
     )
-    value: str = Field(title="值")
-    ignore_case: bool = Field(default=False, title="不分大小寫")
+    value: str = Field(title="值", json_schema_extra=en("Value"))
+    ignore_case: bool = Field(
+        default=False, title="不分大小寫", json_schema_extra=en("Ignore case")
+    )
 
     def expr(self) -> pl.Expr:
         col, value = pl.col(self.column).cast(pl.String), self.value
@@ -52,30 +71,40 @@ class TextCondition(_Condition):
         return base
 
     def describe(self) -> str:
-        return f"{self.column} {TEXT_OPS[self.op]}「{self.value}」"
+        return t(
+            f"{self.column} {TEXT_OPS[self.op]}「{self.value}」",
+            f'{self.column} {TEXT_OPS_EN[self.op]} "{self.value}"',
+        )
 
 
 class RegexCondition(_Condition):
-    model_config = ConfigDict(title="正規表示式")
+    model_config = ConfigDict(title="正規表示式", json_schema_extra=en("Regex"))
 
     op: Literal["regex", "not_regex"] = Field(
-        title="條件", json_schema_extra={"ui_labels": REGEX_OPS}
+        title="條件",
+        json_schema_extra={"ui_labels": REGEX_OPS, **en("Operator", ui_labels=REGEX_OPS_EN)},
     )
-    pattern: str = Field(title="正規表示式", min_length=1, json_schema_extra={"ui": "regex"})
+    pattern: str = Field(
+        title="正規表示式", min_length=1, json_schema_extra={"ui": "regex", **en("Pattern")}
+    )
 
     def expr(self) -> pl.Expr:
         matched = pl.col(self.column).cast(pl.String).str.contains(self.pattern)
         return matched if self.op == "regex" else ~matched
 
     def describe(self) -> str:
-        return f"{self.column} {REGEX_OPS[self.op]} /{self.pattern}/"
+        return t(
+            f"{self.column} {REGEX_OPS[self.op]} /{self.pattern}/",
+            f"{self.column} {REGEX_OPS_EN[self.op]} /{self.pattern}/",
+        )
 
 
 class EmptyCondition(_Condition):
-    model_config = ConfigDict(title="空白")
+    model_config = ConfigDict(title="空白", json_schema_extra=en("Blank"))
 
     op: Literal["is_empty", "is_not_empty"] = Field(
-        title="條件", json_schema_extra={"ui_labels": EMPTY_OPS}
+        title="條件",
+        json_schema_extra={"ui_labels": EMPTY_OPS, **en("Operator", ui_labels=EMPTY_OPS_EN)},
     )
 
     def expr(self) -> pl.Expr:
@@ -83,16 +112,16 @@ class EmptyCondition(_Condition):
         return blank if self.op == "is_empty" else ~blank
 
     def describe(self) -> str:
-        return f"{self.column} {EMPTY_OPS[self.op]}"
+        return t(f"{self.column} {EMPTY_OPS[self.op]}", f"{self.column} {EMPTY_OPS_EN[self.op]}")
 
 
 class NumberCondition(_Condition):
-    model_config = ConfigDict(title="數值")
+    model_config = ConfigDict(title="數值", json_schema_extra=en("Number"))
 
     op: Literal["gt", "ge", "lt", "le", "num_equals"] = Field(
-        title="條件", json_schema_extra={"ui_labels": NUMBER_OPS}
+        title="條件", json_schema_extra={"ui_labels": NUMBER_OPS, **en("Operator")}
     )
-    value: float = Field(title="數值")
+    value: float = Field(title="數值", json_schema_extra=en("Number"))
 
     def expr(self) -> pl.Expr:
         number = (
@@ -124,21 +153,29 @@ class Filter(Step):
     """依條件保留（或排除）列。"""
 
     type: Literal["filter"] = "filter"
-    conditions: list[Condition] = Field(title="條件", min_length=1)
+    conditions: list[Condition] = Field(
+        title="條件", min_length=1, json_schema_extra=en("Conditions")
+    )
     match: Literal["all", "any"] = Field(
         default="all",
         title="條件組合",
-        json_schema_extra={"ui_labels": {"all": "全部符合", "any": "任一符合"}},
+        json_schema_extra={
+            "ui_labels": {"all": "全部符合", "any": "任一符合"},
+            **en("Match", ui_labels=MATCH_LABELS_EN),
+        },
     )
     keep: Literal["matching", "non_matching"] = Field(
         default="matching",
         title="保留",
         json_schema_extra={
-            "ui_labels": {"matching": "符合條件的列", "non_matching": "不符合條件的列"}
+            "ui_labels": {"matching": "符合條件的列", "non_matching": "不符合條件的列"},
+            **en("Keep", ui_labels=KEEP_LABELS_EN),
         },
     )
 
     label = "篩選"
+    label_en = "Filter rows"
+    doc_en = "Keep (or exclude) rows that match conditions."
     category = "列"
     ai_notes = (
         "條件的 op 決定需要哪些欄位：文字條件用 value（字串），正規表示式用 pattern，"
@@ -185,6 +222,8 @@ class Filter(Step):
         return lf.filter(combined if self.keep == "matching" else ~combined)
 
     def describe(self) -> str:
-        joiner = " 且 " if self.match == "all" else " 或 "
+        joiner = t(" 且 ", " and ") if self.match == "all" else t(" 或 ", " or ")
         text = joiner.join(c.describe() for c in self.conditions)
-        return f"{'保留' if self.keep == 'matching' else '排除'}：{text}"
+        if self.keep == "matching":
+            return t(f"保留：{text}", f"Keep: {text}")
+        return t(f"排除：{text}", f"Exclude: {text}")

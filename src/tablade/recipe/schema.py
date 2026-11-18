@@ -15,6 +15,7 @@ from pydantic import (
     field_validator,
 )
 
+from tablade.i18n import plural, t
 from tablade.ingest.encoding import SUPPORTED
 from tablade.steps import all_steps
 from tablade.steps.base import Step
@@ -31,7 +32,7 @@ READERS: dict[str, dict[str, Any]] = {
     "parquet": {"columns": None},
     "stages": {"columns": None},
 }
-DEFAULT_STAGE = "預設階段"
+DEFAULT_STAGE = "預設階段"  # i18n-ignore：階段名稱會寫進 Recipe
 """新的 Recipe 第一個階段的名稱。"""
 
 AnyStep = Annotated[Union[tuple(all_steps())], Field(discriminator="type")]  # noqa: UP007
@@ -149,7 +150,7 @@ class Recipe(_Model):
 class RecipeError(ValueError):
     def __init__(self, issues: list[dict[str, Any]]) -> None:
         self.issues = issues
-        super().__init__("；".join(f"{i['path']}: {i['error']}" for i in issues))
+        super().__init__(t("；", "; ").join(f"{i['path']}: {i['error']}" for i in issues))
 
 
 def pydantic_issues(err: ValidationError) -> list[dict[str, Any]]:
@@ -177,25 +178,55 @@ _MESSAGES = {
     "dict_type": "應該是物件",
     "string_pattern_mismatch": "格式不符",
 }
+_MESSAGES_EN = {
+    "missing": "Required",
+    "extra_forbidden": "Unknown field",
+    "string_type": "Should be text",
+    "int_type": "Should be an integer",
+    "bool_type": "Should be true / false",
+    "list_type": "Should be a list",
+    "dict_type": "Should be an object",
+    "string_pattern_mismatch": "Invalid format",
+}
+"""``_MESSAGES`` 的英文（模組最上層不能用 t() 算好，用到時才依語言選）。"""
 
 
 def _message(error: Any) -> str:
     """pydantic 常見的錯誤換成中文（畫面上的步驟錯誤、開啟 Recipe 的問題清單）；其他的照原樣。"""
     kind, ctx = error.get("type"), error.get("ctx") or {}
     if kind in _MESSAGES:
-        return _MESSAGES[kind]
+        return t(_MESSAGES[kind], _MESSAGES_EN[kind])
     if kind == "string_too_short":
-        return "不能是空白" if ctx.get("min_length") == 1 else f"至少 {ctx.get('min_length')} 個字"
+        return (
+            t("不能是空白", "Cannot be blank")
+            if ctx.get("min_length") == 1
+            else t(
+                f"至少 {ctx.get('min_length')} 個字",
+                f"At least {plural(ctx.get('min_length'), 'character', 'characters')}",
+            )
+        )
     if kind == "string_too_long":
-        return f"最多 {ctx.get('max_length')} 個字"
+        return t(
+            f"最多 {ctx.get('max_length')} 個字",
+            f"At most {plural(ctx.get('max_length'), 'character', 'characters')}",
+        )
     if kind == "too_short":
-        return f"至少要有 {ctx.get('min_length')} 項"
+        return t(
+            f"至少要有 {ctx.get('min_length')} 項",
+            f"Needs at least {plural(ctx.get('min_length'), 'item', 'items')}",
+        )
     if kind == "too_long":
-        return f"最多 {ctx.get('max_length')} 項"
+        return t(
+            f"最多 {ctx.get('max_length')} 項",
+            f"At most {plural(ctx.get('max_length'), 'item', 'items')}",
+        )
     if kind == "literal_error":
-        return f"不支援的值（可用：{ctx.get('expected')}）"
+        return t(
+            f"不支援的值（可用：{ctx.get('expected')}）",
+            f"Unsupported value (allowed: {ctx.get('expected')})",
+        )
     if kind == "greater_than_equal":
-        return f"不能小於 {ctx.get('ge')}"
+        return t(f"不能小於 {ctx.get('ge')}", f"Cannot be less than {ctx.get('ge')}")
     return str(error["msg"]).removeprefix("Value error, ")
 
 
@@ -246,13 +277,22 @@ def load_json(path: str | Path) -> dict[str, Any]:
             [
                 {
                     "path": "(Recipe)",
-                    "error": f"不是合法的 JSON：第 {err.lineno} 行第 {err.colno} 欄，{err.msg}",
+                    "error": t(
+                        f"不是合法的 JSON：第 {err.lineno} 行第 {err.colno} 欄，{err.msg}",
+                        f"Not valid JSON (line {err.lineno}, column {err.colno}): {err.msg}",
+                    ),
                     "severity": "error",
                 }
             ]
         ) from None
     if not isinstance(data, dict):
         raise RecipeError(
-            [{"path": "(Recipe)", "error": "Recipe 必須是 JSON 物件", "severity": "error"}]
+            [
+                {
+                    "path": "(Recipe)",
+                    "error": t("Recipe 必須是 JSON 物件", "The Recipe must be a JSON object"),
+                    "severity": "error",
+                }
+            ]
         )
     return data

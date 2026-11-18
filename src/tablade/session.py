@@ -45,7 +45,7 @@ from .engine.run import (
     stage_frame,
 )
 from .export.outputs import OutputError, default_output_name, log_dir, plan_outputs, resolve_outputs
-from .i18n import LANGS, plural, set_lang, t
+from .i18n import LANGS, localize_schema, plural, set_lang, t
 from .ingest.encoding import DecodeError
 from .ingest.excel import ExcelError, is_excel, sheet_names
 from .ingest.sources import (
@@ -232,7 +232,7 @@ def data_value_fields(type_name: Any) -> dict[str, str]:
 
 def _label(type_name: Any) -> str:
     try:
-        return get(type_name).label
+        return get(type_name).display_label()
     except KeyError:
         return str(type_name)
 
@@ -1334,8 +1334,8 @@ class Session:
                         "index": i,
                         "id": raw.get("id"),
                         "type": raw.get("type"),
-                        "label": cls.label if cls else raw.get("type"),
-                        "category": cls.category if cls else "",
+                        "label": cls.display_label() if cls else raw.get("type"),
+                        "category": cls.display_category() if cls else "",
                         "enabled": enabled,
                         "status": status,
                         "describe": describe,
@@ -1508,7 +1508,7 @@ class Session:
                 cls = _safe_get(raw.get("type"))
                 if cls is not None and cls.whole_source and raw.get("enabled", True) is not False:
                     name = "" if current else self.stages[si]["name"]
-                    out.append({"stage": name, "number": i + 1, "label": cls.label})
+                    out.append({"stage": name, "number": i + 1, "label": cls.display_label()})
         return out
 
     def rows(self, index: int, offset: int, limit: int) -> dict[str, Any]:
@@ -1708,7 +1708,9 @@ class Session:
             for i, raw in enumerate(stage["steps"]):
                 if raw.get("id") == step_id:
                     cls = _safe_get(raw.get("type"))
-                    label = t(f"「{cls.label}」", f' "{cls.label}"') if cls else ""
+                    label = (
+                        t(f"「{cls.display_label()}」", f' "{cls.display_label()}"') if cls else ""
+                    )
                     where = (
                         t(f"階段「{stage['name']}」", f'Stage "{stage["name"]}", ')
                         if len(self.stages) > 1
@@ -1917,16 +1919,19 @@ def _safe_get(type_name: Any) -> type[Step] | None:
 
 
 def catalog() -> list[dict[str, Any]]:
-    """給前端的步驟目錄：每種步驟的名稱、說明與參數 schema（表單由 schema 自動產生）。"""
+    """給前端的步驟目錄：每種步驟的名稱、說明與參數 schema（表單由 schema 自動產生）。
+
+    依畫面的語言：名稱、分類、說明換成英文，schema 裡每個欄位的標題、說明、選項也換（``localize_schema``）。
+    """
     items = []
     for cls in all_steps():
-        schema = cls.model_json_schema()
+        schema = localize_schema(cls.model_json_schema())
         items.append(
             {
                 "type": cls.type_name(),
-                "label": cls.label,
-                "category": cls.category,
-                "description": (cls.__doc__ or "").strip(),
+                "label": cls.display_label(),
+                "category": cls.display_category(),
+                "description": cls.display_doc(),
                 "scope": cls.scope(),
                 "schema": schema,
             }

@@ -15,7 +15,7 @@ Tablade：本機執行、Power Query 式的資料清洗工具（Python + Polars 
 
 - 使用 Polars **2.x 的 Python API**。不使用已移除的 API（例如 `melt` 改用 `unpivot`）；不確定時先查官方文件或實際跑一次。
 - 新增步驟（DESIGN.md §7.3、§17.5）：
-  1. 在 `src/tablade/steps/` 寫一個 `Step` 子類別並加上 `@register`：`type: Literal[...]`、參數欄位（`title`、引用欄位用 `ColumnRef` / `ColumnRefs`、新欄名用 `NewColumns`）、`label`、`category`、docstring、`ai_notes`、`effect`（欄位效果）、至少一個 `examples`（同時是測試）。
+  1. 在 `src/tablade/steps/` 寫一個 `Step` 子類別並加上 `@register`：`type: Literal[...]`、參數欄位（`title`、引用欄位用 `ColumnRef` / `ColumnRefs`、新欄名用 `NewColumns`）、`label`、`category`、docstring、`ai_notes`、`effect`（欄位效果）、至少一個 `examples`（同時是測試）。畫面的英文：`label_en`、`doc_en`（docstring 的英文），每個欄位的 `Field(title=…, json_schema_extra=en("English"))`（`tablade/i18n.py` 的 `en()`；選項文字用 `en(…, ui_labels=…_EN)`），`describe()`、警告、錯誤訊息用 `t("中文", "English")`；`ai_notes` 與 `examples` 維持中文（`tests/test_i18n.py` 會檢查）。
   2. 實作 `apply()`（純函式）、`describe()`，需要時加 `warning_checks()` 與建立步驟時用的 `suggest_*()`。
   3. 新模組要加進 `steps/__init__.py`（匯入順序＝顯示順序），並在 `tests/test_steps.py` 補邊界情況的測試。
   4. 結構有變（新增步驟或參數、改預設值）就升 `RECIPE_VERSION`（相容升 minor），再執行 `uv run python scripts/update_schema_lock.py`；只改說明文字不用升。
@@ -39,6 +39,7 @@ Tablade：本機執行、Power Query 式的資料清洗工具（Python + Polars 
 - `src/bridge.ts` 的 `TabladeApi` 必須與 `api.py` 的公開方法一致（有測試檢查）。
 - 不用 `dangerouslySetInnerHTML` / `innerHTML`，不用 `fetch` / `WebSocket` 等網路 API，不用 `eval` / `new Function`。
 - 畫面上的文字一律寫成 `tr('繁體中文', 'English')`（`src/i18n.ts`；用語照 `docs/i18n-plan.md` 的對照表），不能在模組最上層用 `tr()` 算常數；`tests/test_i18n.py` 會檢查。
+- Python 產生、畫面上看得到的文字也一樣寫成 `t("中文", "English")`（`tablade/i18n.py`；`recipe/validator.py` 用它自己的 `t()`）；會變成資料的字串（程式產生的欄名、來源檔名稱、參數預設值）不翻，那一行標 `# i18n-ignore`。
 - UI 元件用 shadcn/ui：`cd frontend && npx shadcn@latest add <元件>`。**不要**把 `shadcn` 裝成依賴；新增元件後確認 `src/index.css` 沒有被改回 `@import "shadcn/tailwind.css"`。
 - 不載入外部字型或資源；字型用系統字型。
 - CSP 由 `vite.config.ts` 在 build 時注入，不要寫在 `index.html`。

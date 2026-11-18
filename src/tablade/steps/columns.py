@@ -7,11 +7,14 @@ from typing import Annotated, Literal
 import polars as pl
 from pydantic import Field, ValidationInfo, field_validator
 
+from tablade.i18n import en, plural, t
+
 from .base import Example, NonEmpty, Step, pick_column, quote_list
 from .registry import register
 
 By = Literal["name", "position"]
 BY_LABELS = {"name": "名稱", "position": "位置（第幾欄）"}
+BY_LABELS_EN = {"name": "Name", "position": "Position (column number)"}
 Position = Annotated[int, Field(ge=1)]
 
 
@@ -20,22 +23,42 @@ class RemoveColumns(Step):
     """刪除欄位：依名稱或依位置（第幾個資料欄）選，可以一次選很多個。"""
 
     type: Literal["remove_columns"] = "remove_columns"
-    by: By = Field(default="name", title="依", json_schema_extra={"ui_labels": BY_LABELS})
+    by: By = Field(
+        default="name",
+        title="依",
+        json_schema_extra={"ui_labels": BY_LABELS, **en("By", ui_labels=BY_LABELS_EN)},
+    )
     columns: list[NonEmpty] = Field(
         default_factory=list,
         validate_default=True,
         title="要刪除的欄位",
-        json_schema_extra={"ui": "columns", "ui_show_if": {"by": "name"}},
+        json_schema_extra={
+            "ui": "columns",
+            "ui_show_if": {"by": "name"},
+            **en("Columns to remove"),
+        },
     )
     positions: list[Position] = Field(
         default_factory=list,
         validate_default=True,
         title="要刪除第幾欄",
         description="從 1 起算，不算系統欄位",
-        json_schema_extra={"ui": "column_positions", "ui_show_if": {"by": "position"}},
+        json_schema_extra={
+            "ui": "column_positions",
+            "ui_show_if": {"by": "position"},
+            **en(
+                "Column positions to remove",
+                description="Starting from 1, not counting system columns",
+            ),
+        },
     )
 
     label = "刪除欄"
+    label_en = "Remove columns"
+    doc_en = (
+        "Remove columns, chosen by name or by position (which data column); "
+        "you can choose several at once."
+    )
     category = "欄"
     effect = {"kind": "drop", "by": "$by", "names": "$columns", "positions": "$positions"}
     ai_notes = (
@@ -72,14 +95,14 @@ class RemoveColumns(Step):
     @classmethod
     def _names_given(cls, value: list[str], info: ValidationInfo) -> list[str]:
         if info.data.get("by", "name") == "name" and not value:
-            raise ValueError("要選至少一個要刪除的欄位")
+            raise ValueError(t("要選至少一個要刪除的欄位", "Choose at least one column to remove"))
         return value
 
     @field_validator("positions")
     @classmethod
     def _positions_given(cls, value: list[int], info: ValidationInfo) -> list[int]:
         if info.data.get("by") == "position" and not value:
-            raise ValueError("要選至少一個要刪除的欄位")
+            raise ValueError(t("要選至少一個要刪除的欄位", "Choose at least one column to remove"))
         return value
 
     @classmethod
@@ -93,8 +116,12 @@ class RemoveColumns(Step):
 
     def describe(self) -> str:
         if self.by == "position":
-            return f"刪除第 {'、'.join(str(p) for p in sorted(set(self.positions)))} 欄"
-        return f"刪除欄：{quote_list(self.columns)}"
+            numbers = [str(p) for p in sorted(set(self.positions))]
+            noun = "column" if len(numbers) == 1 else "columns"
+            return t(f"刪除第 {'、'.join(numbers)} 欄", f"Remove {noun} {', '.join(numbers)}")
+        return t(
+            f"刪除欄：{quote_list(self.columns)}", f"Remove columns: {quote_list(self.columns)}"
+        )
 
 
 @register
@@ -103,10 +130,17 @@ class SelectColumns(Step):
 
     type: Literal["select_columns"] = "select_columns"
     columns: list[NonEmpty] = Field(
-        title="要保留的欄位（依順序）", min_length=1, json_schema_extra={"ui": "column_order"}
+        title="要保留的欄位（依順序）",
+        min_length=1,
+        json_schema_extra={"ui": "column_order", **en("Columns to keep (in order)")},
     )
 
     label = "保留和排序欄位"
+    label_en = "Keep and reorder columns"
+    doc_en = (
+        "Keep and reorder columns: keep only the listed columns, in the order listed; "
+        "columns not listed are removed."
+    )
     category = "欄"
     effect = {"kind": "select", "names": "$columns"}
     ai_notes = (
@@ -141,7 +175,11 @@ class SelectColumns(Step):
         return lf.select(self.output_order(lf))
 
     def describe(self) -> str:
-        return f"保留 {len(self.columns)} 欄：{quote_list(self.columns, limit=6)}"
+        shown = quote_list(self.columns, limit=6)
+        return t(
+            f"保留 {len(self.columns)} 欄：{shown}",
+            f"Keep {plural(len(self.columns), 'column', 'columns')}: {shown}",
+        )
 
 
 @register
@@ -153,10 +191,15 @@ class RenameColumns(Step):
         title="新欄名",
         min_length=1,
         description="空白代表不改",
-        json_schema_extra={"ui": "rename_map"},
+        json_schema_extra={
+            "ui": "rename_map",
+            **en("New column names", description="Leave blank to keep the current name"),
+        },
     )
 
     label = "改欄名"
+    label_en = "Rename columns"
+    doc_en = "Rename columns: type the new name next to each column you want to rename."
     category = "欄"
     effect = {"kind": "rename", "names": "$names"}
     ai_notes = (
@@ -184,4 +227,4 @@ class RenameColumns(Step):
 
     def describe(self) -> str:
         pairs = [f"{old}→{new}" for old, new in self.names.items()]
-        return f"改欄名：{quote_list(pairs)}"
+        return t(f"改欄名：{quote_list(pairs)}", f"Rename columns: {quote_list(pairs)}")
