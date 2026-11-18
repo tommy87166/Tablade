@@ -38,7 +38,8 @@ const current = () => {
   state.recipe.open = open
   if (!loaded) {
     state.input = { ...state.input, loaded: false, sources: [], rows: null, total_rows: null, columns: null }
-    state.preview = { ...state.preview, rows: null, columns: [], warnings: [] }
+    // 跟 session.py 一樣：沒有資料時哪一步都算不出來（step 是 -1）
+    state.preview = { ...state.preview, step: -1, rows: null, columns: [], warnings: [] }
     state.steps = state.steps.map((s) => ({ ...s, status: 'waiting', rows: null, files: null }))
   }
   return state
