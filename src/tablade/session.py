@@ -31,9 +31,11 @@ from . import __version__
 from .dtypes import type_label
 from .engine.check import check_recipe, format_issues, format_report
 from .engine.run import (
+    PREPARE,
     SAMPLE_HEAD,
     SAMPLE_TAIL,
     SAMPLE_THRESHOLD,
+    TRIAL,
     RowWarning,
     RunError,
     StageTracker,
@@ -51,6 +53,7 @@ from .ingest.sources import (
     check_entries,
     concat,
     expand,
+    resolve,
     sample,
     scan_parts,
     staging_dir,
@@ -58,6 +61,7 @@ from .ingest.sources import (
 from .recipe.schema import (
     DEFAULT_STAGE,
     RECIPE_VERSION,
+    Recipe,
     RecipeError,
     load_json,
     parse_recipe,
@@ -85,6 +89,19 @@ OLD_FORMAT = "這是舊的 Recipe 寫法（最外層的 inputs / steps），請�
 
 class SessionError(ValueError):
     pass
+
+
+class TrialError(SessionError):
+    """匯出前的試跑出錯：指到哪個階段的第幾步（畫面上「前往這一步」）。"""
+
+    def __init__(self, message: str, stage: int | None, step: int | None) -> None:
+        super().__init__(message)
+        self.stage, self.step = stage, step
+
+
+LOAD_HINT = "請先按工具列的「載入資料及預覽」"
+TRIAL_HEAD = 2_000
+"""匯出前試跑時每個檔取前幾行（只為了先找出步驟的錯誤，不用多）。"""
 
 
 @dataclass
@@ -254,9 +271,9 @@ class Session:
         self._redo: list[dict[str, Any]] = []
         self._sheets: dict[tuple[str, int, int], list[str]] = {}
         self._sources: dict[str, tuple[str, pl.DataFrame, list[SourceFile]]] = {}
-        """每個讀實際檔的階段按「載入資料」讀進來的資料（設定指紋、資料、來源檔）；不會自動讀檔。"""
+        """每個讀實際檔的階段按「載入資料及預覽」讀進來的資料（設定指紋、資料、來源檔）；不會自動讀檔。"""
         self._stale: set[str] = set()
-        """載入之後檔案清單、讀取方式、編碼或檔案內容變了的階段：要重新按「載入資料」。"""
+        """載入之後檔案清單、讀取方式、編碼或檔案內容變了的階段：要重新按「載入資料及預覽」。"""
         self.progress: Progress = None
         """讀檔、轉碼、匯出時的進度回報（api.py 會把它推給前端）。"""
         self._computed: dict[str, list[_Computed]] = {}
@@ -688,7 +705,7 @@ class Session:
         """第 index 步的輸入裡，某一欄有哪些不同的值（「從資料讀出」用；大檔時是預覽的樣本）。"""
         frame = self._frame_before(index)
         if frame is None:
-            raise SessionError("還沒有資料：請先在「讀取資料」按「載入資料」")
+            raise SessionError(f"還沒有資料：{LOAD_HINT}")
         if not isinstance(column, str) or column not in frame.columns:
             raise SessionError(f"欄位「{column}」不存在" if column else "先選要從哪一欄讀")
         found = data_values(frame, column)
@@ -831,15 +848,13 @@ class Session:
         return stage["input"].get("reader") != "stages"
 
     def load_data(self) -> None:
-        """「載入資料」：依序讀每個讀實際檔的階段的檔案清單（資料大時讀樣本），並算出每個階段的結果。
+        """「載入資料及預覽」：依序讀每個讀實際檔的階段的檔案清單（資料大時讀樣本），並算出每個階段的結果。
 
-        目前的階段一定要有檔案；其他還沒加檔案的階段先跳過。清單上有找不到的檔就不讀。
-        每個階段的狀態（處理中、完成、失敗）透過 progress 回報（畫面上的階段進度）。
+        還沒加檔案的階段先跳過（至少要有一個階段有檔案）。清單上有找不到的檔就不讀。
+        每個階段的狀態（處理中、讀到第幾個檔、完成、失敗）透過 progress 回報（畫面上的進度視窗）。
         """
         with self._lock:
             base = self._require_recipe()
-            if self._reads_files(self.stage) and not self.input["files"]:
-                raise SessionError("還沒有加入資料檔")
             todo = [st for st in self.stages if self._reads_files(st) and st["input"]["files"]]
             if not todo:
                 raise SessionError("還沒有加入資料檔")
@@ -858,14 +873,16 @@ class Session:
                 for k, stage in enumerate(self.stages):
                     tracker.start(k)
                     if stage in todo:
-                        self._load_stage(stage, base, multi)
+                        self._load_stage(stage, base, multi, tracker)
                     self._finish_stage(k, tracker)
             except BaseException:
                 tracker.fail()
                 raise
 
-    def _load_stage(self, stage: dict[str, Any], base: Path, multi: bool) -> None:
-        """讀一個階段的檔（已經載入、檔案沒變就沿用）。"""
+    def _load_stage(
+        self, stage: dict[str, Any], base: Path, multi: bool, tracker: StageTracker
+    ) -> None:
+        """讀一個階段的檔（已經載入、檔案沒變就沿用）；進度視窗上這個階段寫出已處理幾個檔。"""
         name, source = stage["name"], stage["input"]
         key = self._source_key(stage)
         if name in self._sources and self._sources[name][0] == key:
@@ -873,6 +890,7 @@ class Session:
         self._sources.pop(name, None)
         self._stale.discard(name)
         try:
+            total = len(resolve(source["files"], base))
             parts, files = scan_parts(
                 source["files"],
                 source["reader"],
@@ -880,7 +898,9 @@ class Session:
                 base,
                 self.progress,
                 source.get("sheet", ""),
+                on_file=lambda i, file: tracker.files(i, total, file),
             )
+            tracker.files(total, total)
             if sum(f.rows for f in files) <= SAMPLE_THRESHOLD:
                 frame = concat(parts).collect(engine="streaming")
             else:
@@ -903,7 +923,7 @@ class Session:
             tracker.done(index, frame.height)
 
     def _load_source(self, stage: dict[str, Any]) -> tuple[pl.DataFrame | None, list[SourceFile]]:
-        """這個階段已載入的資料；設定或檔案變了就放掉（要重新按「載入資料」），不會自動讀檔。"""
+        """這個階段已載入的資料；設定或檔案變了就放掉（要重新按「載入資料及預覽」），不會自動讀檔。"""
         name = stage["name"]
         entry = self._sources.get(name)
         if entry is None:
@@ -1186,6 +1206,13 @@ class Session:
                 },
                 "stages": self._stages_state(),
                 "current": self.current,
+                "actions": {
+                    name: {"ok": problem is None, "reason": problem}
+                    for name, problem in (
+                        ("load", self._load_problem()),
+                        ("export", self._export_problem()),
+                    )
+                },
                 "input": {
                     **{k: v for k, v in self.input.items()},
                     "sheets": self._sheet_names(),
@@ -1277,7 +1304,7 @@ class Session:
     # ── 匯出與報告 ────────────────────────────────────────────
 
     def require_loaded(self) -> Path:
-        """「處理並匯出資料」前的檢查：每個讀實際檔的階段都要先按「載入資料」，而且載入後設定與檔案都沒變。"""
+        """「完整跑一次」前的檢查：每個讀實際檔的階段都要先載入，而且載入後設定與檔案都沒變。"""
         with self._lock:
             base = self._require_recipe()
             waiting = [
@@ -1287,31 +1314,119 @@ class Session:
             ]
             if waiting:
                 where = f"（{'、'.join(waiting)}）" if len(self.stages) > 1 else ""
-                raise SessionError(f"請先在「讀取資料」按「載入資料」{where}")
+                raise SessionError(f"{LOAD_HINT}{where}")
             return base
+
+    def _file_problem(self) -> str | None:
+        """檔案清單的問題：讀實際檔的階段還沒加檔案，或清單上有找不到的檔。"""
+        base = self.base_dir or Path.cwd()
+        multi = len(self.stages) > 1
+        for stage in self.stages:
+            if not self._reads_files(stage):
+                continue
+            where = f"（階段「{stage['name']}」）" if multi else ""
+            if not stage["input"]["files"]:
+                return f"還沒有加入資料檔{where}"
+            missing = [
+                e["path"] for e in check_entries(stage["input"]["files"], base) if not e["found"]
+            ]
+            if missing:
+                return f"找不到：{'、'.join(missing)}{where}（請先從檔案清單移除）"
+        return None
+
+    def _load_problem(self) -> str | None:
+        """「載入資料及預覽」不能按的原因（None 是可以按）。"""
+        if self.base_dir is None:
+            return "還沒有開啟 Recipe"
+        with_files = [st for st in self.stages if self._reads_files(st) and st["input"]["files"]]
+        if not with_files:
+            return "還沒有加入資料檔"
+        base, multi = self.base_dir, len(self.stages) > 1
+        for stage in with_files:
+            missing = [
+                e["path"] for e in check_entries(stage["input"]["files"], base) if not e["found"]
+            ]
+            if missing:
+                where = f"（階段「{stage['name']}」）" if multi else ""
+                return f"找不到：{'、'.join(missing)}{where}（請先從檔案清單移除）"
+        if all(self._load_source(st)[0] is not None for st in with_files):
+            return "已載入；檔案清單、讀取方式或編碼變更後可以重新載入"
+        return None
+
+    def _export_problem(self) -> str | None:
+        """「處理並匯出資料」不能按的原因（None 是可以按）。不用先載入資料。"""
+        if self.base_dir is None:
+            return "還沒有開啟 Recipe"
+        problem = self._file_problem()
+        if problem:
+            return problem
+        for stage, planned in zip(self.stages, self._outputs(), strict=True):
+            if planned is not None and planned.error:
+                return f"輸出檔名有誤（階段「{stage['name']}」）：{planned.error}"
+        for i, stage in enumerate(self.stages):
+            self._stage_result(i)
+            computed = self._computed.get(stage["name"], [])
+            if any(c.errors or c.run_error for c in computed) or self._stage_input(i)[3]:
+                where = f"階段「{stage['name']}」" if len(self.stages) > 1 else ""
+                return f"{where}有步驟出錯，請先修正"
+        return None
+
+    def _previewed(self) -> bool:
+        """每個階段都已經用載入的資料算過、沒有錯：匯出前不用再試跑。"""
+        for i, stage in enumerate(self.stages):
+            if self._reads_files(stage) and self._load_source(stage)[0] is None:
+                return False
+            frame = self._stage_result(i)[0]
+            computed = self._computed.get(stage["name"], [])
+            if frame is None or any(c.errors or c.run_error for c in computed):
+                return False
+        return True
+
+    def _step_place(self, step_id: str | None) -> tuple[int | None, int | None, str]:
+        """步驟 id 在第幾個階段第幾步，以及畫面上的說法（「階段「X」第 3 步「拆欄」」）。"""
+        for si, stage in enumerate(self.stages):
+            for i, raw in enumerate(stage["steps"]):
+                if raw.get("id") == step_id:
+                    cls = _safe_get(raw.get("type"))
+                    label = f"「{cls.label}」" if cls else ""
+                    where = f"階段「{stage['name']}」" if len(self.stages) > 1 else ""
+                    return si, i, f"{where}第 {i + 1} 步{label}"
+        return None, None, ""
 
     def export(self) -> dict[str, Any]:
         """處理全部資料：每個要寫檔的階段寫到 Recipe 所在資料夾底下的 output/，處理紀錄寫到 log/。
 
-        只在已載入資料時（不會自己讀檔處理）。已經存在的檔直接覆蓋。
+        不用先載入資料（引擎自己讀檔、轉碼）。沒有用載入的資料預覽過時，先用每個檔的前 ``TRIAL_HEAD`` 行
+        試跑一次，有錯就停下（``TrialError`` 指到哪一步），不會白跑大檔。已經存在的檔直接覆蓋。
+        進度視窗上有「準備檔案」「試跑」兩列，下面是每個階段。
         """
         with self._lock:
-            base = self.require_loaded()
-            problems = [
-                f"階段「{stage['name']}」：{planned.error}"
-                for stage, planned in zip(self.stages, self._outputs(), strict=True)
-                if planned is not None and planned.error
-            ]
-            if problems:
-                raise SessionError("；".join(problems))
+            base = self._require_recipe()
+            problem = self._export_problem()
+            if problem:
+                raise SessionError(problem)
             recipe = parse_recipe(self.recipe_dict())
             try:
                 targets = resolve_outputs(recipe, base, self._default_output())
             except OutputError as err:
                 raise SessionError(str(err)) from None
-            _, report = execute(
-                recipe, base, outputs=targets, log_dir=log_dir(base), progress=self.progress
-            )
+            names = [st["name"] for st in self.stages]
+            tracker = StageTracker(names, self.progress, [PREPARE, TRIAL])
+            try:
+                if self._previewed():
+                    tracker.skip_phase(TRIAL, "已用預覽檢查過，略過")
+                else:
+                    self._trial(recipe, base, tracker)
+                _, report = execute(
+                    recipe,
+                    base,
+                    outputs=targets,
+                    log_dir=log_dir(base),
+                    progress=self.progress,
+                    tracker=tracker,
+                )
+            except (InputError, DecodeError) as err:
+                raise SessionError(str(err)) from None
             self.last_export = Path(report.output) if report.output else None
             return {
                 "path": report.output,
@@ -1325,6 +1440,28 @@ class Session:
                     for o in report.outputs
                 ],
             }
+
+    def _trial(self, recipe: Recipe, base: Path, tracker: StageTracker) -> None:
+        """匯出前的試跑：每個檔只用前幾行把全部階段跑一次，有錯就丟出 ``TrialError``。"""
+        try:
+            execute(
+                recipe,
+                base,
+                mode="sample",
+                head=TRIAL_HEAD,
+                tail=0,
+                progress=self.progress,
+                tracker=tracker,
+                phase=TRIAL,
+            )
+        except RunError as err:
+            stage, step, where = self._step_place(err.step_id)
+            message = str(err).split("失敗：", 1)[-1]
+            raise TrialError(
+                f"試跑時出錯：{where}：{message}" if where else f"試跑時出錯：{message}",
+                stage,
+                step,
+            ) from None
 
     def error_report(self) -> str:
         """給 AI 助理（Copilot）看的驗證結果：問題、每一步的列數、警告。"""

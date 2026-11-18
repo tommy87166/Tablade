@@ -571,14 +571,18 @@ def scan_parts(
     base_dir: Path,
     progress: Progress = None,
     sheet: str = "",
+    on_file: Callable[[int, str], None] | None = None,
 ) -> tuple[list[Part], list[SourceFile]]:
     """每個來源檔一個 LazyFrame（依檔案清單的順序），欄位對齊成同一組。
 
     ``sheet`` 只有 ``reader="excel"`` 時用：工作表名稱，空白代表第一個工作表。
+    ``on_file(i, 名稱)`` 在開始讀第 i 個檔（從 0 起）之前呼叫（畫面上的「已處理幾個檔」）。
     """
     parts, files = [], []
-    for path in resolve(entries, base_dir):
+    for i, path in enumerate(resolve(entries, base_dir)):
         name = display_name(path, base_dir)
+        if on_file is not None:
+            on_file(i, name)
         if reader == "excel":
             for part, info in _scan_excel(path, sheet, name, progress):
                 parts.append(part)

@@ -25,7 +25,7 @@ import polars as pl
 from . import __version__
 from .recipe.schema import RECIPE_VERSION, RecipeError
 from .selftest import run_selftest
-from .session import Session, catalog
+from .session import Session, TrialError, catalog
 
 DATA_TYPES = (
     "資料檔 (*.csv;*.txt;*.tsv;*.prn;*.dat;*.xlsx;*.xlsm;*.xls;*.parquet)",
@@ -79,9 +79,12 @@ class Api:
         if self._window is None:
             return
         if progress is not None and "stages" in progress:
-            # 每個階段的狀態（階段面板的轉圈／打勾、進度視窗）：另外送，不限頻率
+            # 進度視窗上每個階段（與「準備檔案」「試跑」）的狀態：另外送，不限頻率
             with contextlib.suppress(Exception):
-                self._window.state.stages = progress["stages"]
+                self._window.state.run = {
+                    "stages": progress["stages"],
+                    "phases": progress.get("phases", []),
+                }
             return
         now = time.monotonic()
         stage = None if progress is None else f"{progress['stage']}:{progress['file']}"
@@ -252,7 +255,7 @@ class Api:
 
     @_wrap
     def load_data(self) -> dict[str, Any]:
-        """「載入資料」：讀檔案清單裡的檔，產生預覽。"""
+        """「載入資料及預覽」：依序讀每個階段的檔（資料大時讀樣本），產生預覽。"""
         self._session.load_data()
         return self._state()
 
@@ -364,8 +367,17 @@ class Api:
 
     @_wrap
     def export_parquet(self) -> dict[str, Any]:
-        """「處理並匯出資料」：處理全部資料，寫到 Recipe 所在資料夾底下的 output/（檔名在輸出設定裡）。"""
-        return {"cancelled": False, **self._session.export()}
+        """「處理並匯出資料」：處理全部資料，寫到 Recipe 所在資料夾底下的 output/（檔名在輸出設定裡）。
+
+        不用先載入資料；試跑出錯時回傳 ``trial_error``（哪個階段的第幾步），畫面上可以「前往這一步」。
+        """
+        try:
+            return {"cancelled": False, **self._session.export()}
+        except TrialError as err:
+            return {
+                "cancelled": False,
+                "trial_error": {"message": str(err), "stage": err.stage, "step": err.step},
+            }
 
     @_wrap
     def download_skill(self) -> dict[str, Any]:

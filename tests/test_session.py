@@ -10,7 +10,7 @@ from tablade.engine import run as engine_run
 from tablade.export.outputs import default_output_name
 from tablade.fixtures import messy_export, write_all
 from tablade.recipe.schema import RECIPE_VERSION, RecipeError
-from tablade.session import Session, SessionError, catalog
+from tablade.session import Session, SessionError, TrialError, catalog
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "sales_detail.recipe.json"
@@ -463,21 +463,77 @@ def test_empty_recipe_cannot_load_or_export(tmp_path):
     s.new(tmp_path / "x.recipe.json")
     with pytest.raises(SessionError, match="還沒有加入資料檔"):
         s.load_data()
-    with pytest.raises(SessionError, match="請先在「讀取資料」按「載入資料」"):
+    with pytest.raises(SessionError, match="還沒有加入資料檔"):
         s.export()
+    actions = s.state()["actions"]
+    assert actions["load"] == {"ok": False, "reason": "還沒有加入資料檔"}
+    assert actions["export"] == {"ok": False, "reason": "還沒有加入資料檔"}
 
 
-def test_export_needs_loaded_data(data, tmp_path):
+def test_export_without_loading_first(data, monkeypatch):
+    """開 Recipe 後不用先載入就能匯出：先用每個檔的前幾行試跑，再處理全部資料。"""
     s = Session()
     s.new(data.parent / "mine.recipe.json")
     s.add_files(files(data))
-    with pytest.raises(SessionError, match="載入資料"):  # 還沒載入：不會自己讀檔處理
-        s.export()
-    s.load_data()
+    actions = s.state()["actions"]
+    assert actions["export"] == {"ok": True, "reason": None}
+    assert actions["load"]["ok"] is True
+    seen: list[dict] = []
+    s.progress = seen.append
+    modes = []
+    real = engine_run.execute
+
+    def spy(*args, **kwargs):
+        modes.append(kwargs.get("mode", "auto"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr("tablade.session.execute", spy)
     assert s.export()["rows"] == 94
-    s.set_input({"encoding": "utf-8"})  # 設定變了：要重新載入才能匯出
-    with pytest.raises(SessionError, match="載入資料"):
+    assert modes == ["sample", "auto"]  # 試跑，再正式處理
+    phases = [p["phases"] for p in seen if "phases" in p][-1]
+    assert phases == [
+        {"name": "準備檔案", "status": "done", "detail": "已處理 2 / 2 個檔"},
+        {"name": "試跑", "status": "done", "detail": "沒有錯誤"},
+    ]
+    stages = [p["stages"] for p in seen if "stages" in p][-1]
+    assert [(x["name"], x["status"], x["rows"]) for x in stages] == [("預設階段", "done", 94)]
+    # 載入後（每一步都算得出來）不用再試跑
+    s.load_data()
+    assert s.state()["actions"]["load"]["ok"] is False  # 都載入了，檔案也沒變
+    modes.clear()
+    seen.clear()
+    s.export()
+    assert modes == ["auto"]
+    phases = [p["phases"] for p in seen if "phases" in p][-1]
+    assert phases[1] == {"name": "試跑", "status": "done", "detail": "已用預覽檢查過，略過"}
+    s.set_input({"encoding": "utf-8"})  # 設定變了：還是可以匯出（會先試跑）
+    assert s.state()["actions"]["load"]["ok"] is True
+    assert s.state()["actions"]["export"]["ok"] is True
+
+
+def test_trial_run_stops_before_the_full_run(data, monkeypatch):
+    """步驟在真實資料上會出錯時，試跑就停下，指到哪個階段的第幾步；不會開始處理全部資料。"""
+    s = Session()
+    s.new(data.parent / "mine.recipe.json")
+    s.add_files(files(data))
+    s.add_step("remove_top_rows")
+    s.add_step("parse_number")
+    s.update_step(1, {"columns": ["不存在"]})  # 沒載入時不知道有哪些欄：參數本身沒錯
+    assert s.state()["actions"]["export"]["ok"] is True
+    modes = []
+    real = engine_run.execute
+
+    def spy(*args, **kwargs):
+        modes.append(kwargs.get("mode", "auto"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr("tablade.session.execute", spy)
+    with pytest.raises(TrialError) as err:
         s.export()
+    assert (err.value.stage, err.value.step) == (0, 1)
+    assert str(err.value) == "試跑時出錯：第 2 步「文字轉數字」：欄位不存在：不存在"
+    assert modes == ["sample"]
+    assert not (data.parent / "output").exists()
 
 
 # ── 型別分頁 ────────────────────────────────────────────────────

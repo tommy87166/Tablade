@@ -6,7 +6,7 @@
  * 用假資料跑過範例 recipe 的真實畫面狀態，鍵是「階段:步驟」。切換階段、選取步驟會切換畫面；其他修改只回傳目前的狀態。
  * 看多個階段：`uv run python scripts/gen_frontend_dev_data.py --recipe sales_combined`。
  */
-import type { Cell, ColumnsInfo, Progress, ReadyInfo, RowsPage, StageRun, TabladeApi, ViewState } from './bridge'
+import type { Cell, ColumnsInfo, Progress, ReadyInfo, RowsPage, RunState, TabladeApi, ViewState } from './bridge'
 
 interface Sample {
   ready: { ok: true } & ReadyInfo
@@ -41,6 +41,8 @@ const current = () => {
     // 跟 session.py 一樣：沒有資料時哪一步都算不出來（step 是 -1）
     state.preview = { ...state.preview, step: -1, rows: null, columns: [], warnings: [] }
     state.steps = state.steps.map((s) => ({ ...s, status: 'waiting', rows: null, files: null }))
+    // 跟 session.py 一樣：還沒載入也可以匯出（匯出前先試跑）
+    state.actions = { load: { ok: true, reason: null }, export: { ok: true, reason: null } }
   }
   return state
 }
@@ -51,32 +53,53 @@ const fail = () => delay({ ok: false as const, error: missing })
 const progressState = new EventTarget()
 const pushProgress = (value: Progress | null) =>
   progressState.dispatchEvent(new CustomEvent('change', { detail: { key: 'progress', value } }))
-const pushStages = (value: StageRun[] | null) =>
-  progressState.dispatchEvent(new CustomEvent('change', { detail: { key: 'stages', value } }))
+const pushRun = (value: RunState | null) => progressState.dispatchEvent(new CustomEvent('change', { detail: { key: 'run', value } }))
 
-/** 假的階段進度：每個階段依序轉圈、打勾（列數用預覽的列數）。 */
-async function fakeStages(perStage: (index: number) => Promise<void>) {
+/** 假的進度視窗：先跑 phases（例如匯出的「準備檔案」「試跑」），再讓每個階段依序轉圈、打勾（列數用預覽的列數）。 */
+async function fakeStages(perStage: (index: number, run: RunState) => Promise<void>, phases: string[] = []) {
   const stages = current().stages
-  const runs: StageRun[] = stages.map((s) => ({ name: s.name, status: 'waiting', rows: null }))
-  pushStages(runs.map((r) => ({ ...r })))
-  for (let i = 0; i < runs.length; i++) {
-    runs[i].status = 'running'
-    pushStages(runs.map((r) => ({ ...r })))
-    await perStage(i)
-    runs[i] = { ...runs[i], status: 'done', rows: stages[i].rows }
-    pushStages(runs.map((r) => ({ ...r })))
+  const run: RunState = {
+    stages: stages.map((s) => ({ name: s.name, status: 'waiting', rows: null, detail: '' })),
+    phases: phases.map((name) => ({ name, status: 'waiting', detail: '' })),
+  }
+  const push = () => pushRun(structuredClone(run))
+  push()
+  const files = 5
+  for (const phase of run.phases) {
+    phase.status = 'running'
+    for (let i = 0; i < (phase.name === '準備檔案' ? files : stages.length); i++) {
+      phase.detail =
+        phase.name === '準備檔案'
+          ? `已處理 ${i} / ${files} 個檔，正在讀 data/明細_0${i + 1}.csv`
+          : `第 ${i + 1} / ${stages.length} 個階段：${stages[i].name}`
+      push()
+      await delay(null, 300)
+    }
+    phase.status = 'done'
+    phase.detail = phase.name === '準備檔案' ? `已處理 ${files} / ${files} 個檔` : '沒有錯誤'
+    push()
+  }
+  for (let i = 0; i < run.stages.length; i++) {
+    run.stages[i].status = 'running'
+    push()
+    await perStage(i, run)
+    run.stages[i] = { ...run.stages[i], status: 'done', rows: stages[i].rows, detail: '' }
+    push()
   }
 }
 
 /** 假的匯出：看得到「執行（串流）」的行數與百分比，再來是沒有百分比的「寫出 Parquet」。 */
 async function fakeExport() {
   const total = 4_074_302
-  await fakeStages(async (stage) => {
-    for (let i = 0; i <= 10; i++) {
-      pushProgress({ stage: `階段 ${stage + 1}：執行（串流）`, file: '', done: Math.round((total * i) / 10), total, unit: 'rows' })
-      await delay(null, 150)
-    }
-  })
+  await fakeStages(
+    async (stage) => {
+      for (let i = 0; i <= 10; i++) {
+        pushProgress({ stage: `階段「${stage + 1}」：執行（串流）`, file: '', done: Math.round((total * i) / 10), total, unit: 'rows' })
+        await delay(null, 150)
+      }
+    },
+    ['準備檔案', '試跑'],
+  )
   pushProgress({ stage: '寫出 Parquet', file: '', done: 0, total: 0 })
   await delay(null, 1500)
   pushProgress(null)

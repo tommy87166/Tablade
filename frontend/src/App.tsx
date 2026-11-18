@@ -5,6 +5,7 @@ import {
   CircleCheck,
   Columns3,
   Download,
+  FileInput,
   FilePlus2,
   FolderOpen,
   MoreHorizontal,
@@ -34,8 +35,8 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/componen
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import {
   onProgress,
-  onStages,
-  type StageRun,
+  onRun,
+  type RunState,
   waitForApi,
   type Issue,
   type Progress,
@@ -62,28 +63,6 @@ import { UpdateNotice } from './components/UpdateNotice'
 type Status = { text: string; error?: boolean }
 const SMOKE_TIMEOUT_MS = 30_000
 
-function formatBytes(n: number) {
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`
-  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(0)} MB`
-  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
-}
-
-function formatAmount(progress: Progress) {
-  const { done, total, unit } = progress
-  if (unit === 'rows') return `${done.toLocaleString()} / ${total.toLocaleString()} 行`
-  if (unit === 'files') return `第 ${done + 1} / ${total} 個檔`
-  if (unit === 'checks') return `檢查警告 ${done} / ${total} 項`
-  return `${formatBytes(done)} / ${formatBytes(total)}`
-}
-
-function formatElapsed(seconds: number) {
-  const m = Math.floor(seconds / 60)
-  const s = seconds % 60
-  return m >= 60
-    ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-    : `${m}:${String(s).padStart(2, '0')}`
-}
-
 /** 下方面板標題列的分頁按鈕（警告、型別）。 */
 function BottomTab({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
   return (
@@ -98,37 +77,6 @@ function BottomTab({ active, onClick, children }: { active: boolean; onClick: ()
     >
       {children}
     </button>
-  )
-}
-
-/** 讀檔、轉碼、匯出時的進度（大檔可能要好幾分鐘）；右邊是這次動作已經過的時間。 */
-function ProgressBar({ progress }: { progress: Progress }) {
-  const [start] = useState(() => Date.now())
-  const [elapsed, setElapsed] = useState(0)
-  useEffect(() => {
-    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000)
-    return () => window.clearInterval(timer)
-  }, [start])
-  const ratio = progress.total > 0 ? Math.min(progress.done / progress.total, 1) : null
-  return (
-    <div className="border-b bg-primary/5 px-3 py-1.5 text-xs">
-      <div className="flex items-center gap-2">
-        <span className="font-medium">{progress.stage}</span>
-        <span className="min-w-0 flex-1 truncate text-muted-foreground">{progress.file}</span>
-        <span className="tabular-nums text-muted-foreground">
-          {ratio !== null ? `${formatAmount(progress)}（${Math.round(ratio * 100)}%）` : '處理中…'}
-        </span>
-        <span className="tabular-nums text-muted-foreground" title="已經過的時間">
-          {formatElapsed(elapsed)}
-        </span>
-      </div>
-      <div className="mt-1 h-1 overflow-hidden rounded bg-primary/15">
-        <div
-          className={`h-full bg-primary transition-[width] ${ratio === null ? 'w-1/3 animate-pulse' : ''}`}
-          style={ratio === null ? undefined : { width: `${ratio * 100}%` }}
-        />
-      </div>
-    </div>
   )
 }
 
@@ -166,11 +114,18 @@ export default function App() {
   const [report, setReport] = useState<{ open: boolean; issues: Issue[]; text: string }>({ open: false, issues: [], text: '' })
   const [selftest, setSelftest] = useState<SelftestResult | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
-  /** 處理中每個階段的狀態（Python 推送） */
-  const [stageRuns, setStageRuns] = useState<StageRun[] | null>(null)
-  const stageRunsRef = useRef<StageRun[] | null>(null)
-  /** 階段進度視窗：處理並匯出、載入資料、完整跑一次；autoClose 是成功時自動關掉 */
-  const [run, setRun] = useState<{ title: string; autoClose: boolean; finished: boolean; failed: boolean; result?: string } | null>(null)
+  /** 進度視窗的狀態：每個階段與「準備檔案」「試跑」（Python 推送） */
+  const [runState, setRunState] = useState<RunState | null>(null)
+  const runStateRef = useRef<RunState | null>(null)
+  /** 進度視窗：處理並匯出、載入資料及預覽、完整跑一次；autoClose 是成功時自動關掉 */
+  const [run, setRun] = useState<{
+    title: string
+    autoClose: boolean
+    finished: boolean
+    failed: boolean
+    result?: string
+    error?: { message: string; stage: number | null; step: number | null }
+  } | null>(null)
   const [update, setUpdate] = useState<UpdateInfo | null | undefined>(undefined)
   const grid = useRef<GridHandle>(null)
   const stagesPanel = usePanelRef()
@@ -235,9 +190,9 @@ export default function App() {
       setApi(target)
       setInfo(ready)
       onProgress(setProgress)
-      onStages((stages) => {
-        stageRunsRef.current = stages
-        setStageRuns(stages)
+      onRun((value) => {
+        runStateRef.current = value
+        setRunState(value)
       })
       const first = await target.state()
       if (first.ok) setState(first.state)
@@ -263,11 +218,9 @@ export default function App() {
       if (!api) return
       const res = await call('開啟 Recipe', () => api.open_recipe())
       if (!res || res.cancelled) return
-      const next = res.state.input.can_load
-        ? '按「載入資料」讀取檔案。'
-        : res.state.input.files.length
-          ? '檔案清單有找不到的檔，請先在「讀取資料」移除。'
-          : '接著在「讀取資料」加入檔案。'
+      const next = res.state.actions.export.ok
+        ? '可以直接按「處理並匯出資料」，或先按「載入資料及預覽」看每一步的結果。'
+        : `${res.state.actions.export.reason}。`
       setStatus({ text: `已開啟 ${res.state.recipe.path}。${next}` })
       if (res.issues?.length) await showReport(res.issues)
     },
@@ -279,11 +232,11 @@ export default function App() {
     addFiles: async () => {
       if (!api) return
       const res = await call('加入檔案', () => api.add_files())
-      if (res && !res.cancelled) setStatus({ text: `檔案清單共 ${res.state.input.files.length} 項。按「載入資料」讀取。` })
+      if (res && !res.cancelled) setStatus({ text: `檔案清單共 ${res.state.input.files.length} 項。按「載入資料及預覽」讀取。` })
     },
     loadData: async () => {
       if (!api) return
-      const res = await runStages('載入資料', true, () => call('載入資料', () => api.load_data()))
+      const res = await runStages('載入資料及預覽', true, () => call('載入資料', () => api.load_data()))
       if (res) {
         const input = res.state.input
         setStatus({
@@ -294,6 +247,12 @@ export default function App() {
     exportParquet: async () => {
       if (!api) return
       const res = await runStages('處理並匯出資料', false, () => call('處理並匯出資料', () => api.export_parquet()))
+      if (res?.trial_error) {
+        const failure = res.trial_error
+        setStatus({ text: failure.message, error: true })
+        setRun((r) => r && { ...r, failed: true, error: failure })
+        return
+      }
       if (res && !res.cancelled) {
         const warn = res.warnings ? `，警告 ${res.warnings.toLocaleString()} 則` : ''
         const how = res.mode === 'stream' ? '（串流處理全部資料）' : ''
@@ -322,19 +281,20 @@ export default function App() {
     redo: () => api && call('重做', () => api.redo()),
   }
 
-  /** 會依序跑好幾個階段的動作：開階段進度視窗（收到第一個階段狀態才顯示；動作被取消時不顯示）。 */
+  /** 會依序跑好幾個階段的動作：開進度視窗（收到第一個進度狀態才顯示；動作被取消時不顯示）。 */
   async function runStages<T>(title: string, autoClose: boolean, fn: () => Promise<T | null>): Promise<T | null> {
-    stageRunsRef.current = null
-    setStageRuns(null)
+    runStateRef.current = null
+    setRunState(null)
     setRun({ title, autoClose, finished: false, failed: false })
     const res = await fn()
-    // 執行期間 Python 推送的階段狀態（ref 在 await 之後才會有值）
-    const runs = stageRunsRef.current as StageRun[] | null
-    const failed = res === null || (runs ?? []).some((s) => s.status === 'error')
+    // 執行期間 Python 推送的狀態（ref 在 await 之後才會有值）
+    const pushed = runStateRef.current as RunState | null
+    const rows = [...(pushed?.stages ?? []), ...(pushed?.phases ?? [])]
+    const failed = res === null || rows.some((s) => s.status === 'error')
     const cancelled = res !== null && typeof res === 'object' && 'cancelled' in res && res.cancelled === true
-    if (cancelled || runs === null || (autoClose && !failed)) {
+    if (cancelled || pushed === null || (autoClose && !failed)) {
       setRun(null)
-      setStageRuns(null)
+      setRunState(null)
     } else {
       setRun((r) => r && { ...r, finished: true, failed })
     }
@@ -352,6 +312,13 @@ export default function App() {
     if (!api) return
     const res = await call('切換階段', () => api.select_stage(index))
     if (res) await call('選取', () => api.select_step(res.state.steps.length))
+  }
+
+  /** 切到某個階段的某一步（試跑出錯時「前往這一步」）。 */
+  const goStep = async (stage: number, step: number) => {
+    if (!api) return
+    const res = await call('切換階段', () => api.select_stage(stage))
+    if (res) await call('選取', () => api.select_step(step))
   }
 
   const addStep = async (type: string, context: AddStepRequest['context'] = {}) => {
@@ -429,21 +396,33 @@ export default function App() {
         report={report.text}
       />
       <SelftestDialog result={info.smoke ? null : selftest} onClose={() => setSelftest(null)} />
-      {run && stageRuns ? (
+      {run && runState ? (
         <RunDialog
           title={run.title}
-          stages={stageRuns}
-          detail={
-            progress && progress.total > 0
-              ? `${formatAmount(progress)}（${Math.round(Math.min(progress.done / progress.total, 1) * 100)}%）`
-              : (progress?.stage ?? '')
-          }
+          run={runState}
+          progress={progress}
           busy={busy}
           result={run.result}
           failed={run.failed}
+          error={
+            run.error
+              ? {
+                  message: run.error.message,
+                  onGo:
+                    run.error.stage !== null && run.error.step !== null
+                      ? () => {
+                          const { stage, step } = run.error!
+                          setRun(null)
+                          setRunState(null)
+                          void goStep(stage!, step!)
+                        }
+                      : undefined,
+                }
+              : undefined
+          }
           onClose={() => {
             setRun(null)
-            setStageRuns(null)
+            setRunState(null)
           }}
         />
       ) : null}
@@ -480,7 +459,7 @@ export default function App() {
               <img src={iconUrl} alt="" className="mx-auto size-12" />
               <h1 className="text-lg font-semibold">開始整理資料</h1>
               <p className="text-sm text-muted-foreground">
-                先新增一個 Recipe（會請你選擇存放位置並命名），或開啟已經存好的 Recipe。之後在「讀取資料」加入檔案，再按「載入資料」。
+                先新增一個 Recipe（會請你選擇存放位置並命名），或開啟已經存好的 Recipe。之後在「讀取資料」加入檔案，再按「載入資料及預覽」。
               </p>
               <div className="flex justify-center gap-2">
                 <Button onClick={() => void act.newRecipe()} disabled={busy}>
@@ -501,13 +480,14 @@ export default function App() {
   }
 
   const input = state.input
-  const emptyPreview = !input.files.length
-    ? '先在「讀取資料」按「瀏覽檔案…」加入檔案。'
-    : !input.can_load
-      ? '檔案清單有找不到的檔，請先在「讀取資料」移除或修正。'
-      : input.stale
-        ? '檔案清單、讀取方式或編碼已變更，請在「讀取資料」按「載入資料」重新讀取。'
-        : '在「讀取資料」按「載入資料」讀取檔案。'
+  const emptyPreview =
+    input.reader !== 'stages' && !input.files.length
+      ? '先在「讀取資料」按「瀏覽檔案…」加入檔案。'
+      : !input.can_load
+        ? '檔案清單有找不到的檔，請先在「讀取資料」移除或修正。'
+        : input.stale
+          ? '檔案清單、讀取方式或編碼已變更，按工具列的「載入資料及預覽」重新讀取。'
+          : '按工具列的「載入資料及預覽」讀取檔案、看每一步的結果（只要匯出的話，可以直接按「處理並匯出資料」）。'
 
   const outputSelected = state.selected === state.steps.length
   const warnings = state.preview.warnings
@@ -527,9 +507,6 @@ export default function App() {
     }
     return where
   }
-  const errorCount = state.steps.filter((s) => s.status === 'error').length
-  /** 輸出檔名有錯的階段（匯出前要先改） */
-  const outputErrors = state.stages.filter((s) => s.output?.error)
 
   return (
     <TooltipProvider>
@@ -562,23 +539,25 @@ export default function App() {
           <Tooltip>
             <TooltipTrigger asChild>
               <span>
-                <Button
-                  size="sm"
-                  onClick={() => void act.exportParquet()}
-                  disabled={busy || errorCount > 0 || outputErrors.length > 0 || !input.loaded}
-                >
+                <Button size="sm" variant="outline" onClick={() => void act.loadData()} disabled={busy || !state.actions.load.ok}>
+                  <FileInput /> 載入資料及預覽
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-80">
+              {state.actions.load.reason ?? '依序讀取全部階段的檔案（大檔讀樣本），算出每一步的預覽；只重讀有變更的階段'}
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="ml-1">
+                <Button size="sm" onClick={() => void act.exportParquet()} disabled={busy || !state.actions.export.ok}>
                   <Play /> 處理並匯出資料
                 </Button>
               </span>
             </TooltipTrigger>
-            <TooltipContent>
-              {!input.loaded
-                ? '先在「讀取資料」按「載入資料」'
-                : errorCount > 0
-                  ? '有步驟出錯，請先修正'
-                  : outputErrors.length > 0
-                    ? `輸出檔名有誤（${outputErrors.map((s) => s.name).join('、')}），請先在「輸出資料」修正`
-                    : '處理全部資料，存到 Recipe 所在資料夾底下的 output 資料夾'}
+            <TooltipContent className="max-w-80">
+              {state.actions.export.reason ?? '處理全部資料，存到 Recipe 所在資料夾底下的 output 資料夾（不用先載入；沒預覽過時先試跑）'}
             </TooltipContent>
           </Tooltip>
           {state.recipe.dirty ? <span className="ml-1.5 text-xs text-muted-foreground">尚未儲存</span> : null}
@@ -619,7 +598,6 @@ export default function App() {
             </DropdownMenu>
           </div>
         </header>
-        {busy && progress ? <ProgressBar progress={progress} /> : null}
 
         <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
           <ResizablePanel defaultSize="12" minSize={120} collapsible collapsedSize={RAIL_WIDTH} panelRef={stagesPanel}>
@@ -628,7 +606,6 @@ export default function App() {
                 state={state}
                 busy={busy}
                 onCollapse={() => stagesPanel.current?.collapse()}
-                runs={run ? stageRuns : null}
                 onSelect={(i) => void call('切換階段', () => api.select_stage(i))}
                 onAdd={async (name, before) => {
                   const res = await call('新增階段', () => api.add_stage(name, before))
@@ -818,7 +795,6 @@ export default function App() {
                     <InputPanel
                       state={state}
                       busy={busy}
-                      onLoad={() => void act.loadData()}
                       onAddFiles={() => void act.addFiles()}
                       onAddEntry={(text) => void call('加入路徑', () => api.add_file_entry(text))}
                       onRemove={(i) => void call('移除檔案', () => api.remove_file(i))}

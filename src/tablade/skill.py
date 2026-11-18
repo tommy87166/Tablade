@@ -257,7 +257,7 @@ Tablade 是本機執行的資料清洗工具。使用者描述要怎麼整理資
    `severity` 是 `warning` 的只是提醒（例如沒有被用到的階段），不影響執行。
    有問題就依 `path`、`error`、`hint` 修正，直到 `"ok": true`。
 5. **交給使用者。** 輸出檔名為 `<名稱>.recipe.json` 的 recipe，並提醒使用者：
-   把 recipe 放在資料檔旁邊（或依各階段 `input.files` 的相對路徑），用 Tablade「開啟 recipe」後按「載入資料」。
+   把 recipe 放在資料檔旁邊（或依各階段 `input.files` 的相對路徑），用 Tablade「開啟 recipe」後按「載入資料及預覽」。
    Tablade 會用真實資料試跑；有問題時按「複製錯誤報告」貼回來，你再依報告修正。
 
 ## recipe 格式

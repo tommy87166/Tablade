@@ -1,5 +1,5 @@
 /** 右側設定：選取「讀取資料」時是檔案清單與讀法，選取「輸出資料」時是輸出設定。 */
-import { CircleCheck, CircleX, FileInput, FolderOpen, Plus, X } from 'lucide-react'
+import { CircleCheck, CircleX, FolderOpen, Plus, X } from 'lucide-react'
 import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -37,7 +37,6 @@ function formatBytes(n: number) {
 interface InputProps {
   state: ViewState
   busy: boolean
-  onLoad: () => void
   onAddFiles: () => void
   onAddEntry: (text: string) => void
   onRemove: (index: number) => void
@@ -47,7 +46,7 @@ interface InputProps {
 const isGlob = (path: string) => /[*?[]/.test(path)
 
 /** 讀前面階段的輸出：勾選要讀的階段（依階段的順序讀）。 */
-function StagesInput({ state, busy, onLoad, onInput }: Pick<InputProps, 'state' | 'busy' | 'onLoad' | 'onInput'>) {
+function StagesInput({ state, onInput }: Pick<InputProps, 'state' | 'onInput'>) {
   const { input } = state
   const picked = new Set(input.stages)
   const toggle = (name: string, on: boolean) => onInput({ stages: input.earlier.filter((n) => (n === name ? on : picked.has(n))) })
@@ -73,14 +72,9 @@ function StagesInput({ state, busy, onLoad, onInput }: Pick<InputProps, 'state' 
       </div>
       {input.error ? <p className="rounded-md bg-destructive/10 p-2 text-sm text-destructive">{input.error}</p> : null}
       {!input.loaded && !input.error ? (
-        <div className="space-y-1.5">
-          <Button className="w-full" onClick={onLoad} disabled={busy || !input.can_load || !input.stages.length}>
-            <FileInput /> 載入資料
-          </Button>
-          <p className="text-center text-xs text-muted-foreground">
-            {input.stages.length ? '前面的階段還沒有結果：載入資料，並確認前面的階段沒有錯誤' : '先勾選要讀的階段'}
-          </p>
-        </div>
+        <p className="text-xs text-muted-foreground">
+          {input.stages.length ? '前面的階段還沒有結果：按工具列的「載入資料及預覽」，並確認前面的階段沒有錯誤' : '先勾選要讀的階段'}
+        </p>
       ) : input.loaded ? (
         <p className="text-xs text-muted-foreground">
           {input.rows?.toLocaleString()} 列 × {input.columns?.length} 欄
@@ -90,7 +84,7 @@ function StagesInput({ state, busy, onLoad, onInput }: Pick<InputProps, 'state' 
   )
 }
 
-export function InputPanel({ state, busy, onLoad, onAddFiles, onAddEntry, onRemove, onInput }: InputProps) {
+export function InputPanel({ state, onAddFiles, onAddEntry, onRemove, onInput }: InputProps) {
   const { input } = state
   const [entry, setEntry] = useState('')
   const readerSelect = (
@@ -116,7 +110,7 @@ export function InputPanel({ state, busy, onLoad, onAddFiles, onAddEntry, onRemo
       <section className="space-y-3">
         <div className="text-sm font-medium">讀取資料</div>
         {readerSelect}
-        <StagesInput state={state} busy={busy} onLoad={onLoad} onInput={onInput} />
+        <StagesInput state={state} onInput={onInput} />
       </section>
     )
   }
@@ -125,8 +119,8 @@ export function InputPanel({ state, busy, onLoad, onAddFiles, onAddEntry, onRemo
     : !input.can_load
       ? '檔案清單有找不到的檔，請先移除或修正'
       : input.stale
-        ? '設定已變更，請重新載入'
-        : ''
+        ? '檔案清單、讀取方式或編碼已變更：按工具列的「載入資料及預覽」重新讀取'
+        : '還沒載入：按工具列的「載入資料及預覽」看每一步的結果'
   const hintTone =
     !input.can_load && input.files.length
       ? 'text-destructive'
@@ -236,14 +230,9 @@ export function InputPanel({ state, busy, onLoad, onAddFiles, onAddEntry, onRemo
         )}
       </div>
       {input.error ? <p className="rounded-md bg-destructive/10 p-2 text-sm text-destructive">{input.error}</p> : null}
-      {/* 載入後隱藏；檔案清單、讀取方式、編碼變了才再出現 */}
+      {/* 載入資料在工具列（依序載入全部階段）；這裡只寫狀態 */}
       {!input.loaded ? (
-        <div className="space-y-1.5">
-          <Button className="w-full" onClick={onLoad} disabled={busy || !input.can_load}>
-            <FileInput /> 載入資料
-          </Button>
-          {loadHint ? <p className={`text-center text-xs ${hintTone}`}>{loadHint}</p> : null}
-        </div>
+        <p className={`text-xs ${hintTone}`}>{loadHint}</p>
       ) : (
         <div className="space-y-1.5">
           <div className="text-xs text-muted-foreground">已載入的檔案</div>

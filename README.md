@@ -107,7 +107,9 @@ Five needs drove this tool:
 - Columns starting with `__` are system columns: hidden in the UI by default, optional on export.
 - A recipe keeps a **file list**: files inside the recipe's folder are stored as relative paths,
   others as absolute paths, and you can type a path with `*` by hand. Data is read only when you
-  press "Load data", and only once every entry in the list is found.
+  press "Load data & preview" in the toolbar, and only once every entry in the list is found. To just
+  export, press "Process and export" directly: no loading needed — it first test-runs every stage on
+  the first 2,000 lines of each file and stops at the failing step.
 - Multiple files each get their own pipeline and are joined in list order at a "merge source files"
   step or before writing — mismatched columns become null.
 - Each file's row order is fixed at read time (`__line_no`) and every step keeps it, so steps never
@@ -333,7 +335,7 @@ tablade.spec          PyInstaller config (onefile / onedir via TABLADE_BUILD)
   form can run that stage once on all the data.
 - **Large files are previewed from a sample.** Above 200,000 lines the preview uses the first
   100,000 and last 1,000 lines of each file, so per-step row counts in the UI are sample counts;
-  export streams through everything, and the progress bar shows how many lines have been processed.
+  export streams through everything, and the progress window shows how many lines have been processed.
   Streaming export reports only the final row count, and its warnings cover the rows that are still
   in the output. Group-by and pivot previews are computed from the sample too (pivot reads its new
   columns from the preview data; values that only show up at export time are reported as warnings).

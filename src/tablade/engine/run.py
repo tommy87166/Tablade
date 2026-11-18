@@ -37,6 +37,7 @@ from tablade.ingest.sources import (
     SourceFile,
     align,
     concat,
+    resolve,
     sample,
     scan_parts,
     staging_dir,
@@ -156,25 +157,91 @@ class RunError(RuntimeError):
         super().__init__(f"步驟 {step.id}（{step.type_name()}）失敗：{message}")
 
 
-class StageTracker:
-    """每個階段的狀態（等待中、處理中、完成、失敗），透過 progress 回報給畫面。
+PREPARE = "準備檔案"
+"""進度視窗上「讀每個檔、轉碼、數行數」那一列（匯出時在階段清單上面）。"""
+TRIAL = "試跑"
+"""進度視窗上「匯出前先用每個檔的前幾行試跑一次」那一列。"""
 
-    事件和一般進度同一個格式，另外多一個 ``stages``：``[{"name", "status", "rows"}]``；
-    api.py 把它送到畫面的階段進度（階段面板的轉圈／打勾、進度視窗），不顯示在進度列。
+
+class StageTracker:
+    """每個階段的狀態（等待中、處理中、完成、失敗），透過 progress 回報給畫面的進度視窗。
+
+    事件和一般進度同一個格式，另外多兩個欄：``stages``（``[{"name", "status", "rows", "detail"}]``）、
+    ``phases``（階段清單上面的「準備檔案」「試跑」：``[{"name", "status", "detail"}]``）；api.py 另外送到畫面。
+    某個 phase 進行中時（例如試跑），各階段的開始與失敗算在那個 phase 上，不改階段的狀態。
     """
 
-    def __init__(self, names: list[str], progress: Progress) -> None:
+    def __init__(self, names: list[str], progress: Progress, phases: list[str] | None = None):
         self.items: list[dict[str, Any]] = [
-            {"name": n, "status": "waiting", "rows": None} for n in names
+            {"name": n, "status": "waiting", "rows": None, "detail": ""} for n in names
+        ]
+        self.phases: list[dict[str, Any]] = [
+            {"name": p, "status": "waiting", "detail": ""} for p in phases or []
         ]
         self.progress = progress
         self.current: int | None = None
+        self.phase: dict[str, Any] | None = None
+        self._skipped: dict[str, str] = {}
         self._emit()
 
     def _emit(self) -> None:
         if self.progress is not None:
-            stages = [dict(item) for item in self.items]
-            self.progress({"stage": "", "file": "", "done": 0, "total": 0, "stages": stages})
+            self.progress(
+                {
+                    "stage": "",
+                    "file": "",
+                    "done": 0,
+                    "total": 0,
+                    "stages": [dict(item) for item in self.items],
+                    "phases": [dict(p) for p in self.phases],
+                }
+            )
+
+    def _phase(self, name: str) -> dict[str, Any] | None:
+        return next((p for p in self.phases if p["name"] == name), None)
+
+    def waiting(self, name: str) -> bool:
+        """這個 phase 有列在進度視窗上、還沒開始。"""
+        phase = self._phase(name)
+        return phase is not None and phase["status"] == "waiting" and name not in self._skipped
+
+    def begin(self, name: str) -> None:
+        phase = self._phase(name)
+        if phase is not None:
+            phase.update(status="running", detail="")
+            self.phase = phase
+            self._emit()
+
+    def end(self, name: str, detail: str | None = None) -> None:
+        phase = self._phase(name)
+        if phase is None:
+            return
+        phase["status"] = "done"
+        if detail is not None:
+            phase["detail"] = detail
+        if self.phase is phase:
+            self.phase = None
+        self._emit()
+        if name == PREPARE:  # 準備完才輪到之後略過的 phase（畫面上依序打勾）
+            for later, note in list(self._skipped.items()):
+                del self._skipped[later]
+                self.end(later, note)
+
+    def skip_phase(self, name: str, detail: str) -> None:
+        """這個 phase 不用做（打勾並說明原因）；準備檔案還沒完成時等它完成。"""
+        prepare = self._phase(PREPARE)
+        if prepare is not None and prepare["status"] != "done":
+            self._skipped[name] = detail
+        else:
+            self.end(name, detail)
+
+    def files(self, done: int, total: int, name: str = "") -> None:
+        """讀檔的進度：已處理幾個檔、正在讀哪一個（寫在進行中的 phase 或階段上）。"""
+        detail = f"已處理 {done} / {total} 個檔" + (f"，正在讀 {name}" if name else "")
+        target = self.phase or (self.items[self.current] if self.current is not None else None)
+        if target is not None:
+            target["detail"] = detail
+            self._emit()
 
     def reading(self, index: int) -> None:
         """讀這個階段的檔（還沒開始處理）：失敗時算這個階段的。"""
@@ -182,28 +249,40 @@ class StageTracker:
 
     def start(self, index: int) -> None:
         self.current = index
-        self.items[index]["status"] = "running"
+        if self.phase is not None:
+            name = self.items[index]["name"]
+            self.phase["detail"] = f"第 {index + 1} / {len(self.items)} 個階段：{name}"
+        else:
+            self.items[index].update(status="running", detail="")
         self._emit()
 
     def done(self, index: int, rows: int | None) -> None:
-        self.items[index].update(status="done", rows=rows)
         self.current = None
-        self._emit()
+        if self.phase is None:
+            self.items[index].update(status="done", rows=rows, detail="")
+            self._emit()
 
     def error(self, index: int) -> None:
         """這個階段算完了但有錯（例如某一步參數不合法）。"""
-        self.items[index]["status"] = "error"
         self.current = None
-        self._emit()
+        if self.phase is None:
+            self.items[index].update(status="error", detail="")
+            self._emit()
 
     def skip(self, index: int) -> None:
         """這個階段還不能算（例如還沒加檔案）：回到等待中。"""
-        self.items[index]["status"] = "waiting"
         self.current = None
-        self._emit()
+        if self.phase is None:
+            self.items[index].update(status="waiting", detail="")
+            self._emit()
 
     def fail(self) -> None:
-        if self.current is not None:
+        if self.phase is not None:
+            self.phase["status"] = "error"
+            self.phase = None
+            self.current = None
+            self._emit()
+        elif self.current is not None:
             self.items[self.current]["status"] = "error"
             self.current = None
             self._emit()
@@ -409,8 +488,27 @@ def scan_stages(
     progress: Progress = None,
     tracker: StageTracker | None = None,
 ) -> dict[str, tuple[list[Part], list[SourceFile]]]:
-    """掃描每個讀實際檔的階段（還不讀資料內容）。"""
+    """掃描每個讀實際檔的階段（還不讀資料內容）。
+
+    進度視窗有「準備檔案」這一列時，回報已處理幾個檔（總數先從檔案清單算好，只看檔名不讀檔）。
+    """
     out = {}
+    preparing = tracker is not None and tracker.waiting(PREPARE)
+    total, done = 0, 0
+    if preparing:
+        total = sum(
+            len(resolve(s.input.files, base_dir))
+            for s in recipe.stages
+            if s.input.reader != "stages"
+        )
+        tracker.begin(PREPARE)
+
+    def on_file(_: int, name: str) -> None:
+        nonlocal done
+        if preparing:
+            tracker.files(done, total, name)
+        done += 1
+
     for k, stage in enumerate(recipe.stages):
         source = stage.input
         if source.reader == "stages":
@@ -418,9 +516,17 @@ def scan_stages(
         if tracker is not None:
             tracker.reading(k)
         parts, files = scan_parts(
-            source.files, source.reader, source.encoding, base_dir, progress, source.sheet
+            source.files,
+            source.reader,
+            source.encoding,
+            base_dir,
+            progress,
+            source.sheet,
+            on_file=on_file,
         )
         out[stage.name] = (parts, [replace(f, stage=stage.name) for f in files])
+    if preparing:
+        tracker.end(PREPARE, f"已處理 {total} / {total} 個檔")
     return out
 
 
@@ -480,12 +586,19 @@ def execute(
     mode: Mode = "auto",
     limit: int = MAX_WARNINGS_PER_CHECK,
     progress: Progress = None,
+    tracker: StageTracker | None = None,
+    phase: str | None = None,
+    head: int | None = None,
+    tail: int | None = None,
 ) -> tuple[pl.DataFrame | None, RunReport]:
     """依序執行每個階段。``stream`` 模式不回傳 DataFrame（結果直接寫到檔案）。
 
     ``outputs`` 是要寫檔的階段 → 位置（``export/outputs.py`` 的 ``resolve_outputs``）；``output`` 是
     只寫最後一個階段的簡寫（測試、完整跑一次用）。兩個都沒有時只試跑，不寫檔。
     處理紀錄寫到 ``log_dir``（沒指定時是輸出檔所在資料夾底下的 log/）。
+
+    ``tracker`` 是呼叫的地方建好的進度（有「準備檔案」「試跑」那幾列時）；``phase`` 是這次執行在進度視窗上
+    算哪一列（例如試跑：讀完檔才開始，各階段的進度寫在那一列）。``head`` / ``tail`` 是 sample 模式每個檔取幾行。
     """
     targets = dict(outputs or {})
     if output is not None:
@@ -493,10 +606,15 @@ def execute(
     unknown = set(targets) - {s.name for s in recipe.stages}
     if unknown:
         raise ValueError(f"沒有這些階段：{'、'.join(sorted(unknown))}")
-    tracker = StageTracker([s.name for s in recipe.stages], progress)
+    if tracker is None:
+        tracker = StageTracker([s.name for s in recipe.stages], progress)
     writes = _Writes()
     try:
-        frame, report = _execute(recipe, base_dir, targets, mode, limit, progress, tracker, writes)
+        frame, report = _execute(
+            recipe, base_dir, targets, mode, limit, progress, tracker, writes, phase, head, tail
+        )
+        if phase is not None:
+            tracker.end(phase, "沒有錯誤")
         report.outputs = writes.commit()
     except BaseException:
         tracker.fail()
@@ -518,8 +636,13 @@ def _execute(
     progress: Progress,
     tracker: StageTracker,
     writes: _Writes,
+    phase: str | None = None,
+    head: int | None = None,
+    tail: int | None = None,
 ) -> tuple[pl.DataFrame | None, RunReport]:
     scanned = scan_stages(recipe, base_dir, progress, tracker)
+    if phase is not None:
+        tracker.begin(phase)
     files = [f for _, found in scanned.values() for f in found]
     input_rows = sum(f.rows for f in files)
     mode = choose_mode(files, bool(targets), mode)
@@ -540,7 +663,13 @@ def _execute(
             frame = (
                 concat(parts).collect(engine="streaming")
                 if mode == "eager"
-                else sample(parts, found, stage.input.reader, SAMPLE_HEAD, SAMPLE_TAIL)
+                else sample(
+                    parts,
+                    found,
+                    stage.input.reader,
+                    SAMPLE_HEAD if head is None else head,
+                    SAMPLE_TAIL if tail is None else tail,
+                )
             )
             sample_rows += frame.height
         else:

@@ -196,6 +196,8 @@ export interface ViewState {
     /** false：還沒有新增或開啟 Recipe（顯示起始頁） */
     open: boolean
   }
+  /** 工具列的「載入資料及預覽」「處理並匯出資料」能不能按 */
+  actions: { load: ActionState; export: ActionState }
   /** 每個階段；最後一個的結果一定寫檔，中間的有填輸出檔名才寫 */
   stages: StageState[]
   /** 目前在編輯的階段（下面的 input、steps、preview 都是這個階段的） */
@@ -211,7 +213,7 @@ export interface ViewState {
     entries: { path: string; found: number }[]
     /** 清單不是空的，而且每一項都找得到 */
     can_load: boolean
-    /** 已按「載入資料」 */
+    /** 已按「載入資料及預覽」 */
     loaded: boolean
     /** 載入之後設定或檔案變了，要重新載入 */
     stale: boolean
@@ -277,6 +279,27 @@ export interface StageRun {
   status: 'waiting' | 'running' | 'done' | 'error'
   /** 完成時結果有幾列 */
   rows: number | null
+  /** 處理中的細節，例如「已處理 1 / 3 個檔，正在讀 明細_02.csv」 */
+  detail: string
+}
+
+/** 進度視窗上階段清單上面的那幾列（匯出時的「準備檔案」「試跑」） */
+export interface RunPhase {
+  name: string
+  status: StageRun['status']
+  detail: string
+}
+
+/** 進度視窗的狀態（Python 推送到 window.state.run；engine/run.py 的 StageTracker） */
+export interface RunState {
+  stages: StageRun[]
+  phases: RunPhase[]
+}
+
+/** 工具列按鈕能不能按；不能按時 reason 是原因（session.py 算） */
+export interface ActionState {
+  ok: boolean
+  reason: string | null
 }
 
 /** 型別分頁的一欄（session.py 的 column_summary） */
@@ -368,6 +391,8 @@ export interface TabladeApi {
       manifest?: string | null
       /** 寫出的每個檔（依階段順序） */
       outputs?: { stage: string; path: string; rows: number; manifest: string | null }[]
+      /** 匯出前試跑出錯：哪個階段的第幾步（沒有寫出任何檔） */
+      trial_error?: { message: string; stage: number | null; step: number | null }
     }>
   >
   error_report(): Promise<Result<{ text: string }>>
@@ -376,17 +401,17 @@ export interface TabladeApi {
 
 declare global {
   interface Window {
-    pywebview?: { api: TabladeApi; state?: EventTarget & { progress?: Progress | null; stages?: StageRun[] | null } }
+    pywebview?: { api: TabladeApi; state?: EventTarget & { progress?: Progress | null; run?: RunState | null } }
   }
 }
 
-/** 訂閱 Python 推送的階段狀態（處理並匯出、載入資料、完整跑一次）；回傳取消訂閱的函式。 */
-export function onStages(listener: (stages: StageRun[] | null) => void): () => void {
+/** 訂閱 Python 推送的進度視窗狀態（處理並匯出、載入資料及預覽、完整跑一次）；回傳取消訂閱的函式。 */
+export function onRun(listener: (run: RunState | null) => void): () => void {
   const state = window.pywebview?.state
   if (!state) return () => {}
   const handler = (event: Event) => {
     const detail = (event as CustomEvent<{ key: string; value: unknown }>).detail
-    if (detail?.key === 'stages') listener((detail.value as StageRun[] | null) ?? null)
+    if (detail?.key === 'run') listener((detail.value as RunState | null) ?? null)
   }
   state.addEventListener('change', handler)
   return () => state.removeEventListener('change', handler)
