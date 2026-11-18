@@ -8,6 +8,8 @@ from __future__ import annotations
 import codecs
 from dataclasses import dataclass
 
+from ..i18n import t
+
 AUTO_ORDER = ("utf-8-sig", "cp950")
 SUPPORTED = ("auto", "utf-8", "utf-8-sig", "cp950", "big5hkscs")
 
@@ -25,8 +27,9 @@ class Decoded:
 
 def _describe_failure(raw: bytes, encoding: str, err: UnicodeDecodeError) -> str:
     line_no = raw.count(b"\n", 0, err.start) + 1
-    return (
-        f"{encoding} 在第 {err.start} 個位元組（第 {line_no} 行，0x{raw[err.start]:02X}）無法解碼"
+    return t(
+        f"{encoding} 在第 {err.start} 個位元組（第 {line_no} 行，0x{raw[err.start]:02X}）無法解碼",
+        f"{encoding} can't decode byte 0x{raw[err.start]:02X} at offset {err.start} (line {line_no})",
     )
 
 
@@ -45,7 +48,12 @@ def decode_bytes(raw: bytes, encoding: str = "auto") -> Decoded:
     訊息中列出每種編碼第一個無法解碼的位元組位置與行號。
     """
     if encoding not in SUPPORTED:
-        raise DecodeError(f"不支援的編碼：{encoding}（可用：{', '.join(SUPPORTED)}）")
+        raise DecodeError(
+            t(
+                f"不支援的編碼：{encoding}（可用：{', '.join(SUPPORTED)}）",
+                f"Unsupported encoding: {encoding} (available: {', '.join(SUPPORTED)})",
+            )
+        )
 
     if encoding != "auto":
         try:
@@ -59,7 +67,9 @@ def decode_bytes(raw: bytes, encoding: str = "auto") -> Decoded:
             return _decode(raw, candidate)
         except UnicodeDecodeError as err:
             failures.append(_describe_failure(raw, candidate, err))
-    raise DecodeError("無法判斷編碼：" + "；".join(failures))
+    raise DecodeError(
+        t("無法判斷編碼：", "Couldn't detect the encoding: ") + t("；", "; ").join(failures)
+    )
 
 
 def to_utf8(raw: bytes, encoding: str = "auto") -> tuple[bytes, str]:

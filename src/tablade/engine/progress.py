@@ -21,13 +21,18 @@ from pathlib import Path
 
 import polars as pl
 
+from tablade.i18n import t
 from tablade.ingest.sources import Part, Progress, SourceFile
 from tablade.steps.base import LINE_NO, POSITION
 
 FILES = 100
 MIN_ROWS_PER_FILE = 50_000
 POLL_SECONDS = 0.2
-STAGE = "執行（串流）"
+
+
+def stage_label() -> str:
+    """進度上顯示的名稱（依畫面的語言；呼叫的地方沒給名稱時用）。"""
+    return t("執行（串流）", "Running (streaming)")
 
 
 def rows_per_file(input_rows: int) -> int:
@@ -62,11 +67,15 @@ class Watcher:
     """看暫存資料夾裡寫完了哪些檔，回報處理到第幾行（另一條執行緒，不碰 Polars 的資料流）。"""
 
     def __init__(
-        self, folder: Path, files: list[SourceFile], progress: Progress, label: str = STAGE
+        self,
+        folder: Path,
+        files: list[SourceFile],
+        progress: Progress,
+        label: str | None = None,
     ) -> None:
         self.folder = folder
         self.progress = progress
-        self.label = label
+        self.label = stage_label() if label is None else label
         self.rows = [f.rows for f in files]
         self.starts = pl.Series([0, *accumulate(self.rows)][: len(self.rows)], dtype=pl.Int64)
         self.total = sum(self.rows)

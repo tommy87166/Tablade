@@ -1085,7 +1085,7 @@ export default function App() {
                       item={catalogItem}
                       onChange={(values) => void call(tr('更新步驟', 'Update step'), () => api.update_step(selected.index, values))}
                       onRefresh={(field, values) =>
-                        void call(tr('重新從資料讀取', 'Read again from data'), () => api.refresh_values(selected.index, field, values))
+                        void call(tr('重新從資料讀取', 'Reload from data'), () => api.refresh_values(selected.index, field, values))
                       }
                       context={{
                         stages: earlierStages,

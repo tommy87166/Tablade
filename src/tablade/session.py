@@ -45,6 +45,7 @@ from .engine.run import (
     stage_frame,
 )
 from .export.outputs import OutputError, default_output_name, log_dir, plan_outputs, resolve_outputs
+from .i18n import LANGS, plural, set_lang, t
 from .ingest.encoding import DecodeError
 from .ingest.excel import ExcelError, is_excel, sheet_names
 from .ingest.sources import (
@@ -86,7 +87,13 @@ MAX_UNDO = 100
 DEFAULT_INPUT = {"files": [], "reader": "text_lines", "encoding": "auto", "sheet": "", "stages": []}
 DEFAULT_OUTPUT = {"format": "parquet", "keep_system_columns": True, "manifest": True}
 STAGE_NAME_MAX = 40
-OLD_FORMAT = "這是舊的 Recipe 寫法（最外層的 inputs / steps），請改成 stages"
+
+
+def old_format() -> str:
+    return t(
+        "這是舊的 Recipe 寫法（最外層的 inputs / steps），請改成 stages",
+        "This Recipe uses the old format (top-level inputs / steps); change it to stages",
+    )
 
 
 class SessionError(ValueError):
@@ -101,9 +108,10 @@ class TrialError(SessionError):
         self.stage, self.step = stage, step
 
 
-LANGS = ("zh", "en")
-"""畫面可以切換的語言：繁體中文、英文。"""
-LOAD_HINT = "請先按工具列的「載入資料及預覽」"
+def load_hint() -> str:
+    return t("請先按工具列的「載入資料及預覽」", "Click “Load & preview” on the toolbar first")
+
+
 TRIAL_HEAD = 2_000
 """匯出前試跑時每個檔取前幾行（只為了先找出步驟的錯誤，不用多）。"""
 
@@ -186,14 +194,26 @@ def stage_refs(stage: dict[str, Any]) -> list[tuple[str, str]]:
     out = []
     source = stage["input"]
     if source.get("reader") == "stages":
-        out += [(n, "讀取資料") for n in source.get("stages") or [] if isinstance(n, str)]
+        out += [
+            (n, t("讀取資料", "“Read data”"))
+            for n in source.get("stages") or []
+            if isinstance(n, str)
+        ]
     for step in stage["steps"]:
         if step.get("enabled", True) is False:
             continue
         for name in ref_fields().get(step.get("type"), []):
             ref = step.get(name)
             if isinstance(ref, str):
-                out.append((ref, f"{step.get('id')}（{_label(step.get('type'))}）"))
+                out.append(
+                    (
+                        ref,
+                        t(
+                            f"{step.get('id')}（{_label(step.get('type'))}）",
+                            f"step {step.get('id')} ({_label(step.get('type'))})",
+                        ),
+                    )
+                )
     return out
 
 
@@ -396,11 +416,24 @@ class Session:
         self.progress, self.lang = progress, lang
 
     def set_language(self, lang: str) -> None:
-        """切換畫面的語言（zh、en）；不寫任何設定檔，下次開啟又跟作業系統的語言。"""
+        """切換畫面的語言（zh、en）；不寫任何設定檔，下次開啟又跟作業系統的語言。
+
+        Python 產生的文字（狀態說明、錯誤、警告…）跟著換：算好的每一步結果清掉，用新的語言重算
+        （載入的資料留著，不用重新讀檔）。匯出時記下的警告維持匯出當時的語言。
+        """
         if lang not in LANGS:
-            raise SessionError(f"不支援的語言：{lang}（可用：{'、'.join(LANGS)}）")
+            raise SessionError(
+                t(
+                    f"不支援的語言：{lang}（可用：{'、'.join(LANGS)}）",
+                    f"Unsupported language: {lang} (available: {', '.join(LANGS)})",
+                )
+            )
         with self._lock:
+            changed = lang != self.lang
             self.lang = lang
+            set_lang(lang)
+            if changed:
+                self._computed.clear()
 
     def new(self, path: Path) -> Path:
         """新增 Recipe：先決定存放位置（檔名就是名稱），立刻寫出空的 Recipe 檔。"""
@@ -422,7 +455,9 @@ class Session:
             path = path.resolve()
             data = load_json(path)  # JSON 本身壞掉時丟出 RecipeError
             if "stages" not in data and any(k in data for k in ("inputs", "steps")):
-                raise RecipeError([{"path": "(Recipe)", "error": OLD_FORMAT, "severity": "error"}])
+                raise RecipeError(
+                    [{"path": "(Recipe)", "error": old_format(), "severity": "error"}]
+                )
             result = check_recipe(data, path.parent)
             if any(i["path"] == "tablade_recipe" for i in result.issues):
                 raise RecipeError([i for i in result.issues if i["path"] == "tablade_recipe"])
@@ -433,7 +468,7 @@ class Session:
                     continue
                 name = item.get("name")
                 if not isinstance(name, str) or not name.strip():
-                    name = f"階段 {len(stages) + 1}"
+                    name = f"階段 {len(stages) + 1}"  # i18n-ignore：階段名稱會寫進 Recipe（資料）
                 stage = _new_stage(name)
                 source = item.get("input") if isinstance(item.get("input"), dict) else {}
                 stage["input"].update(copy.deepcopy(source))
@@ -468,7 +503,9 @@ class Session:
         with self._lock:
             target = path or self.recipe_path
             if target is None:
-                raise SessionError("還沒有指定 Recipe 檔的位置")
+                raise SessionError(
+                    t("還沒有指定 Recipe 檔的位置", "No location set for the Recipe file yet")
+                )
             target = target.resolve()
             if self.base_dir and target.parent != self.base_dir:
                 for stage in self.stages:
@@ -490,17 +527,24 @@ class Session:
     def _stage_name(self, name: Any, exclude: int | None = None) -> str:
         text = str(name).strip()
         if not text:
-            raise SessionError("請輸入階段名稱")
+            raise SessionError(t("請輸入階段名稱", "Enter a stage name"))
         if len(text) > STAGE_NAME_MAX:
-            raise SessionError(f"階段名稱最多 {STAGE_NAME_MAX} 個字")
+            raise SessionError(
+                t(
+                    f"階段名稱最多 {STAGE_NAME_MAX} 個字",
+                    f"Stage names can be at most {STAGE_NAME_MAX} characters",
+                )
+            )
         for i, stage in enumerate(self.stages):
             if i != exclude and stage["name"] == text:
-                raise SessionError(f"已經有叫「{text}」的階段")
+                raise SessionError(
+                    t(f"已經有叫「{text}」的階段", f'A stage named "{text}" already exists')
+                )
         return text
 
     def _check_stage(self, index: int) -> None:
         if not 0 <= index < len(self.stages):
-            raise SessionError(f"沒有第 {index + 1} 個階段")
+            raise SessionError(t(f"沒有第 {index + 1} 個階段", f"There is no stage {index + 1}"))
 
     def add_stage(self, name: str, before: bool = True) -> int:
         """新增階段：預設插在目前階段的前面（新增的通常是給目前階段用的對照表）。"""
@@ -543,7 +587,12 @@ class Session:
         for stage in stages:
             for ref, where in stage_refs(stage):
                 if ref in names and ref not in earlier:
-                    problems.append(f"「{stage['name']}」的{where}要用「{ref}」")
+                    problems.append(
+                        t(
+                            f"「{stage['name']}」的{where}要用「{ref}」",
+                            f'"{stage["name"]}" uses "{ref}" in {where}',
+                        )
+                    )
             earlier.add(stage["name"])
         return problems
 
@@ -558,7 +607,10 @@ class Session:
             problems = self._order_problems(trial)
             if problems:
                 raise SessionError(
-                    f"不能這樣排：{'；'.join(problems)}，只能用前面的階段（先調整這些引用）"
+                    t(
+                        f"不能這樣排：{'；'.join(problems)}，只能用前面的階段（先調整這些引用）",
+                        f"Can't reorder: {'; '.join(problems)}. A stage can only use earlier stages (update these references first)",
+                    )
                 )
             self._change()
             self.stages = trial
@@ -568,17 +620,20 @@ class Session:
         with self._lock:
             self._check_stage(index)
             if len(self.stages) == 1:
-                raise SessionError("至少要有一個階段")
+                raise SessionError(t("至少要有一個階段", "There must be at least one stage"))
             name = self.stages[index]["name"]
             users = [
-                f"「{stage['name']}」的{where}"
+                t(f"「{stage['name']}」的{where}", f'{where} in "{stage["name"]}"')
                 for stage in self.stages
                 for ref, where in stage_refs(stage)
                 if ref == name and stage is not self.stages[index]
             ]
             if users:
                 raise SessionError(
-                    f"不能刪除「{name}」：{'、'.join(users)}用到它，請先改掉這些引用"
+                    t(
+                        f"不能刪除「{name}」：{'、'.join(users)}用到它，請先改掉這些引用",
+                        f'Cannot delete "{name}": it is used by {", ".join(users)}. Remove these references first',
+                    )
                 )
             self._change()
             del self.stages[index]
@@ -594,7 +649,7 @@ class Session:
 
     def _require_recipe(self) -> Path:
         if self.base_dir is None:
-            raise SessionError("先新增或開啟 Recipe")
+            raise SessionError(t("先新增或開啟 Recipe", "Create or open a Recipe first"))
         return self.base_dir
 
     def add_files(self, paths: list[Path]) -> None:
@@ -614,7 +669,7 @@ class Session:
             self._require_recipe()
             entry = text.strip().replace("\\", "/")
             if not entry:
-                raise SessionError("請輸入檔案路徑")
+                raise SessionError(t("請輸入檔案路徑", "Enter a file path"))
             if entry in self.input["files"]:
                 return
             self._change()
@@ -623,7 +678,12 @@ class Session:
     def remove_file(self, index: int) -> None:
         with self._lock:
             if not 0 <= index < len(self.input["files"]):
-                raise SessionError(f"檔案清單沒有第 {index + 1} 項")
+                raise SessionError(
+                    t(
+                        f"檔案清單沒有第 {index + 1} 項",
+                        f"There is no item {index + 1} in the file list",
+                    )
+                )
             self._change()
             del self.input["files"][index]
 
@@ -635,9 +695,19 @@ class Session:
                 picked = [n for n in values["stages"] if isinstance(n, str)]
                 bad = [n for n in picked if n not in earlier]
                 if bad:
-                    raise SessionError(f"只能讀前面的階段：{'、'.join(bad)}")
+                    raise SessionError(
+                        t(
+                            f"只能讀前面的階段：{'、'.join(bad)}",
+                            f"Only earlier stages can be read: {', '.join(bad)}",
+                        )
+                    )
             if values.get("reader") == "stages" and self.current == 0:
-                raise SessionError("第一個階段只能讀實際檔（前面沒有階段）")
+                raise SessionError(
+                    t(
+                        "第一個階段只能讀實際檔（前面沒有階段）",
+                        "The first stage can only read files (there are no earlier stages)",
+                    )
+                )
             self._change()
             for key in ("reader", "encoding", "sheet"):
                 if key in values:
@@ -732,12 +802,16 @@ class Session:
         """第 index 步的輸入裡，某一欄有哪些不同的值（「從資料讀出」用；大檔時是預覽的樣本）。"""
         frame = self._frame_before(index)
         if frame is None:
-            raise SessionError(f"還沒有資料：{LOAD_HINT}")
+            raise SessionError(t(f"還沒有資料：{load_hint()}", f"No data yet. {load_hint()}"))
         if not isinstance(column, str) or column not in frame.columns:
-            raise SessionError(f"欄位「{column}」不存在" if column else "先選要從哪一欄讀")
+            raise SessionError(
+                t(f"欄位「{column}」不存在", f'Column "{column}" does not exist')
+                if column
+                else t("先選要從哪一欄讀", "Choose a column to read from first")
+            )
         found = data_values(frame, column)
         if not found:
-            raise SessionError(f"「{column}」沒有值")
+            raise SessionError(t(f"「{column}」沒有值", f'"{column}" has no values'))
         problem = too_many_values(column, len(found))
         if problem:
             raise SessionError(problem)
@@ -754,7 +828,10 @@ class Session:
             except SessionError as err:
                 notes[field_name] = str(err)
             else:
-                notes[field_name] = f"按「重新從資料讀取」帶入 {len(found)} 個值"
+                notes[field_name] = t(
+                    f"按「重新從資料讀取」帶入 {len(found)} 個值",
+                    f"Click “Reload from data” to fill in {plural(len(found), 'value', 'values')}",
+                )
         if not notes:
             return errors
         kept = [e for e in errors if e.get("path") not in notes]
@@ -772,7 +849,12 @@ class Session:
                 step.update({k: v for k, v in values.items() if k not in ("id", "type")})
             source = data_value_fields(step.get("type")).get(field_name)
             if source is None:
-                raise SessionError(f"「{field_name}」不是從資料讀出的參數")
+                raise SessionError(
+                    t(
+                        f"「{field_name}」不是從資料讀出的參數",
+                        f'"{field_name}" is not a parameter read from data',
+                    )
+                )
             found = self._read_values(index, step.get(source))
             self._change()
             step[field_name] = found
@@ -830,7 +912,7 @@ class Session:
 
     def _check_index(self, index: int) -> None:
         if not 0 <= index < len(self.steps):
-            raise SessionError(f"沒有第 {index} 步")
+            raise SessionError(t(f"沒有第 {index} 步", f"There is no step {index}"))
 
     # ── 載入資料 ─────────────────────────────────────────────
 
@@ -884,7 +966,7 @@ class Session:
             base = self._require_recipe()
             todo = [st for st in self.stages if self._reads_files(st) and st["input"]["files"]]
             if not todo:
-                raise SessionError("還沒有加入資料檔")
+                raise SessionError(t("還沒有加入資料檔", "No data files added yet"))
             multi = len(self.stages) > 1
             for stage in todo:
                 missing = [
@@ -893,8 +975,17 @@ class Session:
                     if not e["found"]
                 ]
                 if missing:
-                    where = f"（階段「{stage['name']}」）" if multi else ""
-                    raise SessionError(f"找不到：{'、'.join(missing)}{where}，請先從檔案清單移除")
+                    where = (
+                        t(f"（階段「{stage['name']}」）", f' (stage "{stage["name"]}")')
+                        if multi
+                        else ""
+                    )
+                    raise SessionError(
+                        t(
+                            f"找不到：{'、'.join(missing)}{where}，請先從檔案清單移除",
+                            f"Not found: {', '.join(missing)}{where}. Remove {'it' if len(missing) == 1 else 'them'} from the file list first",
+                        )
+                    )
             tracker = StageTracker([st["name"] for st in self.stages], self.progress)
             try:
                 for k, stage in enumerate(self.stages):
@@ -933,10 +1024,10 @@ class Session:
             if sum(f.rows for f in files) <= SAMPLE_THRESHOLD:
                 frame = concat(parts).collect(engine="streaming")
             else:
-                self._report("讀取預覽樣本")
+                self._report(t("讀取預覽樣本", "Reading preview sample"))
                 frame = sample(parts, files, source["reader"], SAMPLE_HEAD, SAMPLE_TAIL)
         except (InputError, DecodeError, LookupError, pl.exceptions.PolarsError) as err:
-            where = f"階段「{name}」：" if multi else ""
+            where = t(f"階段「{name}」：", f'Stage "{name}": ') if multi else ""
             raise SessionError(f"{where}{err}") from None
         self._sources[name] = (key, frame, files)
 
@@ -986,12 +1077,17 @@ class Session:
             return frame, self._sources[stage["name"]][0], sampled, None
         names = list(stage["input"].get("stages") or [])
         if not names:
-            return None, "", False, "要選至少一個前面的階段"
+            return None, "", False, t("要選至少一個前面的階段", "Choose at least one earlier stage")
         frames, keys, sampled = {}, [], False
         for name in names:
             index = self._stage_index(name, si)
             if index is None:
-                return None, "", False, f"「{name}」不是前面的階段"
+                return (
+                    None,
+                    "",
+                    False,
+                    t(f"「{name}」不是前面的階段", f'"{name}" is not an earlier stage'),
+                )
             frame, key, part_sampled, _ = self._stage_result(index)
             if frame is None:
                 return None, "", False, None
@@ -1046,7 +1142,7 @@ class Session:
                             model, frame, tables=tables
                         )
                     except RunError as err:
-                        item.run_error = str(err).split("失敗：", 1)[-1]
+                        item.run_error = err.message
             broken = broken or item.frame is None
             frame = item.frame
             results.append(item)
@@ -1073,7 +1169,10 @@ class Session:
             item.errors = [
                 {
                     "path": "type",
-                    "error": f"不支援的步驟類型：{raw.get('type')}",
+                    "error": t(
+                        f"不支援的步驟類型：{raw.get('type')}",
+                        f"Unsupported step type: {raw.get('type')}",
+                    ),
                     "severity": "error",
                 }
             ]
@@ -1164,18 +1263,29 @@ class Session:
         """階段面板圓點的說明（滑鼠移上去）：已算出結果、哪一步有錯、為什麼還沒有結果。"""
         stage = self.stages[index]
         if status == "ok" and frame is not None:
-            return f"已算出結果：{frame.height:,} 列"
+            return t(
+                f"已算出結果：{frame.height:,} 列",
+                f"Result ready: {plural(frame.height, 'row', 'rows')}",
+            )
         if status == "error":
             first = next((k for k, c in enumerate(computed) if c.errors or c.run_error), None)
-            return f"第 {first + 1} 步有錯" if first is not None else "讀取資料有錯"
+            return (
+                t(f"第 {first + 1} 步有錯", f"Step {first + 1} has an error")
+                if first is not None
+                else t("讀取資料有錯", "“Read data” has an error")
+            )
         for ref, _ in stage_refs(stage):
             j = self._stage_index(ref, index)
             if j is not None and j < len(earlier) and earlier[j]["status"] != "ok":
-                why = "有錯" if earlier[j]["status"] == "error" else "還沒有結果"
-                return f"讀的「{ref}」{why}，還算不出來"
+                why = (
+                    t("有錯", "has errors")
+                    if earlier[j]["status"] == "error"
+                    else t("還沒有結果", "has no result yet")
+                )
+                return t(f"讀的「{ref}」{why}，還算不出來", f'Can\'t compute yet: "{ref}" {why}')
         if self._reads_files(stage) and not stage["input"]["files"]:
-            return "還沒有加入資料檔"
-        return "還沒載入資料"
+            return t("還沒有加入資料檔", "No data files added yet")
+        return t("還沒載入資料", "Data not loaded yet")
 
     def state(self) -> dict[str, Any]:
         with self._lock:
@@ -1493,8 +1603,12 @@ class Session:
                 if self._reads_files(st) and self._load_source(st)[0] is None
             ]
             if waiting:
-                where = f"（{'、'.join(waiting)}）" if len(self.stages) > 1 else ""
-                raise SessionError(f"{LOAD_HINT}{where}")
+                where = (
+                    t(f"（{'、'.join(waiting)}）", f" ({', '.join(waiting)})")
+                    if len(self.stages) > 1
+                    else ""
+                )
+                raise SessionError(f"{load_hint()}{where}")
             return base
 
     def _file_problem(self) -> str | None:
@@ -1504,54 +1618,77 @@ class Session:
         for stage in self.stages:
             if not self._reads_files(stage):
                 continue
-            where = f"（階段「{stage['name']}」）" if multi else ""
+            where = (
+                t(f"（階段「{stage['name']}」）", f' (stage "{stage["name"]}")') if multi else ""
+            )
             if not stage["input"]["files"]:
-                return f"還沒有加入資料檔{where}"
+                return t(f"還沒有加入資料檔{where}", f"No data files added yet{where}")
             missing = [
                 e["path"] for e in check_entries(stage["input"]["files"], base) if not e["found"]
             ]
             if missing:
-                return f"找不到：{'、'.join(missing)}{where}，請先從檔案清單移除"
+                return t(
+                    f"找不到：{'、'.join(missing)}{where}，請先從檔案清單移除",
+                    f"Not found: {', '.join(missing)}{where}. Remove {'it' if len(missing) == 1 else 'them'} from the file list first",
+                )
         return None
 
     def _load_problem(self) -> str | None:
         """「載入資料及預覽」不能按的原因（None 是可以按）。"""
         if self.base_dir is None:
-            return "還沒有開啟 Recipe"
+            return t("還沒有開啟 Recipe", "No Recipe open")
         with_files = [st for st in self.stages if self._reads_files(st) and st["input"]["files"]]
         if not with_files:
-            return "還沒有加入資料檔"
+            return t("還沒有加入資料檔", "No data files added yet")
         base, multi = self.base_dir, len(self.stages) > 1
         for stage in with_files:
             missing = [
                 e["path"] for e in check_entries(stage["input"]["files"], base) if not e["found"]
             ]
             if missing:
-                where = f"（階段「{stage['name']}」）" if multi else ""
-                return f"找不到：{'、'.join(missing)}{where}，請先從檔案清單移除"
+                where = (
+                    t(f"（階段「{stage['name']}」）", f' (stage "{stage["name"]}")')
+                    if multi
+                    else ""
+                )
+                return t(
+                    f"找不到：{'、'.join(missing)}{where}，請先從檔案清單移除",
+                    f"Not found: {', '.join(missing)}{where}. Remove {'it' if len(missing) == 1 else 'them'} from the file list first",
+                )
         if all(self._load_source(st)[0] is not None for st in with_files):
-            return "已載入；檔案清單、讀取方式或編碼變更後可以重新載入"
+            return t(
+                "已載入；檔案清單、讀取方式或編碼變更後可以重新載入",
+                "Already loaded; you can reload after changing the file list, “Read as”, or encoding",
+            )
         return None
 
     def _export_problem(self) -> str | None:
         """「處理並匯出資料」不能按的原因（None 是可以按）。不用先載入資料。"""
         if self.base_dir is None:
-            return "還沒有開啟 Recipe"
+            return t("還沒有開啟 Recipe", "No Recipe open")
         problem = self._file_problem()
         if problem:
             return problem
         for stage, planned in zip(self.stages, self._outputs(), strict=True):
             if planned is not None and planned.error:
                 error = planned.error
-                if error.startswith("輸出檔名"):
-                    return f"階段「{stage['name']}」的{error}"
-                return f"階段「{stage['name']}」：{error}"
+                if error.startswith("輸出檔名"):  # i18n-ignore：比對 export/outputs.py 的訊息
+                    return t(
+                        f"階段「{stage['name']}」的{error}", f'Stage "{stage["name"]}": {error}'
+                    )
+                return t(f"階段「{stage['name']}」：{error}", f'Stage "{stage["name"]}": {error}')
         for i, stage in enumerate(self.stages):
             self._stage_result(i)
             computed = self._computed.get(stage["name"], [])
             if any(c.errors or c.run_error for c in computed) or self._stage_input(i)[3]:
-                where = f"階段「{stage['name']}」" if len(self.stages) > 1 else ""
-                return f"{where}有步驟出錯，請先修正"
+                where = (
+                    t(f"階段「{stage['name']}」", f' in stage "{stage["name"]}"')
+                    if len(self.stages) > 1
+                    else ""
+                )
+                return t(
+                    f"{where}有步驟出錯，請先修正", f"Some steps{where} have errors; fix them first"
+                )
         return None
 
     def _previewed(self) -> bool:
@@ -1571,9 +1708,20 @@ class Session:
             for i, raw in enumerate(stage["steps"]):
                 if raw.get("id") == step_id:
                     cls = _safe_get(raw.get("type"))
-                    label = f"「{cls.label}」" if cls else ""
-                    where = f"階段「{stage['name']}」" if len(self.stages) > 1 else ""
-                    return si, i, f"{where}第 {i + 1} 步{label}"
+                    label = t(f"「{cls.label}」", f' "{cls.label}"') if cls else ""
+                    where = (
+                        t(f"階段「{stage['name']}」", f'Stage "{stage["name"]}", ')
+                        if len(self.stages) > 1
+                        else ""
+                    )
+                    return (
+                        si,
+                        i,
+                        t(
+                            f"{where}第 {i + 1} 步{label}",
+                            f"{where}step {i + 1}{label}" if where else f"Step {i + 1}{label}",
+                        ),
+                    )
         return None, None, ""
 
     def _upstream(self, index: int) -> list[int]:
@@ -1641,7 +1789,10 @@ class Session:
             tracker = StageTracker(names, self.progress, [PREPARE, TRIAL])
             try:
                 if self._previewed():
-                    tracker.skip_phase(TRIAL, "已用預覽檢查過，略過")
+                    tracker.skip_phase(
+                        TRIAL,
+                        t("已用預覽檢查過，略過", "Already checked with the preview; skipped"),
+                    )
                 else:
                     self._trial(recipe, base, tracker)
                 _, report = execute(
@@ -1699,9 +1850,11 @@ class Session:
             )
         except RunError as err:
             stage, step, where = self._step_place(err.step_id)
-            message = str(err).split("失敗：", 1)[-1]
+            message = err.message
             raise TrialError(
-                f"試跑時出錯：{where}：{message}" if where else f"試跑時出錯：{message}",
+                t(f"試跑時出錯：{where}：{message}", f"Trial run failed: {where}: {message}")
+                if where
+                else t(f"試跑時出錯：{message}", f"Trial run failed: {message}"),
                 stage,
                 step,
             ) from None
@@ -1709,20 +1862,37 @@ class Session:
     def error_report(self) -> str:
         """給 AI 助理（Copilot）看的驗證結果：問題、每一步的列數、警告。"""
         with self._lock:
-            lines = [f"Tablade 驗證結果（Recipe 版本 {RECIPE_VERSION}，Tablade {__version__}）"]
+            lines = [
+                t(
+                    f"Tablade 驗證結果（Recipe 版本 {RECIPE_VERSION}，Tablade {__version__}）",
+                    f"Tablade validation results (Recipe version {RECIPE_VERSION}, Tablade {__version__})",
+                )
+            ]
             if self.recipe_path:
-                lines.append(f"Recipe：{self.recipe_path.name}")
+                lines.append(
+                    t(f"Recipe：{self.recipe_path.name}", f"Recipe: {self.recipe_path.name}")
+                )
             data = self.recipe_dict()
             result = check_recipe(
                 data, self.base_dir or Path.cwd(), dry_run=self.base_dir is not None
             )
             if result.issues:
-                lines += ["", "問題：", format_issues(result.issues)]
+                lines += ["", t("問題：", "Issues:"), format_issues(result.issues)]
             else:
-                lines += ["", "沒有發現問題。"]
+                lines += ["", t("沒有發現問題。", "No issues found.")]
             if result.report:
-                lines += ["", "試跑結果：", format_report(result.report, max_warnings=20)]
-            lines += ["", f'請依上面的問題修正 Recipe，tablade_recipe 維持 "{RECIPE_VERSION}"。']
+                lines += [
+                    "",
+                    t("試跑結果：", "Trial run results:"),
+                    format_report(result.report, max_warnings=20),
+                ]
+            lines += [
+                "",
+                t(
+                    f'請依上面的問題修正 Recipe，tablade_recipe 維持 "{RECIPE_VERSION}"。',
+                    f'Fix the Recipe based on the issues above, keeping tablade_recipe at "{RECIPE_VERSION}".',
+                ),
+            ]
             return "\n".join(lines)
 
 

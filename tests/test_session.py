@@ -492,8 +492,8 @@ def test_export_without_loading_first(data, monkeypatch):
     assert modes == ["sample", "auto"]  # 試跑，再正式處理
     phases = [p["phases"] for p in seen if "phases" in p][-1]
     assert phases == [
-        {"name": "準備檔案", "status": "done", "detail": "已處理 2 / 2 個檔"},
-        {"name": "試跑", "status": "done", "detail": "沒有錯誤"},
+        {"key": "prepare", "name": "準備檔案", "status": "done", "detail": "已處理 2 / 2 個檔"},
+        {"key": "trial", "name": "試跑", "status": "done", "detail": "沒有錯誤"},
     ]
     stages = [p["stages"] for p in seen if "stages" in p][-1]
     assert [(x["name"], x["status"], x["rows"]) for x in stages] == [("預設階段", "done", 94)]
@@ -505,7 +505,12 @@ def test_export_without_loading_first(data, monkeypatch):
     s.export()
     assert modes == ["auto"]
     phases = [p["phases"] for p in seen if "phases" in p][-1]
-    assert phases[1] == {"name": "試跑", "status": "done", "detail": "已用預覽檢查過，略過"}
+    assert phases[1] == {
+        "key": "trial",
+        "name": "試跑",
+        "status": "done",
+        "detail": "已用預覽檢查過，略過",
+    }
     s.set_input({"encoding": "utf-8"})  # 設定變了：還是可以匯出（會先試跑）
     assert s.state()["actions"]["load"]["ok"] is True
     assert s.state()["actions"]["export"]["ok"] is True

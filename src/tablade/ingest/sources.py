@@ -36,6 +36,7 @@ import polars as pl
 from tablade.dtypes import type_label
 from tablade.usage import worker_memory
 
+from ..i18n import t
 from . import excel
 from .encoding import AUTO_ORDER, SUPPORTED, DecodeError
 from .transcode import CHUNK, decode_range, segment_bounds, transcode_segment
@@ -46,14 +47,14 @@ SYSTEM = (STAGE, SOURCE_FILE, SHEET, LINE_NO)
 """讀檔產生的系統欄位（依這個順序）；__sheet 只有讀 Excel 全部工作表時才有，
 __stage 只有讀前面階段的輸出時才有。其他系統欄位（合併來源檔留下的 __orig_*）排在後面。"""
 PARQUET_LABELS = {
-    "source_file": "來源檔",
-    "line_no": "行號",
-    "sheet": "工作表",
-    "stage": "階段",
-    "orig_source_file": "合併前來源檔",
-    "orig_line_no": "合併前行號",
-    "orig_sheet": "合併前工作表",
-    "orig_stage": "合併前階段",
+    "source_file": "來源檔",  # i18n-ignore：程式產生的欄名是資料，Recipe 會引用
+    "line_no": "行號",  # i18n-ignore：同上
+    "sheet": "工作表",  # i18n-ignore：同上
+    "stage": "階段",  # i18n-ignore：同上
+    "orig_source_file": "合併前來源檔",  # i18n-ignore：同上
+    "orig_line_no": "合併前行號",  # i18n-ignore：同上
+    "orig_sheet": "合併前工作表",  # i18n-ignore：同上
+    "orig_stage": "合併前階段",  # i18n-ignore：同上
 }
 """讀 parquet 檔時，檔案自己帶的 __ 開頭欄位改名成「原始…」的一般欄保留（例如 __line_no → 原始行號）。"""
 
@@ -61,8 +62,8 @@ PARQUET_LABELS = {
 def part_name(file: str, sheet: str | None = None, stage: str | None = None) -> str:
     """一個來源的名稱：檔名；讀 Excel 全部工作表時每個工作表各自是一個來源，名稱是「檔名［工作表］」；
     從前面的階段讀進來時前面加「@階段／」。"""
-    name = file if sheet is None else f"{file}［{sheet}］"
-    return name if stage is None else f"@{stage}／{name}"
+    name = file if sheet is None else f"{file}［{sheet}］"  # i18n-ignore：來源名稱是資料
+    return name if stage is None else f"@{stage}／{name}"  # i18n-ignore：來源名稱是資料
 
 
 Progress = Callable[[dict[str, Any]], None] | None
@@ -220,14 +221,23 @@ def resolve(entries: str | list[str], base_dir: Path) -> list[Path]:
     if isinstance(entries, str):
         entries = [entries]
     if not entries:
-        raise InputError("還沒有加入資料檔")
+        raise InputError(t("還沒有加入資料檔", "No data files added yet"))
     seen: set[Path] = set()
     found = []
     for entry in entries:
         matches = expand(entry, base_dir)
         if not matches:
-            what = f"符合「{entry}」的檔案" if is_glob(entry) else f"檔案「{entry}」"
-            raise InputError(f"找不到{what}（相對於 {base_dir}）")
+            if is_glob(entry):
+                message = t(
+                    f"找不到符合「{entry}」的檔案（相對於 {base_dir}）",
+                    f'No files match "{entry}" (relative to {base_dir})',
+                )
+            else:
+                message = t(
+                    f"找不到檔案「{entry}」（相對於 {base_dir}）",
+                    f'File "{entry}" not found (relative to {base_dir})',
+                )
+            raise InputError(message)
         for path in matches:
             real = path.resolve()  # 符號連結可能讓同一個檔出現兩次
             if real not in seen:
@@ -251,7 +261,10 @@ def _report(progress: Progress, stage: str, name: str, done: int, total: int) ->
 
 
 def _failure(encoding: str, offset: int, newlines: int, byte: int) -> str:
-    return f"{encoding} 在第 {offset} 個位元組（第 {newlines + 1} 行，0x{byte:02X}）無法解碼"
+    return t(
+        f"{encoding} 在第 {offset} 個位元組（第 {newlines + 1} 行，0x{byte:02X}）無法解碼",
+        f"{encoding} can't decode byte 0x{byte:02X} at offset {offset} (line {newlines + 1})",
+    )
 
 
 _LONE_CR = re.compile(rb"\r(?!\n)")
@@ -283,7 +296,7 @@ def _check_utf8(path: Path, progress: Progress) -> tuple[str, bool, bool, str | 
                     )
             newlines += chunk.count(b"\n")
             done += len(chunk)
-            _report(progress, "檢查編碼", path.name, done, total)
+            _report(progress, t("檢查編碼", "Checking encoding"), path.name, done, total)
             if error is not None:
                 break  # 不是 UTF-8：改用其他編碼轉碼時會重新讀一次
     if carry:
@@ -292,7 +305,10 @@ def _check_utf8(path: Path, progress: Progress) -> tuple[str, bool, bool, str | 
         try:
             decoder.decode(b"", final=True)
         except UnicodeDecodeError:
-            error = f"utf-8 在檔案結尾（第 {newlines + 1} 行）有不完整的字元"
+            error = t(
+                f"utf-8 在檔案結尾（第 {newlines + 1} 行）有不完整的字元",
+                f"utf-8: incomplete character at the end of the file (line {newlines + 1})",
+            )
     return digest.hexdigest(), bom, lone_cr, error
 
 
@@ -360,7 +376,12 @@ def _decode_error(path: Path, encoding: str, failure: tuple[int, int]) -> Decode
     offset, byte = failure
     newlines = _line_of(path, offset)
     if byte < 0:
-        return DecodeError(f"{encoding} 在檔案結尾（第 {newlines + 1} 行）有不完整的字元")
+        return DecodeError(
+            t(
+                f"{encoding} 在檔案結尾（第 {newlines + 1} 行）有不完整的字元",
+                f"{encoding}: incomplete character at the end of the file (line {newlines + 1})",
+            )
+        )
     return DecodeError(_failure(encoding, offset, newlines, byte))
 
 
@@ -372,7 +393,7 @@ def _transcode_single(path: Path, encoding: str, target: Path, progress: Progres
         nonlocal done
         digest.update(chunk)
         done += len(chunk)
-        _report(progress, "轉碼", path.name, done, total)
+        _report(progress, t("轉碼", "Transcoding"), path.name, done, total)
 
     with path.open("rb") as f, target.open("wb") as out:
         failure = decode_range(f, out, encoding, on_chunk=on_chunk)
@@ -424,7 +445,7 @@ def _transcode_parallel(
                     rest.cancel()
                 raise _decode_error(path, encoding, failure)
             done += cuts[i + 1] - cuts[i]
-            _report(progress, "轉碼", path.name, done, total)
+            _report(progress, t("轉碼", "Transcoding"), path.name, done, total)
         with target.open("wb") as out:
             for part in parts:
                 with part.open("rb") as f:
@@ -471,7 +492,12 @@ def _count_lines(path: Path) -> int:
 def prepare(path: Path, encoding: str = "auto", progress: Progress = None) -> Prepared:
     """確保檔案可以用 UTF-8 掃描：必要時轉碼成暫存檔。結果會快取。"""
     if encoding not in SUPPORTED:
-        raise DecodeError(f"不支援的編碼：{encoding}（可用：{', '.join(SUPPORTED)}）")
+        raise DecodeError(
+            t(
+                f"不支援的編碼：{encoding}（可用：{', '.join(SUPPORTED)}）",
+                f"Unsupported encoding: {encoding} (available: {', '.join(SUPPORTED)})",
+            )
+        )
     stat = path.stat()
     key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns, encoding)
     with _lock:
@@ -511,7 +537,10 @@ def prepare(path: Path, encoding: str = "auto", progress: Progress = None) -> Pr
                 )
                 break
             else:
-                raise DecodeError("無法判斷編碼：" + "；".join(failures))
+                raise DecodeError(
+                    t("無法判斷編碼：", "Couldn't detect the encoding: ")
+                    + t("；", "; ").join(failures)
+                )
     else:
         digest = _transcode(path, encoding, staged, progress)
         prepared = Prepared(staged, encoding, digest, stat.st_size, False, _count_lines(staged))
@@ -553,21 +582,29 @@ def _scan_one(prepared: Prepared, reader: str, name: str) -> tuple[pl.LazyFrame,
             *[pl.col(c).alias(renamed[c]) for c in columns],
         )
         return lf, max(prepared.lines - 1, 0)
-    raise InputError(f"不支援的讀取方式：{reader}")
+    raise InputError(t(f"不支援的讀取方式：{reader}", f"Unsupported reader: {reader}"))
 
 
 def _common_type(column: str, found: list[tuple[str, pl.DataType]]) -> pl.DataType:
     """同名欄在各來源的型別要一樣：整欄都是空值的不算，小數位數不同時取位數多的；其他不一樣就報錯。"""
-    typed = [(name, t) for name, t in found if t != pl.Null]
+    typed = [(name, dtype) for name, dtype in found if dtype != pl.Null]
     if not typed:
         return found[0][1]
     first = typed[0][1]
-    if all(t == first for _, t in typed):
+    if all(dtype == first for _, dtype in typed):
         return first
-    if all(isinstance(t, pl.Decimal) for _, t in typed):
-        return pl.Decimal(38, max(t.scale for _, t in typed))  # type: ignore[attr-defined]
-    shown = "、".join(f"{name}：{type_label(t)}" for name, t in typed)
-    raise InputError(f"「{column}」在各來源的型別不一樣（{shown}），請先轉成一樣的型別")
+    if all(isinstance(dtype, pl.Decimal) for _, dtype in typed):
+        return pl.Decimal(38, max(dtype.scale for _, dtype in typed))  # type: ignore[attr-defined]
+    shown = t("、", ", ").join(
+        t(f"{name}：{type_label(dtype)}", f"{name}: {type_label(dtype)}") for name, dtype in typed
+    )
+    raise InputError(
+        t(
+            f"「{column}」在各來源的型別不一樣（{shown}），請先轉成一樣的型別",
+            f'"{column}" has different types in different sources ({shown}); '
+            "convert them to the same type first",
+        )
+    )
 
 
 def align(parts: list[Part]) -> list[Part]:
@@ -628,7 +665,12 @@ def scan_parts(
                 files.append(info)
             continue
         if excel.is_excel(path):
-            raise InputError(f"「{name}」是 Excel 檔：讀取方式請選「Excel 工作表」")
+            raise InputError(
+                t(
+                    f"「{name}」是 Excel 檔：讀取方式請選「Excel 工作表」",
+                    f'"{name}" is an Excel file: set "Read as" to "Excel sheet"',
+                )
+            )
         if reader == "parquet":
             lf, info = _scan_parquet(path, name, progress)
             parts.append((name, lf))
@@ -644,24 +686,37 @@ def scan_parts(
 def parquet_names(columns: list[str]) -> dict[str, str]:
     """parquet 檔的欄名 → 讀進來的欄名：__ 開頭的改名成「原始…」（例如 __line_no → 原始行號）。"""
     renamed = {
-        c: f"原始{PARQUET_LABELS.get(c[2:], c[2:])}" if c.startswith("__") else c for c in columns
+        c: f"原始{PARQUET_LABELS.get(c[2:], c[2:])}"  # i18n-ignore：欄名是資料
+        if c.startswith("__")
+        else c
+        for c in columns
     }
     values = list(renamed.values())
     clash = sorted({v for v in values if values.count(v) > 1})
     if clash:
-        raise InputError(f"改名後欄名重複：{'、'.join(clash)}")
+        raise InputError(
+            t(
+                f"改名後欄名重複：{'、'.join(clash)}",
+                f"Duplicate column names after renaming: {', '.join(clash)}",
+            )
+        )
     return renamed
 
 
 def _scan_parquet(path: Path, name: str, progress: Progress) -> tuple[pl.LazyFrame, SourceFile]:
     """一個 parquet 檔是一個來源：欄位與型別照檔案；__source_file 是檔名、__line_no 是第幾列（從 1 起）。"""
-    _report(progress, "讀取 Parquet", name, 0, 0)
+    _report(progress, t("讀取 Parquet", "Reading Parquet"), name, 0, 0)
     try:
         raw = pl.scan_parquet(path)
         renamed = parquet_names(raw.collect_schema().names())
         rows = raw.select(pl.len()).collect().item()
     except (OSError, pl.exceptions.PolarsError) as err:
-        raise InputError(f"「{name}」讀不了（不是 Parquet 檔？）：{err}") from None
+        raise InputError(
+            t(
+                f"「{name}」讀不了（不是 Parquet 檔？）：{err}",
+                f'Cannot read "{name}" (not a Parquet file?): {err}',
+            )
+        ) from None
     lf = (
         raw.select([pl.col(c).alias(n) for c, n in renamed.items()])
         .with_row_index(LINE_NO, offset=1)
@@ -679,7 +734,7 @@ def _scan_excel(
     path: Path, sheet: str, name: str, progress: Progress
 ) -> list[tuple[Part, SourceFile]]:
     """一個 Excel 檔：一個工作表一個來源；工作表是 ``*`` 時讀全部工作表，多一個 __sheet 欄。"""
-    _report(progress, "讀取 Excel", name, 0, 0)
+    _report(progress, t("讀取 Excel", "Reading Excel"), name, 0, 0)
     size, digest = path.stat().st_size, excel.sha256(path)
     try:
         if sheet != excel.ALL_SHEETS:
@@ -696,7 +751,9 @@ def _scan_excel(
 
 
 def _schema_text(schema: pl.Schema) -> str:
-    return "、".join(f"{name}（{dtype}）" for name, dtype in schema.items())
+    return t("、", ", ").join(
+        t(f"{name}（{dtype}）", f"{name} ({dtype})") for name, dtype in schema.items()
+    )
 
 
 def concat(parts: list[Part]) -> pl.LazyFrame:
@@ -710,8 +767,12 @@ def concat(parts: list[Part]) -> pl.LazyFrame:
         schema = lf.collect_schema()
         if schema != expected:
             raise PartsMismatch(
-                f"來源檔「{name}」的欄位（{_schema_text(schema)}）"
-                f"和「{first_name}」（{_schema_text(expected)}）不同"
+                t(
+                    f"來源檔「{name}」的欄位（{_schema_text(schema)}）"
+                    f"和「{first_name}」（{_schema_text(expected)}）不同",
+                    f'Source file "{name}" has different columns ({_schema_text(schema)}) '
+                    f'from "{first_name}" ({_schema_text(expected)})',
+                )
             )
     return pl.concat(frames, how="vertical")
 
@@ -766,7 +827,12 @@ def peek_columns(
         try:
             names = list(parquet_names(pl.read_parquet_schema(first).keys()).values())
         except (OSError, pl.exceptions.PolarsError) as err:
-            raise InputError(f"「{first.name}」讀不了（不是 Parquet 檔？）：{err}") from None
+            raise InputError(
+                t(
+                    f"「{first.name}」讀不了（不是 Parquet 檔？）：{err}",
+                    f'Cannot read "{first.name}" (not a Parquet file?): {err}',
+                )
+            ) from None
         return names
     if reader == "excel":
         try:

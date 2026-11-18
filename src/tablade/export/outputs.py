@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from tablade.export.manifest import LOG_DIR
+from tablade.i18n import t
 from tablade.ingest.sources import expand
 from tablade.recipe.schema import Recipe
 from tablade.recipe.validator import output_issues, output_name
@@ -82,7 +83,11 @@ def plan_outputs(
         planned = PlannedOutput(file, folder / file, not raw, errors.get(k))
         owner = inputs.get(planned.path.resolve())
         if planned.error is None and owner is not None:
-            planned.error = f"「{OUTPUT_DIR}/{file}」是階段「{owner}」的輸入檔，不能寫到這裡（請換一個輸出檔名）"
+            planned.error = t(
+                f"「{OUTPUT_DIR}/{file}」是階段「{owner}」的輸入檔，不能寫到這裡（請換一個輸出檔名）",
+                f'"{OUTPUT_DIR}/{file}" is an input file of stage "{owner}" and can\'t be '
+                "overwritten (use a different output file name)",
+            )
         out.append(planned)
     return out
 
@@ -93,12 +98,12 @@ def resolve_outputs(
     """每個要寫檔的階段 → 寫出的位置。檔名不合法、重複，或寫出的位置是輸入檔時丟出 ``OutputError``。"""
     planned = plan_outputs(recipe.model_dump(mode="json"), base_dir, default, out_dir)
     problems = [
-        f"階段「{stage.name}」：{p.error}"
+        t(f"階段「{stage.name}」：{p.error}", f'Stage "{stage.name}": {p.error}')
         for stage, p in zip(recipe.stages, planned, strict=True)
         if p is not None and p.error
     ]
     if problems:
-        raise OutputError("；".join(problems))
+        raise OutputError(t("；", "; ").join(problems))
     return {
         stage.name: p.path for stage, p in zip(recipe.stages, planned, strict=True) if p is not None
     }

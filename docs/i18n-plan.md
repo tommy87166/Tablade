@@ -41,16 +41,20 @@
   - 英文寫在旁邊：`label_en`、`Field(json_schema_extra={"en": {"title": …, "description": …}})`、`ui_labels_en`。
   - 送給前端時依語言換掉，`catalog` 也跟著換。
 - **`describe()`、警告、錯誤、進度、狀態說明**：用 `t()`。
+- **進度視窗的「準備檔案」「試跑」**：程式用代碼辨認（`PREPARE = "prepare"`、`TRIAL = "trial"`），畫面上寫的字另外依語言產生（`phase_name()`）。
+- **不能跟著語言變的字串**（會變成資料的：程式產生的欄名、`__source_file` 的值；拿來比對或當 key 的）：那一行標 `# i18n-ignore`。
+- **AI skill**：下載時用 `i18n.using("zh")` 包起來，畫面是英文時下載的也是中文。
+- **處理紀錄（manifest）**：欄位名稱維持中文；裡面的警告訊息是匯出當時畫面的語言。
 - **`recipe/validator.py`**（只用標準函式庫、不 import tablade）：
   - 自己有一個 `LANG` 與 `_t()`，tablade 切換語言時一起設。
   - AI skill 用的時候維持中文。
 
 ## 分批
 
-1. **前端**
+1. **前端**（✅ 已完成）
    - `i18n.ts`、切換鈕、`api.set_language`（Python 先只記住語言、放進 `state.lang`）
    - 前端所有元件的文字、`tests/test_i18n.py`
-2. **Python 的畫面狀態與流程**
+2. **Python 的畫面狀態與流程**（✅ 已完成；`profile.py` 只給 CLI 與 AI skill 用，不翻）
    - `session.py`：狀態說明、按鈕不能按的原因、算不出來的原因、錯誤訊息
    - `api.py`
    - `engine/run.py`、`ingest/`：進度文字、讀檔與轉碼錯誤

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from tablade.i18n import plural, t
 from tablade.ingest.encoding import DecodeError
 from tablade.ingest.sources import InputError, peek_columns
 from tablade.recipe.schema import Recipe, RecipeError, load_json, parse_recipe
@@ -104,83 +105,140 @@ def check_recipe_file(path: Path, *, dry_run: bool = False) -> CheckResult:
 def format_issues(issues: list[dict[str, Any]]) -> str:
     lines = []
     for item in issues:
-        mark = "錯誤" if item["severity"] == "error" else "提醒"
-        hint = f"（{item['hint']}）" if item.get("hint") else ""
+        mark = t("錯誤", "Error") if item["severity"] == "error" else t("提醒", "Warning")
+        hint = t(f"（{item['hint']}）", f" ({item['hint']})") if item.get("hint") else ""
         lines.append(f"  [{mark}] {item['path']}: {item['error']}{hint}")
     return "\n".join(lines)
 
 
 def warning_place(w: RowWarning) -> str:
     """警告指到的位置：「@階段／檔名［工作表］:行號（原始：檔名:行號）」。"""
-    where = f"{w.source_file}［{w.sheet}］" if w.sheet else f"{w.source_file}"
+    slash = t("／", "/")
+    where = (
+        t(f"{w.source_file}［{w.sheet}］", f"{w.source_file} [{w.sheet}]")
+        if w.sheet
+        else f"{w.source_file}"
+    )
     if w.stage:
-        where = f"@{w.stage}／{where}"
+        where = f"@{w.stage}{slash}{where}"
     where += f":{w.line_no}"
     if w.orig_source_file is not None or w.orig_line_no is not None:
-        original = f"{w.orig_source_file}［{w.orig_sheet}］" if w.orig_sheet else w.orig_source_file
+        original = (
+            t(f"{w.orig_source_file}［{w.orig_sheet}］", f"{w.orig_source_file} [{w.orig_sheet}]")
+            if w.orig_sheet
+            else w.orig_source_file
+        )
         if w.orig_stage:
-            original = f"@{w.orig_stage}／{original}"
-        where += f"（原始：{original}:{w.orig_line_no}）"
+            original = f"@{w.orig_stage}{slash}{original}"
+        where += t(
+            f"（原始：{original}:{w.orig_line_no}）", f" (original: {original}:{w.orig_line_no})"
+        )
     return where
 
 
 def format_report(report: RunReport, max_warnings: int = 10) -> str:
+    def rows(n: int) -> str:
+        return t(f"{n:>8,} 列", f"{plural(n, 'row', 'rows'):>13}")
+
     multi = len(report.stages) > 1
-    lines = ["輸入："]
+    lines = [t("輸入：", "Inputs:")]
     for f in report.inputs:
-        stage = f"［{f.stage}］" if multi and f.stage else ""
-        lines.append(f"  {stage}{f.name}（{f.encoding}，{f.bytes:,} bytes，{f.rows:,} 行）")
+        stage = t(f"［{f.stage}］", f"[{f.stage}] ") if multi and f.stage else ""
+        lines.append(
+            t(
+                f"  {stage}{f.name}（{f.encoding}，{f.bytes:,} bytes，{f.rows:,} 行）",
+                f"  {stage}{f.name} ({f.encoding}, {plural(f.bytes, 'byte', 'bytes')}, "
+                f"{plural(f.rows, 'line', 'lines')})",
+            )
+        )
     previous = report.input_rows
     if report.mode == "sample":
         previous = report.sample_rows or 0
         lines.append(
-            f"大檔：試跑只用每個檔案的前 {SAMPLE_HEAD:,} 行與最後 {SAMPLE_TAIL:,} 行"
-            f"（共 {previous:,} 行），下面的列數是樣本的；匯出時會處理全部資料。"
+            t(
+                f"大檔：試跑只用每個檔案的前 {SAMPLE_HEAD:,} 行與最後 {SAMPLE_TAIL:,} 行"
+                f"（共 {previous:,} 行），下面的列數是樣本的；匯出時會處理全部資料。",
+                f"Large files: the trial run uses only the first {SAMPLE_HEAD:,} and last "
+                f"{plural(SAMPLE_TAIL, 'line', 'lines')} of each file "
+                f"({plural(previous, 'line', 'lines')} in total), so the row counts below are "
+                "from the sample; export processes all data.",
+            )
         )
     if report.mode == "stream":
         lines.append(
-            f"步驟（輸入共 {report.input_rows:,} 行，串流執行；每一步的列數只在試跑時提供）："
+            t(
+                f"步驟（輸入共 {report.input_rows:,} 行，串流執行；每一步的列數只在試跑時提供）：",
+                f"Steps ({plural(report.input_rows, 'input line', 'input lines')}, streamed; "
+                "per-step row counts are only shown in trial runs):",
+            )
         )
     else:
-        lines.append(f"步驟（輸入共 {previous:,} 行）：")
+        lines.append(
+            t(
+                f"步驟（輸入共 {previous:,} 行）：",
+                f"Steps ({plural(previous, 'input line', 'input lines')}):",
+            )
+        )
     stage = None
     for s in report.steps:
         if multi and s.stage != stage:
             stage = s.stage
-            lines.append(f" 階段「{stage}」")
+            lines.append(t(f" 階段「{stage}」", f' Stage "{stage}"'))
             previous = None
-        warn = f"，警告 {s.warning_count:,}" if s.warning_count else ""
+        warns = (
+            t(f"警告 {s.warning_count:,}", plural(s.warning_count, "warning", "warnings"))
+            if s.warning_count
+            else ""
+        )
+        paren = t(f"（{warns}）", f" ({warns})") if warns else ""
         if not s.enabled:
-            lines.append(f"  {s.id:<6} [停用] {s.description}")
-        elif s.rows is None:
-            lines.append(f"  {s.id:<6} {s.description}{f'（{warn[1:]}）' if warn else ''}")
-        elif previous is None:
             lines.append(
-                f"  {s.id:<6} {s.rows:>8,} 列{f'（{warn[1:]}）' if warn else ''}  {s.description}"
+                t(f"  {s.id:<6} [停用] {s.description}", f"  {s.id:<6} [disabled] {s.description}")
             )
+        elif s.rows is None:
+            lines.append(f"  {s.id:<6} {s.description}{paren}")
+        elif previous is None:
+            lines.append(f"  {s.id:<6} {rows(s.rows)}{paren}  {s.description}")
             previous = s.rows
         else:
             delta = s.rows - previous
             change = f"{delta:+,}" if delta else "±0"
-            lines.append(f"  {s.id:<6} {s.rows:>8,} 列（{change}{warn}）  {s.description}")
+            if warns:
+                change += t("，", ", ") + warns
+            paren = t(f"（{change}）", f" ({change})")
+            lines.append(f"  {s.id:<6} {rows(s.rows)}{paren}  {s.description}")
             previous = s.rows
     warnings = [w for s in report.steps for w in s.warnings]
     if warnings:
+        shown = min(len(warnings), max_warnings)
         lines.append(
-            f"警告（共 {report.warning_count:,} 則，列出前 {min(len(warnings), max_warnings)} 則）："
+            t(
+                f"警告（共 {report.warning_count:,} 則，列出前 {shown} 則）：",
+                f"Warnings ({report.warning_count:,} in total, showing the first {shown}):",
+            )
         )
         for w in warnings[:max_warnings]:
             lines.append(f"  {w.step} {warning_place(w)}  {w.message}")
+    columns = t("、", ", ").join(report.columns)
     lines.append(
-        f"結果：{report.rows:,} 列 × {len(report.columns)} 欄（{'、'.join(report.columns)}）"
+        t(
+            f"結果：{report.rows:,} 列 × {len(report.columns)} 欄（{columns}）",
+            f"Result: {plural(report.rows, 'row', 'rows')} × "
+            f"{plural(len(report.columns), 'column', 'columns')} ({columns})",
+        )
     )
     middle = [o for o in report.outputs if o.path != report.output]
     for o in middle:
-        lines.append(f"輸出（階段「{o.stage}」）：{o.path}（{o.rows:,} 列）")
+        lines.append(
+            t(
+                f"輸出（階段「{o.stage}」）：{o.path}（{o.rows:,} 列）",
+                f'Output (stage "{o.stage}"): {o.path} ({plural(o.rows, "row", "rows")})',
+            )
+        )
         if o.manifest:
-            lines.append(f"處理紀錄：{o.manifest}")
+            lines.append(t(f"處理紀錄：{o.manifest}", f"Processing log: {o.manifest}"))
     if report.output:
-        lines.append(f"輸出：{report.output}")
+        lines.append(t(f"輸出：{report.output}", f"Output: {report.output}"))
     if report.manifest:
-        lines.append(f"處理紀錄：{report.manifest}")
+        lines.append(t(f"處理紀錄：{report.manifest}", f"Processing log: {report.manifest}"))
     return "\n".join(lines)

@@ -312,6 +312,8 @@ export interface StageRun {
 
 /** 進度視窗上階段清單上面的那幾列（匯出時的「準備檔案」「試跑」） */
 export interface RunPhase {
+  /** 代碼（prepare、trial）；name 是畫面上寫的字，跟著畫面的語言 */
+  key: string
   name: string
   status: StageRun['status']
   detail: string

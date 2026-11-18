@@ -24,19 +24,31 @@ import polars as pl
 
 from . import __version__
 from .desktop import open_folder
+from .i18n import t, using
 from .ingest.sources import staging_info, staging_size
 from .recipe.schema import RECIPE_VERSION, RecipeError
 from .selftest import run_selftest
 from .session import Session, TrialError, catalog
 from .usage import process_memory, worker_memory
 
-DATA_TYPES = (
-    "資料檔 (*.csv;*.txt;*.tsv;*.prn;*.dat;*.xlsx;*.xlsm;*.xls;*.parquet)",
-    "Excel (*.xlsx;*.xlsm;*.xlsb;*.xls;*.ods)",
-    "Parquet (*.parquet)",
-    "所有檔案 (*.*)",
-)
-RECIPE_TYPES = ("Tablade Recipe (*.json)", "所有檔案 (*.*)")
+DATA_PATTERNS = "*.csv;*.txt;*.tsv;*.prn;*.dat;*.xlsx;*.xlsm;*.xls;*.parquet"
+
+
+def data_types() -> tuple[str, ...]:
+    """開資料檔的對話框可以選的檔案類型（名稱依畫面的語言）。"""
+    return (
+        t(f"資料檔 ({DATA_PATTERNS})", f"Data files ({DATA_PATTERNS})"),
+        "Excel (*.xlsx;*.xlsm;*.xlsb;*.xls;*.ods)",
+        "Parquet (*.parquet)",
+        t("所有檔案 (*.*)", "All files (*.*)"),
+    )
+
+
+def recipe_types() -> tuple[str, ...]:
+    """開、存 Recipe 的對話框可以選的檔案類型（名稱依畫面的語言）。"""
+    return ("Tablade Recipe (*.json)", t("所有檔案 (*.*)", "All files (*.*)"))
+
+
 USAGE_INTERVAL = 2.0
 """每隔幾秒把記憶體與暫存資料夾的用量推給畫面（右下角、進度視窗）。"""
 
@@ -192,7 +204,7 @@ class Api:
     def smoke_example(self) -> dict[str, Any]:
         """``--smoke`` 模式專用：用假資料載入範例 recipe，讓前端走一次完整流程。"""
         if not self._smoke:
-            raise RuntimeError("只有 --smoke 模式可以使用")
+            raise RuntimeError(t("只有 --smoke 模式可以使用", "Only available in --smoke mode"))
         from .app import resource_dir
         from .fixtures import write_all
 
@@ -241,7 +253,11 @@ class Api:
     @_wrap
     def new_recipe(self) -> dict[str, Any]:
         """新增 Recipe：先跳存檔視窗命名，確定後立刻寫出空的 Recipe 檔。"""
-        picked = self._dialog("save", save_filename="未命名.recipe.json", file_types=RECIPE_TYPES)
+        picked = self._dialog(
+            "save",
+            save_filename=t("未命名.recipe.json", "Untitled.recipe.json"),
+            file_types=recipe_types(),
+        )
         if not picked:
             return {"cancelled": True, **self._state()}
         target = picked[0]
@@ -252,7 +268,7 @@ class Api:
 
     @_wrap
     def open_recipe(self) -> dict[str, Any]:
-        picked = self._dialog("open", allow_multiple=False, file_types=RECIPE_TYPES)
+        picked = self._dialog("open", allow_multiple=False, file_types=recipe_types())
         if not picked:
             return {"cancelled": True, **self._state()}
         issues = self._session.load_recipe(picked[0])
@@ -268,7 +284,9 @@ class Api:
     @_wrap
     def save_recipe_as(self) -> dict[str, Any]:
         name = (self._session.meta.get("name") or "recipe").strip() or "recipe"
-        picked = self._dialog("save", save_filename=f"{name}.recipe.json", file_types=RECIPE_TYPES)
+        picked = self._dialog(
+            "save", save_filename=f"{name}.recipe.json", file_types=recipe_types()
+        )
         if not picked:
             return {"cancelled": True, **self._state()}
         target = picked[0]
@@ -282,7 +300,7 @@ class Api:
     @_wrap
     def add_files(self) -> dict[str, Any]:
         """「瀏覽檔案」：選的檔加進檔案清單（不會自動讀檔）。"""
-        picked = self._dialog("open", allow_multiple=True, file_types=DATA_TYPES)
+        picked = self._dialog("open", allow_multiple=True, file_types=data_types())
         if not picked:
             return {"cancelled": True, **self._state()}
         self._session.add_files(picked)
@@ -429,7 +447,8 @@ class Api:
         """產生與這個版本一致的 AI skill zip，開存檔對話框存起來（DESIGN.md §17.7）。"""
         from .skill import build_zip, skill_filename
 
-        data = build_zip()
+        with using("zh"):  # AI skill 一律中文，和畫面的語言無關
+            data = build_zip()
         picked = self._dialog("save", save_filename=skill_filename(), file_types=("zip (*.zip)",))
         if not picked:
             return {"cancelled": True}

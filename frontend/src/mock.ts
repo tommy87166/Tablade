@@ -2,7 +2,7 @@
  * 開發用的假 API：用一般瀏覽器跑 `npm run dev` 時，沒有 pywebview 也能看畫面。
  * 只在 import.meta.env.DEV 時載入，不會進正式版。
  *
- * 資料來自 `uv run python scripts/gen_frontend_dev_data.py` 產生的 src/dev/sample.json（不進版控）：
+ * 資料來自 `uv run python scripts/gen_frontend_dev_data.py` 產生的 src/dev/sample.json 與 sample.en.json（英文；不進版控）：
  * 用假資料跑過範例 recipe 的真實畫面狀態，鍵是「階段:步驟」。切換階段、選取步驟會切換畫面；其他修改只回傳目前的狀態。
  * 看多個階段：`uv run python scripts/gen_frontend_dev_data.py --recipe sales_combined`。
  */
@@ -16,8 +16,10 @@ interface Sample {
   columns_info?: Record<string, { ok: true } & ColumnsInfo>
 }
 
-const files = import.meta.glob<Sample>('./dev/sample.json', { eager: true, import: 'default' })
-const sample = Object.values(files)[0]
+const files = import.meta.glob<Sample>(['./dev/sample.json', './dev/sample.en.json'], { eager: true, import: 'default' })
+const samples: Partial<Record<Lang, Sample>> = { zh: files['./dev/sample.json'], en: files['./dev/sample.en.json'] }
+/** 目前語言的假資料（產生器會一起產生中文與英文；沒有英文的就用中文） */
+let sample = samples.zh as Sample
 
 /** 用真的 Python 錄下來的進度（scratch 的 record_runs.py 產生 src/dev/runs.json，不進版控）：有的話照著重播 */
 interface RecordedRun {
@@ -45,7 +47,7 @@ let loaded = !location.search.includes('unloaded')
 
 const delay = <T>(value: T, ms = 120) => new Promise<T>((r) => setTimeout(() => r(value), ms))
 // 每次回傳複本：React 才會察覺狀態變了
-/** 跟 session.py 一樣記著畫面的語言（Python 的文字還沒翻：假資料是中文） */
+/** 跟 session.py 一樣記著畫面的語言（切換時換用那個語言的假資料） */
 let mockLang: Lang = 'zh'
 
 const current = () => {
@@ -102,7 +104,7 @@ async function fakeStages(perStage: (index: number, run: RunState) => Promise<vo
   const stages = current().stages
   const run: RunState = {
     stages: stages.map((s) => ({ name: s.name, status: 'waiting', rows: null, detail: '' })),
-    phases: phases.map((name) => ({ name, status: 'waiting', detail: '' })),
+    phases: phases.map((name) => ({ key: name, name, status: 'waiting', detail: '' })),
   }
   const push = () => pushRun(structuredClone(run))
   push()
@@ -234,6 +236,7 @@ export const mockApi: TabladeApi = sample
       state: () => withState(),
       set_language: (lang) => {
         mockLang = lang
+        sample = samples[lang] ?? (samples.zh as Sample)
         return withState()
       },
       rows: (step, offset, limit) => {

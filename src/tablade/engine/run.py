@@ -30,6 +30,7 @@ import polars as pl
 
 from tablade.engine.progress import Watcher, rows_per_file, with_positions, with_row_positions
 from tablade.export.manifest import write_manifest
+from tablade.i18n import plural, t
 from tablade.ingest.sources import (
     Part,
     PartsMismatch,
@@ -152,22 +153,37 @@ class RunReport:
 
 
 class RunError(RuntimeError):
+    """某一步執行失敗。``message`` 是原因本身（不含「步驟 x（類型）失敗：」，畫面上另外寫是哪一步）。"""
+
     def __init__(self, step: Step, message: str) -> None:
         self.step_id = step.id
-        super().__init__(f"步驟 {step.id}（{step.type_name()}）失敗：{message}")
+        self.message = message
+        super().__init__(
+            t(
+                f"步驟 {step.id}（{step.type_name()}）失敗：{message}",
+                f"Step {step.id} ({step.type_name()}) failed: {message}",
+            )
+        )
 
 
-PREPARE = "準備檔案"
-"""進度視窗上「讀每個檔、轉碼、數行數」那一列（匯出時在階段清單上面）。"""
-TRIAL = "試跑"
-"""進度視窗上「匯出前先用每個檔的前幾行試跑一次」那一列。"""
+PREPARE = "prepare"
+"""進度視窗上「準備檔案」那一列的代碼：讀每個檔、轉碼、數行數（匯出時在階段清單上面）。"""
+TRIAL = "trial"
+"""進度視窗上「試跑」那一列的代碼：匯出前先用每個檔的前幾行試跑一次。"""
+
+
+def phase_name(key: str) -> str:
+    """進度視窗上那一列寫什麼（依畫面的語言）。"""
+    names = {PREPARE: t("準備檔案", "Preparing files"), TRIAL: t("試跑", "Trial run")}
+    return names.get(key, key)
 
 
 class StageTracker:
     """每個階段的狀態（等待中、處理中、完成、失敗），透過 progress 回報給畫面的進度視窗。
 
     事件和一般進度同一個格式，另外多兩個欄：``stages``（``[{"name", "status", "rows", "detail"}]``）、
-    ``phases``（階段清單上面的「準備檔案」「試跑」：``[{"name", "status", "detail"}]``）；api.py 另外送到畫面。
+    ``phases``（階段清單上面的「準備檔案」「試跑」：``[{"key", "name", "status", "detail"}]``，``key`` 是
+    ``PREPARE``／``TRIAL``，``name`` 是畫面上寫的字）；api.py 另外送到畫面。
     某個 phase 進行中時（例如試跑），各階段的開始與失敗算在那個 phase 上，不改階段的狀態。
     開始新的階段、phase 或檔案時，另外送一則空白的一般進度（``stage`` 是空字串）：畫面上「目前在做什麼」
     才不會一直寫著上一個階段或上一個檔的進度。
@@ -178,7 +194,8 @@ class StageTracker:
             {"name": n, "status": "waiting", "rows": None, "detail": ""} for n in names
         ]
         self.phases: list[dict[str, Any]] = [
-            {"name": p, "status": "waiting", "detail": ""} for p in phases or []
+            {"key": p, "name": phase_name(p), "status": "waiting", "detail": ""}
+            for p in phases or []
         ]
         self.progress = progress
         self.current: int | None = None
@@ -204,8 +221,8 @@ class StageTracker:
         if self.progress is not None:
             self.progress({"stage": "", "file": "", "done": 0, "total": 0})
 
-    def _phase(self, name: str) -> dict[str, Any] | None:
-        return next((p for p in self.phases if p["name"] == name), None)
+    def _phase(self, key: str) -> dict[str, Any] | None:
+        return next((p for p in self.phases if p["key"] == key), None)
 
     def waiting(self, name: str) -> bool:
         """這個 phase 有列在進度視窗上、還沒開始。"""
@@ -245,7 +262,9 @@ class StageTracker:
 
     def files(self, done: int, total: int, name: str = "") -> None:
         """讀檔的進度：已處理幾個檔、正在讀哪一個（寫在進行中的 phase 或階段上）。"""
-        detail = f"已處理 {done} / {total} 個檔" + (f"，正在讀 {name}" if name else "")
+        detail = t(
+            f"已處理 {done} / {total} 個檔", f"{done} of {plural(total, 'file', 'files')} done"
+        ) + (t(f"，正在讀 {name}", f", reading {name}") if name else "")
         target = self.phase or (self.items[self.current] if self.current is not None else None)
         if target is not None:
             target["detail"] = detail
@@ -260,7 +279,10 @@ class StageTracker:
         self.current = index
         if self.phase is not None:
             name = self.items[index]["name"]
-            self.phase["detail"] = f"第 {index + 1} / {len(self.items)} 個階段：{name}"
+            self.phase["detail"] = t(
+                f"第 {index + 1} / {len(self.items)} 個階段：{name}",
+                f"Stage {index + 1} of {len(self.items)}: {name}",
+            )
         else:
             self.items[index].update(status="running", detail="")
         self._emit()
@@ -303,7 +325,7 @@ def _data_columns(names: list[str]) -> list[str]:
 
 
 def _apply(step: Step, lf: pl.LazyFrame, source: str = "") -> pl.LazyFrame:
-    where = f"（來源檔 {source}）" if source else ""
+    where = t(f"（來源檔 {source}）", f" (source file {source})") if source else ""
     try:
         return step.apply(lf)
     except (StepError, EffectError) as err:
@@ -392,7 +414,7 @@ def collect_warnings(
         if progress is not None and len(jobs) > 1:
             progress(
                 {
-                    "stage": "檢查警告",
+                    "stage": t("檢查警告", "Checking warnings"),
                     "file": "",
                     "done": done,
                     "total": len(jobs),
@@ -473,7 +495,8 @@ def stage_parts(names: list[str], results: dict[str, list[Part]]) -> list[Part]:
     for name in names:
         for base, lf in results[name]:
             staged = lf.with_columns(pl.lit(name, dtype=pl.String).alias(STAGE))
-            parts.append((f"@{name}／{base}", staged))
+            source = f"@{name}／{base}"  # i18n-ignore：來源檔的名稱是資料（__source_file）
+            parts.append((source, staged))
     return align(parts)
 
 
@@ -527,7 +550,10 @@ def scan_stages(
         )
         out[stage.name] = (parts, [replace(f, stage=stage.name) for f in files])
     if preparing:
-        tracker.end(PREPARE, f"已處理 {total} / {total} 個檔")
+        tracker.end(
+            PREPARE,
+            t(f"已處理 {total} / {total} 個檔", f"All {plural(total, 'file', 'files')} done"),
+        )
     return out
 
 
@@ -562,7 +588,10 @@ class _Writes:
                 os.replace(tmp, target)
             except PermissionError:
                 raise RuntimeError(
-                    f"「{target.name}」寫不進去：可能被別的程式開著，關掉後再試一次"
+                    t(
+                        f"「{target.name}」寫不進去：可能被別的程式開著，關掉後再試一次",
+                        f'Can\'t write "{target.name}": it may be open in another program. Close it and try again',
+                    )
                 ) from None
         return [report for _, _, report in self.items]
 
@@ -606,7 +635,8 @@ def execute(
         targets[recipe.stages[-1].name] = output
     unknown = set(targets) - {s.name for s in recipe.stages}
     if unknown:
-        raise ValueError(f"沒有這些階段：{'、'.join(sorted(unknown))}")
+        names = t("、", ", ").join(sorted(unknown))
+        raise ValueError(t(f"沒有這些階段：{names}", f"No such stages: {names}"))
     if tracker is None:
         tracker = StageTracker([s.name for s in recipe.stages], progress)
     writes = _Writes()
@@ -615,7 +645,7 @@ def execute(
             recipe, base_dir, targets, mode, limit, progress, tracker, writes, phase, head, tail
         )
         if phase is not None:
-            tracker.end(phase, "沒有錯誤")
+            tracker.end(phase, t("沒有錯誤", "No errors"))
         report.outputs = writes.commit()
     except BaseException:
         tracker.fail()
@@ -649,7 +679,9 @@ def _execute(
     mode = choose_mode(files, bool(targets), mode)
     if mode == "stream":
         if not targets:
-            raise ValueError("stream 模式一定會寫出檔案")
+            raise ValueError(
+                t("stream 模式一定會寫出檔案", "Stream mode always writes an output file")
+            )
         report = _execute_stream(
             recipe, scanned, files, input_rows, targets, limit, progress, tracker, writes
         )
@@ -743,7 +775,7 @@ def _with_manifest(recipe: Recipe, report: RunReport, folder: Path | None) -> Ru
 def _strip_stage(name: str, stages: list[str]) -> str:
     """part 名稱去掉「@階段／」（下一個階段讀的時候換成新的階段）。"""
     for stage in stages:
-        prefix = f"@{stage}／"
+        prefix = f"@{stage}／"  # i18n-ignore：來源檔的名稱是資料（__source_file）
         if name.startswith(prefix):
             return name[len(prefix) :]
     return name
@@ -812,7 +844,12 @@ def _sink(
                 mkdir=True,
             )
         except pl.exceptions.PolarsError as err:
-            raise RuntimeError(f"執行失敗：{type(err).__name__}: {err}") from None
+            raise RuntimeError(
+                t(
+                    f"執行失敗：{type(err).__name__}: {err}",
+                    f"Run failed: {type(err).__name__}: {err}",
+                )
+            ) from None
     watcher.poll(finished=True)
     if progress is not None:
         progress({"stage": label, "file": "", "done": rows, "total": rows, "unit": "rows"})
@@ -857,14 +894,17 @@ def _execute_stream(
         for k, stage in enumerate(recipe.stages):
             final = k == len(recipe.stages) - 1
             tracker.start(k)
-            where = f"階段「{stage.name}」：" if multi else ""
+            where = t(f"階段「{stage.name}」：", f'Stage "{stage.name}": ') if multi else ""
             bound = [step.bind(tables) for step in stage.enabled_steps()]
             segments = 1 + sum(_cuts(bound))
 
             def label(n: int, where: str = where, segments: int = segments) -> str:
                 if segments == 1:
-                    return f"{where}執行（串流）"
-                return f"{where}執行（串流，第 {n} / {segments} 段）"
+                    return t(f"{where}執行（串流）", f"{where}Running (streaming)")
+                return t(
+                    f"{where}執行（串流，第 {n} / {segments} 段）",
+                    f"{where}Running (streaming, part {n} of {segments})",
+                )
 
             if stage.name in scanned:
                 parts, sources = scanned[stage.name]
@@ -975,7 +1015,7 @@ def _sink_output(
     report: Any,
 ) -> int:
     """把一個階段的結果（暫存 Parquet）寫成輸出檔的暫存檔；回傳列數。"""
-    report("寫出 Parquet")
+    report(t("寫出 Parquet", "Writing Parquet"))
     tmp = writes.tmp(target)
     names = result.collect_schema().names()
     result.select(_kept(recipe, names)).sink_parquet(tmp, engine="streaming")

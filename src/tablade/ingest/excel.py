@@ -17,6 +17,8 @@ from pathlib import Path
 
 import polars as pl
 
+from ..i18n import t
+
 EXCEL_SUFFIXES = (".xlsx", ".xlsm", ".xlsb", ".xls", ".ods")
 SOURCE_FILE, LINE_NO, SHEET = "__source_file", "__line_no", "__sheet"
 ALL_SHEETS = "*"
@@ -47,7 +49,12 @@ def _reader(path: Path, name: str):
     try:
         return fastexcel.read_excel(path)
     except fastexcel.FastExcelError as err:
-        raise ExcelError(f"「{name}」不是讀得了的 Excel 檔：{err}") from None
+        raise ExcelError(
+            t(
+                f"「{name}」不是讀得了的 Excel 檔：{err}",
+                f'"{name}" is not a readable Excel file: {err}',
+            )
+        ) from None
 
 
 def sheet_names(path: Path) -> list[str]:
@@ -58,9 +65,14 @@ def _sheet(path: Path, sheet: str, name: str, n_rows: int | None = None):
     reader = _reader(path, name)
     names = list(reader.sheet_names)
     if sheet and sheet not in names:
-        raise ExcelError(f"「{name}」沒有工作表「{sheet}」（有：{'、'.join(names)}）")
+        raise ExcelError(
+            t(
+                f"「{name}」沒有工作表「{sheet}」（有：{'、'.join(names)}）",
+                f'"{name}" has no sheet "{sheet}" (sheets: {", ".join(names)})',
+            )
+        )
     if not names:
-        raise ExcelError(f"「{name}」沒有任何工作表")
+        raise ExcelError(t(f"「{name}」沒有任何工作表", f'"{name}" has no sheets'))
     # header_row=None：每一列都是資料；skip_rows=0：連最上面的空白列也保留，列號才對得上
     return reader.load_sheet(
         sheet or 0, header_row=None, dtypes="string", skip_rows=0, n_rows=n_rows

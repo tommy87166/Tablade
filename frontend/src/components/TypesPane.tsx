@@ -18,11 +18,12 @@ function text(value: Cell) {
   return value === null ? '' : String(value)
 }
 
-/** 型別的顏色：文字灰、數字藍、日期綠。 */
+/** 型別的顏色：文字灰、數字藍、日期綠；依 Polars 的型別判斷（顯示的名稱會跟著畫面的語言換）。 */
 function tone(column: ColumnInfo) {
-  if (column.label === '文字') return 'text-muted-foreground' // i18n-ignore
-  if (column.label.startsWith('小數') || column.label === '整數' || column.label === '浮點數') return 'text-sky-700 dark:text-sky-400' // i18n-ignore
-  if (column.label.startsWith('日期')) return 'text-green-700 dark:text-green-400' // i18n-ignore
+  const dtype = column.dtype
+  if (dtype === 'String') return 'text-muted-foreground'
+  if (/^(Decimal|U?Int|Float)/.test(dtype)) return 'text-sky-700 dark:text-sky-400'
+  if (dtype.startsWith('Date')) return 'text-green-700 dark:text-green-400'
   return ''
 }
 

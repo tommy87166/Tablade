@@ -15,6 +15,7 @@ import urllib.request
 from typing import Any
 
 from . import __version__
+from .i18n import t
 
 REPOSITORY = "tommy87166/Tablade"
 RELEASES_URL = f"https://github.com/{REPOSITORY}/releases"
@@ -37,7 +38,7 @@ def check_latest(timeout: float = TIMEOUT) -> dict[str, Any]:
         "error": None,
     }
     if os.environ.get("TABLADE_NO_UPDATE_CHECK"):
-        result["error"] = "已關閉檢查更新"
+        result["error"] = t("已關閉檢查更新", "Update check is turned off")
         return result
     request = urllib.request.Request(
         LATEST_API,
@@ -48,15 +49,22 @@ def check_latest(timeout: float = TIMEOUT) -> dict[str, Any]:
             data = json.load(response)
     except urllib.error.HTTPError as err:
         result["error"] = (
-            "GitHub 上還沒有發布版本" if err.code == 404 else f"無法檢查更新（HTTP {err.code}）"
+            t("GitHub 上還沒有發布版本", "No releases on GitHub yet")
+            if err.code == 404
+            else t(
+                f"無法檢查更新（HTTP {err.code}）", f"Couldn't check for updates (HTTP {err.code})"
+            )
         )
         return result
     except (OSError, ValueError):  # 連不上、逾時、回應不是 JSON
-        result["error"] = "無法連線到 GitHub，略過檢查更新"
+        result["error"] = t(
+            "無法連線到 GitHub，略過檢查更新",
+            "Couldn't connect to GitHub; skipped the update check",
+        )
         return result
     latest = str(data.get("tag_name") or "").removeprefix("v") if isinstance(data, dict) else ""
     if not parse_version(latest):
-        result["error"] = "無法判讀最新版號"
+        result["error"] = t("無法判讀最新版號", "Couldn't read the latest version number")
         return result
     result["latest"] = latest
     result["newer"] = parse_version(latest) > parse_version(__version__)

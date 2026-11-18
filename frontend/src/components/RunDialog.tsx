@@ -79,7 +79,7 @@ export function RunDialog({ title, run, progress, usage, busy, result, failed, e
   }, [busy, start])
 
   const rows: Row[] = [
-    ...run.phases.map((p) => ({ key: `phase:${p.name}`, name: p.name, status: p.status, detail: p.detail })),
+    ...run.phases.map((p) => ({ key: `phase:${p.key ?? p.name}`, name: p.name, status: p.status, detail: p.detail })),
     ...run.stages.map((s, i) => ({
       key: `stage:${s.name}`,
       number: i + 1,

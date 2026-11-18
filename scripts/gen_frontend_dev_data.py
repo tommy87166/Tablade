@@ -192,6 +192,26 @@ def add_demo_steps(session) -> None:
     )
 
 
+def _collect(api: Api, session, name: str) -> dict:
+    """每個階段的每一步各存一份畫面狀態，鍵是「階段:步驟」（-1 是讀取資料，步驟數是輸出資料）。"""
+    ready = api.ready()
+    states, rows, columns_info = {}, {}, {}
+    for stage in range(len(session.stages)):
+        api.select_stage(stage)
+        count = len(session.steps)
+        for index in range(-1, count + 1):
+            state = api.select_step(index)["state"]
+            state["recipe"]["path"] = f"（開發用假資料）/{name}"
+            state["recipe"]["base_dir"] = None
+            key = f"{stage}:{index}"
+            states[key] = state
+            # 「輸出資料」是完整模式（讀匯出檔）時，表格要的是第「步驟數」步
+            if index < count or state["preview"]["step"] == count:
+                rows[key] = api.rows(index, 0, 200)
+                columns_info[key] = api.column_info(index)
+    return {"ready": ready, "states": states, "rows": rows, "columns_info": columns_info}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="產生前端開發用的假 API 資料")
     parser.add_argument(
@@ -251,33 +271,18 @@ def main(argv: list[str] | None = None) -> int:
                     i for i, s in enumerate(session.steps) if s["type"] == "remove_columns"
                 )
                 session.update_step(index, {"columns": ["不存在的欄"]})
-        ready = api.ready()
-        # 每個階段的每一步各存一份畫面狀態，鍵是「階段:步驟」（-1 是讀取資料，步驟數是輸出資料）
-        states, rows, columns_info = {}, {}, {}
-        for stage in range(len(session.stages)):
-            api.select_stage(stage)
-            count = len(session.steps)
-            for index in range(-1, count + 1):
-                state = api.select_step(index)["state"]
-                state["recipe"]["path"] = f"（開發用假資料）/{name}"
-                state["recipe"]["base_dir"] = None
-                key = f"{stage}:{index}"
-                states[key] = state
-                # 「輸出資料」是完整模式（讀匯出檔）時，表格要的是第「步驟數」步
-                if index < count or state["preview"]["step"] == count:
-                    rows[key] = api.rows(index, 0, 200)
-                    columns_info[key] = api.column_info(index)
+        # 中文、英文各存一份（開發畫面切換語言時換用；Python 產生的文字跟著語言）
+        outputs = {}
+        for lang in ("zh", "en"):
+            api.set_language(lang)
+            outputs[lang] = _collect(api, session, name)
     finally:
         shutil.rmtree(work, ignore_errors=True)
-    TARGET.parent.mkdir(parents=True, exist_ok=True)
-    TARGET.write_text(
-        json.dumps(
-            {"ready": ready, "states": states, "rows": rows, "columns_info": columns_info},
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-    print(f"已寫入 {TARGET.relative_to(ROOT)}（{TARGET.stat().st_size:,} bytes）")
+    for lang, data in outputs.items():
+        target = TARGET if lang == "zh" else TARGET.with_name(f"sample.{lang}.json")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        print(f"已寫入 {target.relative_to(ROOT)}（{target.stat().st_size:,} bytes）")
     return 0
 
 
