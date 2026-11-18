@@ -1470,6 +1470,10 @@
               "pattern": "^\\S(.*\\S)?$",
               "type": "string"
             },
+            "output_file": {
+              "default": "",
+              "type": "string"
+            },
             "steps": {
               "items": {
                 "discriminator": {

@@ -7,6 +7,7 @@ import polars as pl
 import pytest
 
 from tablade.engine import run as engine_run
+from tablade.export.outputs import default_output_name
 from tablade.fixtures import messy_export, write_all
 from tablade.recipe.schema import RECIPE_VERSION, RecipeError
 from tablade.session import Session, SessionError, catalog
@@ -241,20 +242,86 @@ def test_save_relocates_paths_and_export(data, tmp_path):
     loaded.load_data()
     assert loaded.state()["steps"][0]["rows"] == 92
 
-    assert loaded.export_suggestion() == (target.parent.resolve(), "x.parquet")
-    result = loaded.export(tmp_path / "out.parquet")
+    result = loaded.export()  # 寫到新的 Recipe 資料夾底下的 output/，檔名是 Recipe 名稱
     assert result["rows"] == 92
-    assert pl.read_parquet(tmp_path / "out.parquet").height == 92
-    assert loaded.export_suggestion() == (tmp_path, "out.parquet")  # 下次預設上次的位置
+    assert result["path"] == (target.parent / "output" / "x.parquet").as_posix()
+    assert pl.read_parquet(target.parent / "output" / "x.parquet").height == 92
     assert "path" not in json.loads(target.read_text(encoding="utf-8"))["output"]
 
 
-def test_export_suggestion_uses_recipe_name(data):
+def test_last_stage_uses_the_recipe_name_by_default(data):
     s = opened(data)
-    assert s.export_suggestion() == (data.parent.resolve(), "mine.parquet")
-    blank = Session()  # 沒有 Recipe 檔時用名稱，去掉檔名不能用的字
-    blank.set_meta({"name": 'a/b:c*"d'})
-    assert blank.export_suggestion() == (Path.home(), "a_b_c__d.parquet")
+    assert s.state()["stages"][0]["output"] == {
+        "file": "mine.parquet",
+        "path": "output/mine.parquet",
+        "default": True,
+        "exists": False,
+        "error": None,
+    }
+    assert default_output_name(None, 'a/b:c*"d') == "a_b_c__d.parquet"  # 去掉檔名不能用的字
+
+
+def test_stage_output_file(data):
+    s = opened(data)
+    s.set_stage_output(0, "  結果 ")  # 補上 .parquet
+    assert s.stages[0]["output_file"] == "結果.parquet" and s.dirty
+    assert s.recipe_dict()["stages"][0]["output_file"] == "結果.parquet"
+    assert s.state()["stages"][0]["output"]["file"] == "結果.parquet"
+    assert s.state()["stages"][0]["output"]["default"] is False
+    s.undo()
+    assert "output_file" not in s.recipe_dict()["stages"][0]  # 沒填就不寫進 Recipe
+    s.set_stage_output(0, "a/b")
+    assert "不能有 /" in s.state()["stages"][0]["output"]["error"]
+    with pytest.raises(SessionError, match="不能有 /"):
+        s.export()
+    s.set_stage_output(0, "")
+    assert s.export()["path"].endswith("/output/mine.parquet")
+    assert s.state()["stages"][0]["output"]["exists"] is True  # 匯出時會覆蓋
+
+
+def test_output_cannot_overwrite_an_input(data):
+    previous = data.parent / "output" / "上次.parquet"
+    previous.parent.mkdir()
+    pl.DataFrame({"a": [1, 2]}).write_parquet(previous)
+    s = Session()
+    s.new(data.parent / "next.recipe.json")
+    s.set_input({"reader": "parquet"})
+    s.add_files([previous])
+    s.set_stage_output(0, "上次")
+    error = s.state()["stages"][0]["output"]["error"]
+    assert (
+        error
+        == "「output/上次.parquet」是階段「預設階段」的輸入檔，不能寫到這裡（請換一個輸出檔名）"
+    )
+    s.load_data()
+    with pytest.raises(SessionError, match="輸入檔"):
+        s.export()
+    assert pl.read_parquet(previous)["a"].to_list() == [1, 2]
+
+
+def test_export_writes_every_stage_with_a_file_name(data):
+    target = data.parent / "combined.recipe.json"
+    target.write_text(
+        (ROOT / "examples" / "sales_combined.recipe.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    s = Session()
+    s.load_recipe(target)
+    s.set_stage_output(0, "")  # 範例裡「品項對照」有填檔名
+    assert s.state()["stages"][0]["output"] is None  # 中間的階段沒填就不寫檔
+    s.set_stage_output(1, "文字")
+    s.load_data()
+    result = s.export()
+    assert [(o["stage"], Path(o["path"]).name) for o in result["outputs"]] == [
+        ("文字明細", "文字.parquet"),
+        ("預設階段", "combined.parquet"),
+    ]
+    text = json.loads((data.parent / "log" / "文字.manifest.json").read_text(encoding="utf-8"))
+    assert text["stage"] == "文字明細" and text["output"]["rows"] == 70
+    assert {i["stage"] for i in text["inputs"]} == {"文字明細"}  # 只記自己往上用到的
+    assert {s["stage"] for s in text["steps"]} == {"文字明細"} and text["stages"] == []
+    final = json.loads((data.parent / "log" / "combined.manifest.json").read_text(encoding="utf-8"))
+    assert {i["stage"] for i in final["inputs"]} == {"品項對照", "文字明細", "Excel明細"}
 
 
 def test_no_recipe_and_no_data_yet(tmp_path):
@@ -397,7 +464,7 @@ def test_empty_recipe_cannot_load_or_export(tmp_path):
     with pytest.raises(SessionError, match="還沒有加入資料檔"):
         s.load_data()
     with pytest.raises(SessionError, match="請先在「讀取資料」按「載入資料」"):
-        s.export(tmp_path / "out.parquet")
+        s.export()
 
 
 def test_export_needs_loaded_data(data, tmp_path):
@@ -405,12 +472,12 @@ def test_export_needs_loaded_data(data, tmp_path):
     s.new(data.parent / "mine.recipe.json")
     s.add_files(files(data))
     with pytest.raises(SessionError, match="載入資料"):  # 還沒載入：不會自己讀檔處理
-        s.export(tmp_path / "out.parquet")
+        s.export()
     s.load_data()
-    assert s.export(tmp_path / "out.parquet")["rows"] == 94
+    assert s.export()["rows"] == 94
     s.set_input({"encoding": "utf-8"})  # 設定變了：要重新載入才能匯出
     with pytest.raises(SessionError, match="載入資料"):
-        s.export(tmp_path / "out.parquet")
+        s.export()
 
 
 # ── 型別分頁 ────────────────────────────────────────────────────

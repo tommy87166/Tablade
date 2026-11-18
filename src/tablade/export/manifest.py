@@ -1,8 +1,9 @@
-"""處理紀錄（manifest，DESIGN.md §9）：輸出 ``xxx.parquet`` 時在旁邊寫 ``xxx.manifest.json``。
+"""處理紀錄（manifest，DESIGN.md §9）：每個輸出檔 ``output/xxx.parquet`` 各寫一份 ``log/xxx.manifest.json``。
 
 記錄用了哪份 Recipe（完整內容與雜湊）、每個輸入檔的大小、編碼與 SHA-256、每一步的列數與警告，
 以及輸出檔的 SHA-256。日後可以證明「這份輸出是用這份 Recipe，從這些原始檔產生的」，
-原始檔被換過也查得出來（SHA-256 會不同）。
+原始檔被換過也查得出來（SHA-256 會不同）。每一份只記跟這個輸出檔有關的：寫出它的階段，
+加上它往上讀到、結合到的階段（輸入檔、步驟、警告），單獨拿一個檔也查得到來源。
 """
 
 from __future__ import annotations
@@ -20,16 +21,37 @@ import polars as pl
 from tablade import __version__
 
 if TYPE_CHECKING:
-    from tablade.engine.run import RunReport
+    from tablade.engine.run import OutputReport, RunReport
     from tablade.recipe.schema import Recipe
 
 MANIFEST_VERSION = "1.0"
 CHUNK = 1 << 20
 
 
-def manifest_path(output: Path) -> Path:
-    """``明細.parquet`` → ``明細.manifest.json``。"""
-    return output.with_name(f"{output.stem}.manifest.json")
+LOG_DIR = "log"
+
+
+def manifest_path(output: Path, folder: Path | None = None) -> Path:
+    """``明細.parquet`` → ``folder/明細.manifest.json``（``folder`` 預設是輸出檔所在資料夾底下的 log/）。"""
+    return (folder or output.parent / LOG_DIR) / f"{output.stem}.manifest.json"
+
+
+def upstream(recipe: Recipe, name: str) -> list[str]:
+    """這個階段和它往上讀到、結合到的階段（依 Recipe 的順序）。"""
+    by_name = {s.name: s for s in recipe.stages}
+    found: set[str] = set()
+    todo = [name]
+    while todo:
+        current = todo.pop()
+        if current in found or current not in by_name:
+            continue
+        found.add(current)
+        stage = by_name[current]
+        if stage.input.reader == "stages":
+            todo += stage.input.stages
+        for step in stage.enabled_steps():
+            todo += step.stage_refs()
+    return [s.name for s in recipe.stages if s.name in found]
 
 
 def file_sha256(path: Path) -> str:
@@ -69,9 +91,12 @@ def _warning(w: Any) -> dict[str, Any]:
     return item
 
 
-def build_manifest(recipe: Recipe, report: RunReport, output: Path) -> dict[str, Any]:
+def build_manifest(recipe: Recipe, report: RunReport, out: OutputReport) -> dict[str, Any]:
     content = recipe_content(recipe)
-    warnings = [_warning(w) for s in report.steps for w in s.warnings]
+    output = Path(out.path)
+    keep = set(upstream(recipe, out.stage))
+    steps = [s for s in report.steps if s.stage in keep]
+    warnings = [_warning(w) for s in steps for w in s.warnings]
     multi = len(recipe.stages) > 1
     return {
         "tablade_manifest": MANIFEST_VERSION,
@@ -94,6 +119,7 @@ def build_manifest(recipe: Recipe, report: RunReport, output: Path) -> dict[str,
                 "rows": f.rows,
             }
             for f in report.inputs
+            if f.stage in keep
         ],
         "steps": [
             {
@@ -105,33 +131,38 @@ def build_manifest(recipe: Recipe, report: RunReport, output: Path) -> dict[str,
                 "rows": s.rows,  # 串流執行沒有每一步的列數（null）
                 "warning_count": s.warning_count,
             }
-            for s in report.steps
+            for s in steps
         ],
         **(
             {
+                "stage": out.stage,
                 "stages": [
                     {"name": st.name, "rows": st.rows, "columns": st.columns}
-                    for st in report.stages[:-1]
-                ]
+                    for st in report.stages
+                    if st.name in keep and st.name != out.stage
+                ],
             }
             if multi
             else {}
         ),
-        "warnings": {"count": report.warning_count, "items": warnings},
+        "warnings": {"count": sum(s.warning_count for s in steps), "items": warnings},
         "output": {
             "file": output.name,
-            "rows": report.rows,
-            "columns": report.columns,
+            "rows": out.rows,
+            "columns": out.columns,
             "bytes": output.stat().st_size,
             "sha256": file_sha256(output),
         },
     }
 
 
-def write_manifest(recipe: Recipe, report: RunReport, output: Path) -> Path:
-    """寫在輸出檔旁邊；先寫暫存檔再改名，避免中途失敗留下半個檔案。"""
-    target = manifest_path(output)
-    text = json.dumps(build_manifest(recipe, report, output), ensure_ascii=False, indent=2)
+def write_manifest(
+    recipe: Recipe, report: RunReport, out: OutputReport, folder: Path | None = None
+) -> Path:
+    """寫到 ``folder``（預設是輸出檔所在資料夾底下的 log/）；先寫暫存檔再改名，避免中途失敗留下半個檔案。"""
+    target = manifest_path(Path(out.path), folder)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(build_manifest(recipe, report, out), ensure_ascii=False, indent=2)
     tmp = target.with_name(f".{target.name}.{secrets.token_hex(4)}.tmp")
     try:
         tmp.write_text(text + "\n", encoding="utf-8")

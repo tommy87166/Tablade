@@ -7,7 +7,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import type { ViewState } from '../bridge'
+import type { StageState, ViewState } from '../bridge'
 
 const READERS = {
   text_lines: '逐行讀取（爛格式檔案）',
@@ -269,37 +269,92 @@ export function InputPanel({ state, busy, onLoad, onAddFiles, onAddEntry, onRemo
 interface OutputProps {
   state: ViewState
   onOutput: (values: Partial<ViewState['output']>) => void
+  onStageOutput: (index: number, file: string) => void
 }
 
-export function OutputPanel({ state, onOutput }: OutputProps) {
+const stemOf = (file: string) => file.replace(/\.parquet$/i, '')
+
+/** 輸出檔名：只填檔名，後面固定是 .parquet；離開欄位或按 Enter 才送出（檢查在 Python 做）。 */
+function OutputFileField({ stage, onChange }: { stage: StageState; onChange: (file: string) => void }) {
+  const saved = stemOf(stage.output_file)
+  const [draft, setDraft] = useState(saved)
+  const planned = stage.output
+  const commit = () => {
+    if (draft.trim() !== saved) onChange(draft.trim())
+  }
+  return (
+    <div className="space-y-1.5">
+      <label className="text-sm" htmlFor={`output-file-${stage.index}`}>
+        輸出檔名{stage.last ? '' : '（選填）'}
+      </label>
+      <div className="flex items-center gap-1.5">
+        <Input
+          id={`output-file-${stage.index}`}
+          className="h-8"
+          value={draft}
+          placeholder={stage.last && planned ? stemOf(planned.file) : '不寫檔'}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur()
+          }}
+        />
+        <span className="shrink-0 text-sm text-muted-foreground">.parquet</span>
+      </div>
+      {planned?.error ? (
+        <p className="text-xs text-destructive">{planned.error}</p>
+      ) : planned ? (
+        <p className="text-xs break-all text-muted-foreground">
+          寫到 {planned.path}
+          {planned.default ? '（沒填時用 Recipe 的名稱）' : ''}
+          {planned.exists ? <span className="text-amber-700 dark:text-amber-400">；已經有這個檔，匯出時會覆蓋</span> : null}
+        </p>
+      ) : (
+        <p className="text-xs text-muted-foreground">填了才另外存成檔案（存到 Recipe 所在資料夾底下的 output 資料夾）。</p>
+      )}
+    </div>
+  )
+}
+
+export function OutputPanel({ state, onOutput, onStageOutput }: OutputProps) {
   const { output } = state
   const stage = state.stages[state.current]
+  // 換階段或 Python 改了檔名（例如補上 .parquet）時重新開始編輯
+  const field = stage ? (
+    <OutputFileField key={`${stage.index}:${stage.output_file}`} stage={stage} onChange={(file) => onStageOutput(stage.index, file)} />
+  ) : null
   if (stage && !stage.last) {
     const users = state.stages.filter((s) => s.uses.includes(stage.name)).map((s) => `「${s.name}」`)
     return (
       <section className="space-y-3">
         <div className="text-sm font-medium">階段結果</div>
         <p className="text-sm text-muted-foreground">
-          這個階段的結果不會寫到輸出檔：是暫存的，後面的階段用 @{stage.name} 讀它
-          {users.length ? `（目前${users.join('、')}用到它）` : '（目前還沒有階段用到它）'}。
+          後面的階段用 @{stage.name} 讀這個階段的結果
+          {users.length ? `（目前${users.join('、')}用到它）` : '（目前還沒有階段用到它）'}；填了輸出檔名也會另外存成檔案。
         </p>
-        <p className="text-xs text-muted-foreground">只有最後一個階段的結果會寫到輸出檔。</p>
+        {field}
       </section>
     )
   }
   return (
     <section className="space-y-3">
       <div className="text-sm font-medium">輸出資料</div>
-      <p className="text-xs text-muted-foreground">按工具列的「處理並匯出資料」處理全部資料。</p>
+      <p className="text-xs text-muted-foreground">
+        按工具列的「處理並匯出資料」處理全部資料，寫到 Recipe 所在資料夾底下的 output 資料夾。
+      </p>
+      {field}
       <label className="flex items-center justify-between gap-3 text-sm">
-        保留系統欄位（__source_file、__line_no 等）
+        <span>
+          保留系統欄位（__source_file、__line_no 等）
+          <span className="block text-xs text-muted-foreground">套用到每個輸出檔</span>
+        </span>
         <Switch checked={output.keep_system_columns} onCheckedChange={(keep_system_columns) => onOutput({ keep_system_columns })} />
       </label>
       <label className="flex items-start justify-between gap-3 text-sm">
         <span>
           同時寫出處理紀錄（manifest）
           <span className="block text-xs text-muted-foreground">
-            在輸出檔旁邊寫一份 .manifest.json：用了哪份 Recipe、輸入與輸出檔的 SHA-256、每一步的列數與警告
+            每個輸出檔在 log 資料夾各寫一份 .manifest.json：用了哪份 Recipe、輸入與輸出檔的 SHA-256、每一步的列數與警告
           </span>
         </span>
         <Switch checked={output.manifest} onCheckedChange={(manifest) => onOutput({ manifest })} />

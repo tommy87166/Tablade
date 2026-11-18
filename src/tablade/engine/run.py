@@ -19,6 +19,7 @@ Recipe 由好幾個階段組成，依序執行：每個階段讀實際檔或前�
 
 from __future__ import annotations
 
+import os
 import shutil
 import uuid
 from dataclasses import asdict, dataclass, field, replace
@@ -29,7 +30,6 @@ import polars as pl
 
 from tablade.engine.progress import Watcher, rows_per_file, with_positions, with_row_positions
 from tablade.export.manifest import write_manifest
-from tablade.export.parquet import write_parquet
 from tablade.ingest.sources import (
     Part,
     PartsMismatch,
@@ -113,6 +113,18 @@ class StageReport:
 
 
 @dataclass
+class OutputReport:
+    """寫出的一個檔。"""
+
+    stage: str
+    path: str
+    rows: int
+    columns: list[str]
+    manifest: str | None = None
+    """這個檔的處理紀錄（log/xxx.manifest.json）；沒有寫出時是 None。"""
+
+
+@dataclass
 class RunReport:
     inputs: list[SourceFile]
     input_rows: int
@@ -120,12 +132,15 @@ class RunReport:
     rows: int
     columns: list[str]
     output: str | None
+    """最後一個階段寫出的檔（沒有寫檔時是 None）。"""
     mode: str = "eager"
     sample_rows: int | None = None
     manifest: str | None = None
-    """處理紀錄（xxx.manifest.json）的位置；沒有寫出時是 None。"""
+    """最後一個階段的處理紀錄的位置；沒有寫出時是 None。"""
     stages: list[StageReport] = field(default_factory=list)
     """每個階段的結果（最後一個階段就是輸出）。"""
+    outputs: list[OutputReport] = field(default_factory=list)
+    """寫出的每個檔（依階段順序）。"""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -417,48 +432,104 @@ def choose_mode(files: list[SourceFile], write_output: bool, mode: Mode) -> Mode
     return "stream" if write_output else "sample"
 
 
+class _Writes:
+    """要寫出的檔：先寫成同一個資料夾裡的暫存檔，整個執行成功才一起改名成正式的檔。
+
+    執行到一半失敗時，之前的輸出檔維持原樣（不會有的換成新的、有的還是舊的）。
+    """
+
+    def __init__(self) -> None:
+        self.items: list[tuple[Path, Path, OutputReport]] = []
+
+    @staticmethod
+    def tmp(target: Path) -> Path:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        return target.with_name(f".{target.name}.{uuid.uuid4().hex[:8]}.tmp")
+
+    def add(self, tmp: Path, target: Path, report: OutputReport) -> None:
+        self.items.append((tmp, target, report))
+
+    def commit(self) -> list[OutputReport]:
+        for tmp, target, _ in self.items:
+            try:
+                os.replace(tmp, target)
+            except PermissionError:
+                raise RuntimeError(
+                    f"「{target.name}」寫不進去：可能被別的程式開著，關掉後再試一次"
+                ) from None
+        return [report for _, _, report in self.items]
+
+    def discard(self) -> None:
+        for tmp, _, _ in self.items:
+            tmp.unlink(missing_ok=True)
+
+
+def _kept(recipe: Recipe, names: list[str]) -> list[str]:
+    """寫出的欄：Recipe 的輸出設定可以不保留系統欄位；暫存欄（__w_）一律不寫。"""
+    names = [c for c in names if not c.startswith(TEMP_PREFIX)]
+    return names if recipe.output.keep_system_columns else _data_columns(names)
+
+
 def execute(
     recipe: Recipe,
     base_dir: Path,
     *,
-    write_output: bool = True,
+    outputs: dict[str, Path] | None = None,
     output: Path | None = None,
+    log_dir: Path | None = None,
     mode: Mode = "auto",
     limit: int = MAX_WARNINGS_PER_CHECK,
     progress: Progress = None,
 ) -> tuple[pl.DataFrame | None, RunReport]:
-    """依序執行每個階段。``stream`` 模式不回傳 DataFrame（結果直接寫到檔案）。"""
-    if write_output and output is None:
-        raise ValueError("寫出檔案時要指定 output（recipe 不記輸出位置）")
+    """依序執行每個階段。``stream`` 模式不回傳 DataFrame（結果直接寫到檔案）。
+
+    ``outputs`` 是要寫檔的階段 → 位置（``export/outputs.py`` 的 ``resolve_outputs``）；``output`` 是
+    只寫最後一個階段的簡寫（測試、完整跑一次用）。兩個都沒有時只試跑，不寫檔。
+    處理紀錄寫到 ``log_dir``（沒指定時是輸出檔所在資料夾底下的 log/）。
+    """
+    targets = dict(outputs or {})
+    if output is not None:
+        targets[recipe.stages[-1].name] = output
+    unknown = set(targets) - {s.name for s in recipe.stages}
+    if unknown:
+        raise ValueError(f"沒有這些階段：{'、'.join(sorted(unknown))}")
     tracker = StageTracker([s.name for s in recipe.stages], progress)
+    writes = _Writes()
     try:
-        return _execute(recipe, base_dir, write_output, output, mode, limit, progress, tracker)
+        frame, report = _execute(recipe, base_dir, targets, mode, limit, progress, tracker, writes)
+        report.outputs = writes.commit()
     except BaseException:
         tracker.fail()
         raise
+    finally:
+        writes.discard()
+    last = recipe.stages[-1].name
+    final = next((o for o in report.outputs if o.stage == last), None)
+    report.output = final.path if final else None
+    return frame, _with_manifest(recipe, report, log_dir)
 
 
 def _execute(
     recipe: Recipe,
     base_dir: Path,
-    write_output: bool,
-    output: Path | None,
+    targets: dict[str, Path],
     mode: Mode,
     limit: int,
     progress: Progress,
     tracker: StageTracker,
+    writes: _Writes,
 ) -> tuple[pl.DataFrame | None, RunReport]:
     scanned = scan_stages(recipe, base_dir, progress, tracker)
     files = [f for _, found in scanned.values() for f in found]
     input_rows = sum(f.rows for f in files)
-    mode = choose_mode(files, write_output, mode)
+    mode = choose_mode(files, bool(targets), mode)
     if mode == "stream":
-        if output is None:
+        if not targets:
             raise ValueError("stream 模式一定會寫出檔案")
         report = _execute_stream(
-            recipe, scanned, files, input_rows, output, limit, progress, tracker
+            recipe, scanned, files, input_rows, targets, limit, progress, tracker, writes
         )
-        return None, _with_manifest(recipe, report, output)
+        return None, report
 
     results: dict[str, pl.DataFrame] = {}
     reports, stages, sample_rows = [], [], 0
@@ -504,34 +575,38 @@ def _execute(
             )
         results[stage.name] = frame
         stages.append(StageReport(stage.name, frame.height, _data_columns(frame.columns)))
+        target = targets.get(stage.name)
+        if target is not None:
+            tmp = writes.tmp(target)
+            frame.select(_kept(recipe, frame.columns)).write_parquet(tmp)
+            out = OutputReport(
+                stage.name, target.as_posix(), frame.height, _data_columns(frame.columns)
+            )
+            writes.add(tmp, target, out)
         tracker.done(k, frame.height)
     frame = results[recipe.stages[-1].name]
-    if not recipe.output.keep_system_columns:
-        frame = frame.select(_data_columns(frame.columns))
-    written = None
-    if output is not None and write_output:
-        write_parquet(frame, output)
-        written = output.as_posix()
+    frame = frame.select(_kept(recipe, frame.columns))
     report = RunReport(
         files,
         input_rows,
         reports,
         frame.height,
         _data_columns(frame.columns),
-        written,
+        None,
         mode,
         sample_rows if mode == "sample" else None,
         stages=stages,
     )
-    if written is not None and output is not None:
-        _with_manifest(recipe, report, output)
     return frame, report
 
 
-def _with_manifest(recipe: Recipe, report: RunReport, output: Path) -> RunReport:
-    """寫出處理紀錄（Recipe 的輸出設定可以關掉）。"""
+def _with_manifest(recipe: Recipe, report: RunReport, folder: Path | None) -> RunReport:
+    """每個寫出的檔各寫一份處理紀錄（Recipe 的輸出設定可以關掉）。"""
     if recipe.output.manifest:
-        report.manifest = write_manifest(recipe, report, output).as_posix()
+        for out in report.outputs:
+            out.manifest = write_manifest(recipe, report, out, folder).as_posix()
+    last = recipe.stages[-1].name
+    report.manifest = next((o.manifest for o in report.outputs if o.stage == last), None)
     return report
 
 
@@ -634,10 +709,11 @@ def _execute_stream(
     scanned: dict[str, tuple[list[Part], list[SourceFile]]],
     files: list[SourceFile],
     input_rows: int,
-    target: Path,
+    targets: dict[str, Path],
     limit: int,
     progress: Progress,
     tracker: StageTracker,
+    writes: _Writes,
 ) -> RunReport:
     def report(stage: str) -> None:
         if progress is not None:
@@ -708,6 +784,9 @@ def _execute_stream(
                 break
             kept = result.select(clean)
             kept_rows = kept.select(pl.len()).collect(engine="streaming").item()
+            target = targets.get(stage.name)
+            if target is not None:
+                _sink_output(result, target, recipe, stage.name, kept_rows, writes, report)
             tracker.done(k, kept_rows)
             results[stage.name] = [
                 (
@@ -737,22 +816,16 @@ def _execute_stream(
                         stage.name,
                     )
                 )
-        keep = clean
-        if not recipe.output.keep_system_columns:
-            keep = _data_columns(keep)
-        report("寫出 Parquet")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex[:8]}.tmp")
-        try:
-            result.select(keep).sink_parquet(tmp, engine="streaming")
-            tmp.replace(target)
-        finally:
-            tmp.unlink(missing_ok=True)
-        rows = pl.scan_parquet(target).select(pl.len()).collect().item()
+        last = recipe.stages[-1].name
+        target = targets.get(last)
+        if target is not None:
+            rows = _sink_output(result, target, recipe, last, None, writes, report)
+        else:
+            rows = result.select(pl.len()).collect(engine="streaming").item()
         tracker.done(len(recipe.stages) - 1, rows)
     finally:
         shutil.rmtree(staged, ignore_errors=True)
-    columns = _data_columns(keep)
+    columns = _data_columns(clean)
     stage_reports.append(StageReport(recipe.stages[-1].name, rows, columns))
     return RunReport(
         files,
@@ -760,7 +833,27 @@ def _execute_stream(
         reports,
         rows,
         columns,
-        target.as_posix(),
+        None,
         "stream",
         stages=stage_reports,
     )
+
+
+def _sink_output(
+    result: pl.LazyFrame,
+    target: Path,
+    recipe: Recipe,
+    stage: str,
+    rows: int | None,
+    writes: _Writes,
+    report: Any,
+) -> int:
+    """把一個階段的結果（暫存 Parquet）寫成輸出檔的暫存檔；回傳列數。"""
+    report("寫出 Parquet")
+    tmp = writes.tmp(target)
+    names = result.collect_schema().names()
+    result.select(_kept(recipe, names)).sink_parquet(tmp, engine="streaming")
+    if rows is None:
+        rows = pl.scan_parquet(tmp).select(pl.len()).collect().item()
+    writes.add(tmp, target, OutputReport(stage, target.as_posix(), rows, _data_columns(names)))
+    return rows

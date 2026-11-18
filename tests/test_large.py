@@ -14,7 +14,7 @@ import pytest
 from tablade.engine import progress as stream_progress
 from tablade.engine import run as engine_run
 from tablade.engine.progress import POSITION, Watcher, with_positions
-from tablade.engine.run import execute
+from tablade.engine.run import RunError, execute
 from tablade.fixtures import messy_export, write_all
 from tablade.ingest import sources, transcode
 from tablade.ingest.encoding import DecodeError
@@ -423,7 +423,7 @@ def test_auto_mode_samples_dry_runs_and_streams_exports(workdir, monkeypatch):
     monkeypatch.setattr(engine_run, "SAMPLE_THRESHOLD", 10)
     monkeypatch.setattr(engine_run, "SAMPLE_HEAD", 20)
     monkeypatch.setattr(engine_run, "SAMPLE_TAIL", 3)
-    _, dry = execute(recipe(workdir), workdir, write_output=False)
+    _, dry = execute(recipe(workdir), workdir)
     assert dry.mode == "sample" and dry.sample_rows == 2 * (20 + 3)
     _, full = execute(recipe(workdir), workdir, output=workdir / "full.parquet")
     assert full.mode == "stream" and full.rows == 70
@@ -445,12 +445,9 @@ def test_session_previews_a_sample_and_exports_everything(workdir, monkeypatch, 
     assert state["input"]["sampled"] is True
     assert state["input"]["total_rows"] == 94 and state["input"]["rows"] == 46
     assert any(p["stage"] == "讀取預覽樣本" for p in seen)
-    result = s.export(tmp_path / "out.parquet")
+    result = s.export()
     assert result["mode"] == "stream" and result["rows"] == 70
-    assert (
-        pl.read_parquet(tmp_path / "out.parquet").drop("__source_file", "__line_no").to_dicts()
-        == EXPECTED
-    )
+    assert pl.read_parquet(result["path"]).drop("__source_file", "__line_no").to_dicts() == EXPECTED
 
 
 # ── 串流執行的進度 ──────────────────────────────────────────────
@@ -662,10 +659,48 @@ def test_stream_matches_eager_with_stages_append_and_join(workdir):
     assert streamed.warning_count == 18
     first = next(w for s in streamed.steps for w in s.warnings)
     assert (first.source_file, first.orig_stage) == ("全部明細", "文字明細")
-    manifest = json.loads((workdir / "s.manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads((workdir / "log" / "s.manifest.json").read_text(encoding="utf-8"))
     assert [s["name"] for s in manifest["stages"]] == ["品項對照", "文字明細", "Excel明細"]
     assert manifest["warnings"]["items"][0]["original"]["from_stage"] == "文字明細"
     assert {i["stage"] for i in manifest["inputs"]} == {"品項對照", "文字明細", "Excel明細"}
+
+
+def test_middle_stage_outputs_and_all_or_nothing_writes(workdir):
+    """中間的階段也可以寫檔（兩種執行方式結果一樣）；之後的階段失敗時，已經存在的輸出檔都維持原樣。"""
+    data = json.loads(COMBINED.read_text(encoding="utf-8"))
+    r = parse_recipe(data)
+    written = {}
+    for mode in ("eager", "stream"):
+        folder = workdir / mode
+        targets = {
+            "文字明細": folder / "output" / "文字.parquet",
+            "預設階段": folder / "output" / "全部.parquet",
+        }
+        _, report = execute(r, workdir, outputs=targets, log_dir=folder / "log", mode=mode)
+        assert [(o.stage, o.rows) for o in report.outputs] == [("文字明細", 70), ("預設階段", 90)]
+        assert report.output == targets["預設階段"].as_posix() and report.rows == 90
+        assert (folder / "log" / "文字.manifest.json").is_file()
+        assert report.manifest == (folder / "log" / "全部.manifest.json").as_posix()
+        written[mode] = {name: pl.read_parquet(path) for name, path in targets.items()}
+        assert not list((folder / "output").glob(".*"))  # 沒有留下暫存檔
+    for name, frame in written["eager"].items():
+        assert frame.equals(written["stream"][name])
+
+    broken = json.loads(COMBINED.read_text(encoding="utf-8"))
+    broken["stages"][3]["steps"].append({"id": "x", "type": "parse_number", "columns": ["不存在"]})
+    for mode in ("eager", "stream"):
+        folder = workdir / mode
+        targets = {
+            "文字明細": folder / "output" / "文字.parquet",
+            "預設階段": folder / "output" / "全部.parquet",
+        }
+        before = {name: path.read_bytes() for name, path in targets.items()}
+        with pytest.raises(RunError):
+            execute(
+                parse_recipe(broken), workdir, outputs=targets, log_dir=folder / "log", mode=mode
+            )
+        assert {name: path.read_bytes() for name, path in targets.items()} == before
+        assert not list((folder / "output").glob(".*"))
 
 
 def test_stream_matches_eager_with_join_before_merge(workdir):

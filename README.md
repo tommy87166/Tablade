@@ -32,7 +32,7 @@
 **Tablade** (*Table + Blade*) is a desktop data cleaning tool in the spirit of Power Query's
 *Applied Steps*: you build a **linear list of steps** — remove junk rows, split columns, fill
 down, parse numbers and dates — preview the result after every step, and export clean
-**Parquet**. Every row carries the file and line it came from, and a manifest next to the output records
+**Parquet** (into an `output` folder next to the recipe). Every row carries the file and line it came from, and a manifest in the `log` folder records
 the recipe, the SHA-256 of every input and of the output, and each step's row count and warnings. The steps are
 saved as a **recipe JSON**, so the same cleanup can be re-run on next month's files.
 **Every file stays on your machine**: there is no server and no upload. The only network call is a
@@ -258,7 +258,7 @@ tablade                              # open the window
 tablade selftest [--out result.json] # self-test with generated data (exit code 0 = pass)
 tablade gui --smoke                  # open the window, self-test, close
 tablade convert in.csv out.parquet [--encoding auto|utf-8|cp950|big5hkscs]
-tablade run recipe.json [-o out.parquet] [--json]  # run a recipe, write Parquet (default: next to the recipe), print row counts per step
+tablade run recipe.json [--out-dir DIR] [--json]  # run a recipe: outputs go to output/, manifests to log/ (default: the recipe's folder); print row counts per step
 tablade validate recipe.json [--run] [--json]    # check a recipe (--run: dry-run on the real data)
 tablade schema [--out spec.json]                 # step catalog + recipe JSON Schema
 tablade skill [--out x.zip] [--probe]            # AI skill for Microsoft 365 Copilot (or the sandbox probe)

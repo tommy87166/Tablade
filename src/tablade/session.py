@@ -18,7 +18,6 @@ import contextlib
 import copy
 import hashlib
 import json
-import re
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -42,6 +41,7 @@ from .engine.run import (
     execute,
     stage_frame,
 )
+from .export.outputs import OutputError, default_output_name, log_dir, plan_outputs, resolve_outputs
 from .ingest.encoding import DecodeError
 from .ingest.excel import ExcelError, is_excel, sheet_names
 from .ingest.sources import (
@@ -79,7 +79,6 @@ from .steps.base import (
 MAX_UNDO = 100
 DEFAULT_INPUT = {"files": [], "reader": "text_lines", "encoding": "auto", "sheet": "", "stages": []}
 DEFAULT_OUTPUT = {"format": "parquet", "keep_system_columns": True, "manifest": True}
-INVALID_FILENAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 STAGE_NAME_MAX = 40
 OLD_FORMAT = "這是舊的 Recipe 寫法（最外層的 inputs / steps），請改成 stages"
 
@@ -135,7 +134,13 @@ def _file_count(frame: pl.DataFrame) -> int:
 
 def _new_stage(name: str) -> dict[str, Any]:
     """畫面上的一個階段：名稱、讀取資料、步驟，加上選取的步驟（不寫進 Recipe）。"""
-    return {"name": name, "input": copy.deepcopy(DEFAULT_INPUT), "steps": [], "selected": -1}
+    return {
+        "name": name,
+        "input": copy.deepcopy(DEFAULT_INPUT),
+        "steps": [],
+        "output_file": "",
+        "selected": -1,
+    }
 
 
 def _ref_fields() -> dict[str, list[str]]:
@@ -260,7 +265,7 @@ class Session:
         self._full: dict[str, tuple[str, pl.DataFrame]] = {}
         """「完整跑一次」的結果：{階段: (樣本結果的指紋, 完整的結果)}；樣本結果變了就不用。"""
         self.last_export: Path | None = None
-        """上次「處理並匯出資料」存的位置：下次存檔對話框的預設值。"""
+        """上次「處理並匯出資料」最後一個階段寫出的檔。"""
 
     # ── 目前的階段 ─────────────────────────────────────────────
 
@@ -333,7 +338,10 @@ class Session:
             source.pop("stages", None)
             if source.get("reader") != "excel" and not source.get("sheet"):
                 source.pop("sheet", None)  # 不是 Excel 時不寫工作表，Recipe 比較好讀
-        return {"name": stage["name"], "input": source, "steps": stage["steps"]}
+        out = {"name": stage["name"], "input": source, "steps": stage["steps"]}
+        if stage.get("output_file"):
+            out["output_file"] = stage["output_file"]  # 沒填就不寫，Recipe 比較好讀
+        return out
 
     def recipe_dict(self) -> dict[str, Any]:
         return {
@@ -392,6 +400,8 @@ class Session:
                     stage["input"][key] = [v for v in values if isinstance(v, str) and v]
                 steps = item.get("steps") if isinstance(item.get("steps"), list) else []
                 stage["steps"] = [s for s in steps if isinstance(s, dict)]
+                file = item.get("output_file")
+                stage["output_file"] = file.strip() if isinstance(file, str) else ""
                 stage["selected"] = len(stage["steps"]) - 1
                 stages.append(stage)
             self._reset()
@@ -597,6 +607,26 @@ class Session:
             for key in ("keep_system_columns", "manifest"):
                 if key in values:
                     self.output[key] = bool(values[key])
+
+    def set_stage_output(self, index: int, file: str) -> None:
+        """改第 index 個階段的輸出檔名（只填檔名；沒有 .parquet 時補上，空白＝中間階段不寫檔）。"""
+        with self._lock:
+            self._check_stage(index)
+            name = str(file).strip()
+            if name and not name.lower().endswith(".parquet"):
+                name += ".parquet"
+            if name == self.stages[index].get("output_file", ""):
+                return
+            self._change()
+            self.stages[index]["output_file"] = name
+
+    def _default_output(self) -> str:
+        return default_output_name(self.recipe_path, self.meta.get("name", ""))
+
+    def _outputs(self) -> list[Any]:
+        """每個階段要寫的檔（``export/outputs.py`` 的 ``plan_outputs``）。"""
+        base = self.base_dir or Path.cwd()
+        return plan_outputs(self.recipe_dict(), base, self._default_output())
 
     def set_meta(self, values: dict[str, Any]) -> None:
         with self._lock:
@@ -1043,8 +1073,9 @@ class Session:
     # ── 給前端的畫面狀態 ─────────────────────────────────────────
 
     def _stages_state(self) -> list[dict[str, Any]]:
-        """每個階段的概況（最左邊的階段分頁、結合的右表選單）。"""
+        """每個階段的概況（最左邊的階段分頁、結合的右表選單、輸出設定）。"""
         out = []
+        planned = self._outputs()
         for i, stage in enumerate(self.stages):
             frame, _, sampled, full = self._stage_result(i)
             computed = self._computed.get(stage["name"], [])
@@ -1061,6 +1092,8 @@ class Session:
                     "sampled": sampled,
                     "full": full,
                     "uses": list(dict.fromkeys(ref for ref, _ in stage_refs(stage))),
+                    "output_file": stage.get("output_file", ""),
+                    "output": _planned_state(planned[i]) if i < len(planned) else None,
                 }
             )
         return out
@@ -1243,23 +1276,6 @@ class Session:
 
     # ── 匯出與報告 ────────────────────────────────────────────
 
-    def export_suggestion(self) -> tuple[Path, str]:
-        """按「處理並匯出資料」時存檔對話框的預設資料夾與檔名。
-
-        上次存的位置優先；否則存在 Recipe（或資料）的資料夾，檔名用 Recipe 檔名或名稱。
-        """
-        with self._lock:
-            base = self.base_dir or Path.home()
-            if self.last_export is not None:
-                folder = self.last_export.parent
-                return (folder if folder.is_dir() else base), self.last_export.name
-            if self.recipe_path is not None:
-                stem = self.recipe_path.name.removesuffix(".json").removesuffix(".recipe")
-            else:
-                stem = self.meta.get("name", "")
-            stem = INVALID_FILENAME.sub("_", stem).strip(" .") or "result"
-            return base, f"{stem}.parquet"
-
     def require_loaded(self) -> Path:
         """「處理並匯出資料」前的檢查：每個讀實際檔的階段都要先按「載入資料」，而且載入後設定與檔案都沒變。"""
         with self._lock:
@@ -1274,20 +1290,40 @@ class Session:
                 raise SessionError(f"請先在「讀取資料」按「載入資料」{where}")
             return base
 
-    def export(self, target: Path) -> dict[str, Any]:
-        """處理全部資料，存成 target（只在已載入資料時；不會自己讀檔處理）。"""
+    def export(self) -> dict[str, Any]:
+        """處理全部資料：每個要寫檔的階段寫到 Recipe 所在資料夾底下的 output/，處理紀錄寫到 log/。
+
+        只在已載入資料時（不會自己讀檔處理）。已經存在的檔直接覆蓋。
+        """
         with self._lock:
             base = self.require_loaded()
+            problems = [
+                f"階段「{stage['name']}」：{planned.error}"
+                for stage, planned in zip(self.stages, self._outputs(), strict=True)
+                if planned is not None and planned.error
+            ]
+            if problems:
+                raise SessionError("；".join(problems))
             recipe = parse_recipe(self.recipe_dict())
-            _, report = execute(recipe, base, output=target, progress=self.progress)
-            self.last_export = target
+            try:
+                targets = resolve_outputs(recipe, base, self._default_output())
+            except OutputError as err:
+                raise SessionError(str(err)) from None
+            _, report = execute(
+                recipe, base, outputs=targets, log_dir=log_dir(base), progress=self.progress
+            )
+            self.last_export = Path(report.output) if report.output else None
             return {
-                "path": str(target),
+                "path": report.output,
                 "rows": report.rows,
                 "columns": len(report.columns),
                 "warnings": report.warning_count,
                 "mode": report.mode,
                 "manifest": report.manifest,
+                "outputs": [
+                    {"stage": o.stage, "path": o.path, "rows": o.rows, "manifest": o.manifest}
+                    for o in report.outputs
+                ],
             }
 
     def error_report(self) -> str:
@@ -1308,6 +1344,19 @@ class Session:
                 lines += ["", "試跑結果：", format_report(result.report, max_warnings=20)]
             lines += ["", f'請依上面的問題修正 Recipe，tablade_recipe 維持 "{RECIPE_VERSION}"。']
             return "\n".join(lines)
+
+
+def _planned_state(planned: Any) -> dict[str, Any] | None:
+    """一個階段要寫的檔（給畫面的輸出設定）：檔名、位置（output/檔名）、是不是預設檔名、已不已經存在、錯誤。"""
+    if planned is None:
+        return None
+    return {
+        "file": planned.file,
+        "path": f"{planned.path.parent.name}/{planned.file}",
+        "default": planned.default,
+        "exists": planned.path.is_file(),
+        "error": planned.error,
+    }
 
 
 def _safe_get(type_name: Any) -> type[Step] | None:

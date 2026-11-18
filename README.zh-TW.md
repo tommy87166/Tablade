@@ -31,7 +31,7 @@
 
 **Tablade**（*Table + Blade*）是一個桌面資料清洗工具，概念類似 Power Query 的「套用的步驟」：
 把清洗過程排成一條**線性步驟清單**——移除雜訊列、拆欄、向下填滿、轉換數字與日期——每一步都能
-預覽結果，最後輸出乾淨的 **Parquet**。每一列都帶著它來自哪個檔案的哪一行，旁邊再附一份處理紀錄（manifest），
+預覽結果，最後輸出乾淨的 **Parquet**（寫到 Recipe 旁邊的 output 資料夾）。每一列都帶著它來自哪個檔案的哪一行，log 資料夾再附一份處理紀錄（manifest），
 記錄用了哪份 Recipe、每個原始檔與輸出檔的 SHA-256、每一步的列數與警告。
 步驟存成 **recipe JSON**，下個月拿到新檔案時可以原封不動重跑一次。
 **所有檔案都留在你的電腦上**：沒有伺服器、不上傳。唯一的網路連線是啟動時向 GitHub 查最新版號（不送出資料、不下載）。
@@ -234,7 +234,7 @@ tablade                              # 開啟視窗
 tablade selftest [--out result.json] # 用假資料自我檢測（結束代碼 0 表示通過）
 tablade gui --smoke                  # 開視窗、自我檢測後關閉
 tablade convert in.csv out.parquet [--encoding auto|utf-8|cp950|big5hkscs]
-tablade run recipe.json [-o out.parquet] [--json]  # 執行 recipe、寫出 Parquet（預設在 recipe 旁邊）、列出每一步的列數
+tablade run recipe.json [--out-dir 資料夾] [--json]  # 執行 recipe：輸出寫到 output/、處理紀錄寫到 log/（預設在 recipe 所在的資料夾），列出每一步的列數
 tablade validate recipe.json [--run] [--json]    # 驗證 recipe（--run：用真實資料試跑）
 tablade schema [--out spec.json]                 # 步驟目錄＋recipe JSON Schema
 tablade skill [--out x.zip] [--probe]            # 給 Microsoft 365 Copilot 的 AI skill（或沙箱 probe）

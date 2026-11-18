@@ -144,7 +144,7 @@ export interface StageState {
   index: number
   name: string
   reader: string
-  /** 最後一個階段：它的結果寫到輸出檔 */
+  /** 最後一個階段：它的結果一定寫檔 */
   last: boolean
   status: 'ok' | 'waiting' | 'error'
   rows: number | null
@@ -156,6 +156,23 @@ export interface StageState {
   full: boolean
   /** 用到哪些前面的階段 */
   uses: string[]
+  /** Recipe 裡的輸出檔名（空白：中間的階段不寫檔、最後一個階段用 Recipe 名稱） */
+  output_file: string
+  /** 要寫的檔（中間的階段沒填檔名時是 null） */
+  output: StageOutput | null
+}
+
+/** 一個階段要寫的檔（session.py 的 _planned_state） */
+export interface StageOutput {
+  /** 檔名（已補上 .parquet） */
+  file: string
+  /** 寫出的位置，例如 output/明細.parquet（相對於 Recipe 所在的資料夾） */
+  path: string
+  /** 最後一個階段沒填檔名，用 Recipe 名稱 */
+  default: boolean
+  /** 已經存在：匯出時會覆蓋 */
+  exists: boolean
+  error: string | null
 }
 
 export interface SourceFile {
@@ -179,7 +196,7 @@ export interface ViewState {
     /** false：還沒有新增或開啟 Recipe（顯示起始頁） */
     open: boolean
   }
-  /** 每個階段；最後一個的結果寫到輸出檔 */
+  /** 每個階段；最後一個的結果一定寫檔，中間的有填輸出檔名才寫 */
   stages: StageState[]
   /** 目前在編輯的階段（下面的 input、steps、preview 都是這個階段的） */
   current: number
@@ -323,6 +340,7 @@ export interface TabladeApi {
   load_data(): Promise<WithState>
   set_input(values: Partial<ViewState['input']>): Promise<WithState>
   set_output(values: Partial<ViewState['output']>): Promise<WithState>
+  set_stage_output(index: number, file: string): Promise<WithState>
   set_meta(values: { name?: string; description?: string }): Promise<WithState>
   add_stage(name: string, before?: boolean): Promise<WithState<{ index: number }>>
   rename_stage(index: number, name: string): Promise<WithState>
@@ -348,6 +366,8 @@ export interface TabladeApi {
       warnings?: number
       mode?: string
       manifest?: string | null
+      /** 寫出的每個檔（依階段順序） */
+      outputs?: { stage: string; path: string; rows: number; manifest: string | null }[]
     }>
   >
   error_report(): Promise<Result<{ text: string }>>

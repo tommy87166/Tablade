@@ -169,11 +169,16 @@
 - `tablade_recipe` 是 recipe 格式的版本號（`MAJOR.MINOR`，規則見 §17.6），AI skill 共用同一個版本號。
 - **階段**（`stages`）依序執行。每個階段是「一個輸入 → 步驟」：`name`（不能重複，也是引用名稱）、`input`、`steps`。
   只有一份資料時就一個階段，名稱用「預設階段」。舊的寫法（最外層直接放 `inputs` / `steps`）不收，開啟時報錯並說明新寫法。
-- 中間階段的結果是暫存的（後面的階段用名稱引用：`"input": {"reader": "stages", "stages": [...]}` 讀它，
-  或結合的 `right`）；只有最後一個階段的結果寫到輸出檔，所以 `output` 在最外層。
-  只能引用**前面**的階段，所以不會有循環；第一個階段只能讀實際檔。中間階段沒有被用到時，驗證器給提醒（`severity: warning`）。
+- 後面的階段用名稱引用前面階段的結果（`"input": {"reader": "stages", "stages": [...]}` 讀它，或結合的 `right`）。
+  只能引用**前面**的階段，所以不會有循環；第一個階段只能讀實際檔。中間階段沒有被用到、也不寫檔時，驗證器給提醒（`severity: warning`）。
+- **輸出檔**：每個階段可以有 `output_file`（只填檔名，例如 `"明細.parquet"`；沒寫 `.parquet` 時補上）。
+  最後一個階段一定寫檔，沒填時用 Recipe 的名稱（`明細.recipe.json` → `明細.parquet`）；中間的階段有填才寫，沒填就只是暫存的。
+  寫出的檔一樣可以被後面的階段引用。檔名不能有路徑字元（`/ \ : * ? " < > |`）、不能「.」開頭、同一個 Recipe 裡不能重複（不分大小寫），
+  寫出的位置不能是任何一個階段的輸入檔；已經存在的檔直接覆蓋。格式、保留系統欄位、處理紀錄的設定在最外層的 `output`，套用到每個輸出檔。
 - 每個步驟都有 `id`（整份 Recipe 不能重複），並可加上 `"enabled": false` 暫時停用。
-- recipe **不記輸出位置**：視窗裡按「處理並匯出資料」時才用存檔對話框選位置；命令列 `tablade run` 用 `-o` 指定，預設是 recipe 旁邊同名的 `.parquet`。
+- recipe 只記檔名、**不記資料夾**：輸出檔一律寫到 Recipe 所在資料夾底下的 `output/`，處理紀錄寫到並排的 `log/`（`export/outputs.py`），
+  視窗裡按「處理並匯出資料」不再開存檔對話框；命令列 `tablade run --out-dir 資料夾` 可以把 `output/`、`log/` 改建在別的資料夾底下。
+  每個要寫的檔先寫成同一個資料夾裡的暫存檔，整個執行成功才一起改名成正式的檔：跑到一半失敗時，之前的輸出檔維持原樣。
 - **依資料決定結構的步驟**（把第一列作為欄位標題、拆成幾欄、樞紐），在**建立步驟的當下**先掃一次資料，把欄名和欄數寫死在 recipe 裡。之後套用到新資料時，若出現更多段數或新的欄位，產生**警告**，不默默增減欄位。
 - recipe 本身可能含有敏感資訊（例如篩選條件裡的人名或公司名稱），所以**真實 recipe 也不得 commit**，repo 只放範例 recipe。
 
@@ -287,7 +292,8 @@
 
 ## 9. 輸出與可追溯紀錄
 
-輸出 `xxx.parquet` 時，在旁邊寫一份 `xxx.manifest.json`（處理紀錄，`export/manifest.py`）。「輸出資料」設定可以關掉（Recipe 的 `output.manifest`，預設開）；只試跑、不寫出檔案時不寫。
+每個輸出檔 `output/xxx.parquet` 各寫一份 `log/xxx.manifest.json`（處理紀錄，`export/manifest.py`）。「輸出資料」設定可以關掉（Recipe 的 `output.manifest`，預設開）；只試跑、不寫出檔案時不寫。
+每一份只記跟這個輸出檔有關的：寫出它的階段，加上它往上讀到、結合到的階段（輸入檔、步驟、警告），單獨拿一個檔也查得到來源；`recipe.content` 仍是完整的 Recipe。
 
 ```json
 {
@@ -311,7 +317,7 @@
 - `inputs[].sha256` 讀檔時就算好了（和檢查編碼同一次讀取）；`output.sha256` 寫完後再讀一次輸出檔算。
 - 串流執行沒有每一步的列數（`rows` 是 `null`）；警告沿用執行報告（每項檢查最多 100 則），`count` 是總數。
 - 先寫暫存檔再改名，不會留下半個檔案。自我檢測的「完整執行範例 Recipe」也檢查 manifest 的 SHA-256。
-- 有好幾個階段時：`inputs[].stage`、`steps[].stage` 記是哪個階段的，`stages` 記中間階段的結果（列數、欄位；暫存檔會刪掉，不記雜湊）。
+- 有好幾個階段時：`stage` 記寫出這個檔的階段，`inputs[].stage`、`steps[].stage` 記是哪個階段的，`stages` 記它往上用到的階段的結果（列數、欄位；暫存檔會刪掉，不記雜湊）。
   警告從前面的階段讀進來時帶 `from_stage`，合併來源檔之後帶 `original`（合併前的來源檔、行號、工作表、階段）。
 - 輸入檔的 SHA-256 加上 recipe 雜湊，可以證明「這份輸出是用這份 recipe，從這些原始檔產生的」。
 - 每一步的列數變化可以直接拿來核對資料有沒有漏掉或重複。
@@ -421,6 +427,7 @@ tablade/
 │   │   └── ...
 │   └── export/
 │       ├── parquet.py
+│       ├── outputs.py         # 輸出檔的位置（output/、log/）與檔名檢查
 │       └── manifest.py
 ├── frontend/                  # Vite + React + TypeScript + shadcn/ui（見 §16）
 │   ├── package.json / package-lock.json

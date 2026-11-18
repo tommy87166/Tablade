@@ -27,22 +27,38 @@ def test_run_example_recipe(workdir, capsys):
     printed = capsys.readouterr().out
     assert "結果：70 列 × 8 欄" in printed
 
-    out = pl.read_parquet(workdir / "sales_detail.parquet")
+    out = pl.read_parquet(workdir / "output" / "sales_detail.parquet")  # 預設檔名＝Recipe 名稱
+    assert (workdir / "log" / "sales_detail.manifest.json").is_file()
     expected = messy_export(50, 0)[1] + messy_export(30, 1)[1]
     assert out.drop("__source_file", "__line_no").to_dicts() == expected
     assert out.columns[:2] == ["__source_file", "__line_no"]
 
 
-def test_run_writes_to_the_given_output(workdir):
-    target = workdir / "out" / "結果.parquet"
-    assert main(["run", str(workdir / EXAMPLE.name), "-o", str(target)]) == 0
-    assert pl.read_parquet(target).height == 70
-    assert not (workdir / "sales_detail.parquet").exists()
+def test_run_writes_under_the_given_out_dir(workdir):
+    out = workdir / "另一個資料夾"
+    assert main(["run", str(workdir / EXAMPLE.name), "--out-dir", str(out)]) == 0
+    assert pl.read_parquet(out / "output" / "sales_detail.parquet").height == 70
+    assert (out / "log" / "sales_detail.manifest.json").is_file()
+    assert not (workdir / "output").exists()
+
+
+def test_run_uses_the_output_file_names_in_the_recipe(workdir, capsys):
+    data = json.loads(EXAMPLE.read_text(encoding="utf-8"))
+    data["stages"][0]["output_file"] = "結果.parquet"
+    (workdir / EXAMPLE.name).write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+    assert main(["run", str(workdir / EXAMPLE.name)]) == 0
+    assert pl.read_parquet(workdir / "output" / "結果.parquet").height == 70
+    assert not (workdir / "output" / "sales_detail.parquet").exists()
+    data["stages"][0]["output_file"] = "../結果"  # 不能有路徑字元：驗證時就擋下
+    (workdir / EXAMPLE.name).write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+    capsys.readouterr()
+    assert main(["run", str(workdir / EXAMPLE.name)]) == 1
+    assert "不能有 /" in capsys.readouterr().out
 
 
 def test_every_output_row_points_to_its_physical_line(workdir):
     assert main(["run", str(workdir / EXAMPLE.name)]) == 0
-    out = pl.read_parquet(workdir / "sales_detail.parquet")
+    out = pl.read_parquet(workdir / "output" / "sales_detail.parquet")
     files = {}
     for row in out.iter_rows(named=True):
         path = row["__source_file"]

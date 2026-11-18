@@ -148,7 +148,7 @@ export function StagesBar({ state, busy, onSelect, onAdd, onRename, onMove, onDe
                       type="button"
                       role="tab"
                       aria-selected={selected}
-                      title={`${stage.name}${stage.last ? '（結果寫到輸出檔）' : '（暫存，給後面的階段用）'}`}
+                      title={`${stage.name}${stage.output ? `（寫出 ${stage.output.path}${stage.last ? '' : '，也給後面的階段用'}）` : '（暫存，給後面的階段用）'}`}
                       className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pl-2 text-left text-sm"
                       onClick={() => !selected && onSelect(stage.index)}
                     >
@@ -158,7 +158,9 @@ export function StagesBar({ state, busy, onSelect, onAdd, onRename, onMove, onDe
                         <span className={`size-1.5 shrink-0 rounded-full ${DOT[stage.status]}`} />
                       )}
                       <span className="min-w-0 flex-1 truncate">{stage.name}</span>
-                      {stage.last ? <FileOutput className="size-3.5 shrink-0 text-muted-foreground" aria-label="輸出" /> : null}
+                      {stage.output ? (
+                        <FileOutput className="size-3.5 shrink-0 text-muted-foreground" aria-label={`寫出 ${stage.output.path}`} />
+                      ) : null}
                     </button>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>

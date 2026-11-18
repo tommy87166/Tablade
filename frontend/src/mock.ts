@@ -80,7 +80,22 @@ async function fakeExport() {
   pushProgress({ stage: '寫出 Parquet', file: '', done: 0, total: 0 })
   await delay(null, 1500)
   pushProgress(null)
-  return { ok: true as const, cancelled: true }
+  // 跟 Python 一樣：每個要寫檔的階段寫到 output/（開發用假資料不會真的寫檔）
+  const outputs = current()
+    .stages.filter((s) => s.output && !s.output.error)
+    .map((s) => ({ stage: s.name, path: `（開發用假資料）/${s.output!.path}`, rows: s.rows ?? 0, manifest: null }))
+  const last = outputs[outputs.length - 1]
+  return {
+    ok: true as const,
+    cancelled: false,
+    path: last?.path,
+    rows: last?.rows,
+    columns: 8,
+    warnings: 0,
+    mode: 'stream',
+    manifest: null,
+    outputs,
+  }
 }
 
 export const mockApi: TabladeApi = sample
@@ -159,6 +174,7 @@ export const mockApi: TabladeApi = sample
       },
       set_input: () => withState(),
       set_output: () => withState(),
+      set_stage_output: () => withState(),
       set_meta: (values) => {
         for (const s of Object.values(sample.states)) Object.assign(s.recipe, values, { dirty: true })
         return withState()

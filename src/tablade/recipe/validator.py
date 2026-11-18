@@ -559,10 +559,60 @@ def _stage_hint(ref: str, earlier: list[str], later: list[str]) -> str | None:
     return (_close(ref, earlier) or "") + f"前面的階段：{'、'.join(earlier)}"
 
 
-def link_issues(recipe: dict[str, Any], ref_fields: dict[str, list[str]]) -> list[Issue]:
-    """階段之間的關係：名稱不重複、只能讀前面的階段、步驟 id 整份 Recipe 不重複。
+BAD_FILENAME_CHARS = '/\\:*?"<>|'
+"""輸出檔名不能有的字元（Windows 不允許，也不能指到別的資料夾）。"""
 
-    中間的階段沒有被後面的階段用到時給警告（``severity: warning``）。
+
+def output_name(raw: str) -> str:
+    """輸出檔名補上 .parquet（已經有就不補）。"""
+    name = raw.strip()
+    return name if name.lower().endswith(".parquet") else f"{name}.parquet"
+
+
+def output_issues(recipe: dict[str, Any], default: str | None = None) -> list[Issue]:
+    """每個階段的輸出檔名：不能有路徑字元、不能「.」開頭，同一個 Recipe 裡不能重複（不分大小寫）。
+
+    最後一個階段沒填時用 ``default``（Recipe 的名稱；不知道時不檢查它）。
+    """
+    stages = recipe.get("stages")
+    if not isinstance(stages, list):
+        return []
+    issues: list[Issue] = []
+    seen: dict[str, int] = {}
+    for si, stage in enumerate(stages):
+        if not isinstance(stage, dict):
+            continue
+        raw = stage.get("output_file", "")
+        if not isinstance(raw, str):
+            continue  # 型別錯誤由 schema 報
+        if not raw.strip():
+            if si != len(stages) - 1 or not default:
+                continue
+            raw = default
+        name = output_name(raw)
+        path = ["stages", si, "output_file"]
+        if (
+            any(c in BAD_FILENAME_CHARS or ord(c) < 32 for c in name)
+            or name.startswith(".")
+            or name.lower() == ".parquet"
+        ):
+            issues.append(
+                _issue(
+                    path, f'輸出檔名「{raw.strip()}」不能有 / \\ : * ? " < > |，也不能用「.」開頭'
+                )
+            )
+            continue
+        key = name.casefold()
+        if key in seen:
+            issues.append(_issue(path, f"輸出檔名「{name}」和 stages[{seen[key]}] 重複"))
+        seen.setdefault(key, si)
+    return issues
+
+
+def link_issues(recipe: dict[str, Any], ref_fields: dict[str, list[str]]) -> list[Issue]:
+    """階段之間的關係：名稱不重複、只能讀前面的階段、步驟 id 整份 Recipe 不重複、輸出檔名。
+
+    中間的階段沒有被後面的階段用到、也不寫檔時給警告（``severity: warning``）。
     """
     stages = recipe.get("stages")
     if not isinstance(stages, list):
@@ -647,16 +697,18 @@ def link_issues(recipe: dict[str, Any], ref_fields: dict[str, list[str]]) -> lis
         if isinstance(name, str):
             first_index.setdefault(name, si)
     for si, name in enumerate(names[:-1]):
-        if isinstance(name, str) and name not in used:
+        stage = stages[si] if isinstance(stages[si], dict) else {}
+        writes = isinstance(stage.get("output_file"), str) and stage["output_file"].strip()
+        if isinstance(name, str) and name not in used and not writes:
             issues.append(
                 _issue(
                     ["stages", si],
                     f"階段「{name}」的結果沒有被後面的階段用到",
-                    "只有最後一個階段的結果會寫到輸出檔；用不到可以刪掉這個階段",
+                    "也沒有填輸出檔名，結果不會留下來；用不到可以刪掉這個階段",
                     severity="warning",
                 )
             )
-    return issues
+    return issues + output_issues(recipe)
 
 
 def _semantic(

@@ -32,7 +32,10 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="執行 Recipe，輸出 Parquet")
     run.add_argument("recipe", type=Path)
     run.add_argument(
-        "-o", "--output", type=Path, help="輸出的 Parquet 檔（預設在 Recipe 旁邊、同名的 .parquet）"
+        "--out-dir",
+        type=Path,
+        help="輸出檔寫到這個資料夾底下的 output/、處理紀錄寫到 log/（預設是 Recipe 所在的資料夾）；"
+        "檔名在 Recipe 裡（每個階段的 output_file）",
     )
     run.add_argument("--json", action="store_true", help="以 JSON 輸出結果")
 
@@ -66,22 +69,24 @@ def _print_json(data: object) -> None:
     print(json.dumps(data, ensure_ascii=False, indent=2, default=str))
 
 
-def default_output(recipe: Path) -> Path:
-    """沒指定 --output 時：Recipe 旁邊、同名的 .parquet（明細.recipe.json → 明細.parquet）。"""
-    name = recipe.name.removesuffix(".json").removesuffix(".recipe") or "result"
-    return recipe.with_name(f"{name}.parquet")
-
-
 def _check(args: argparse.Namespace, *, dry_run: bool) -> int:
     from .engine.check import check_recipe_file, format_issues, format_report
     from .engine.run import RunError, execute
+    from .export.outputs import OutputError, default_output_name, log_dir, resolve_outputs
 
     result = check_recipe_file(args.recipe, dry_run=dry_run)
     writing = args.command == "run" and result.ok and result.recipe is not None
     if writing:
+        base = args.recipe.parent
         try:
-            output = args.output or default_output(args.recipe)
-            _, result.report = execute(result.recipe, args.recipe.parent, output=output)
+            targets = resolve_outputs(
+                result.recipe, base, default_output_name(args.recipe), args.out_dir
+            )
+            _, result.report = execute(
+                result.recipe, base, outputs=targets, log_dir=log_dir(base, args.out_dir)
+            )
+        except OutputError as err:
+            result.issues.append({"path": "stages", "error": str(err), "severity": "error"})
         except RunError as err:
             result.issues.append({"path": "steps", "error": str(err), "severity": "error"})
     if args.json:

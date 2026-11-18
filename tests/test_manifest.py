@@ -91,7 +91,7 @@ def test_manifest_can_be_turned_off(workdir):
     _, report = execute(off, workdir, output=out, mode="eager")
     assert out.exists() and report.manifest is None and not manifest_path(out).exists()
     # 只試跑（不寫出檔案）時也不寫
-    _, dry = execute(recipe(workdir), workdir, write_output=False)
+    _, dry = execute(recipe(workdir), workdir)
     assert dry.manifest is None
 
 
@@ -99,13 +99,15 @@ def test_session_export_and_cli_report_the_manifest(workdir, capsys):
     s = Session()
     s.load_recipe(workdir / EXAMPLE.name)
     s.load_data()
-    result = s.export(workdir / "ui.parquet")
-    assert result["manifest"] == manifest_path(workdir / "ui.parquet").as_posix()
+    result = s.export()  # 寫到 Recipe 所在資料夾底下的 output/，處理紀錄在並排的 log/
+    assert result["path"] == (workdir / "output" / "sales_detail.parquet").as_posix()
+    assert result["manifest"] == (workdir / "log" / "sales_detail.manifest.json").as_posix()
     s.set_output({"manifest": False})
     assert s.recipe_dict()["output"]["manifest"] is False
-    assert s.export(workdir / "ui2.parquet")["manifest"] is None
+    (workdir / "log" / "sales_detail.manifest.json").unlink()
+    assert s.export()["manifest"] is None
+    assert not (workdir / "log" / "sales_detail.manifest.json").exists()
 
-    assert main(["run", str(workdir / EXAMPLE.name), "-o", str(workdir / "cli.parquet")]) == 0
-    assert (
-        f"處理紀錄：{manifest_path(workdir / 'cli.parquet').as_posix()}" in capsys.readouterr().out
-    )
+    assert main(["run", str(workdir / EXAMPLE.name)]) == 0
+    printed = capsys.readouterr().out
+    assert f"輸出：{(workdir / 'output' / 'sales_detail.parquet').as_posix()}" in printed

@@ -91,6 +91,14 @@ class Stage(_Model):
     )
     input: Input = Field(default_factory=Input, title="讀取資料")
     steps: list[AnyStep] = Field(default_factory=list, title="步驟")
+    output_file: str = Field(
+        default="",
+        title="輸出檔名",
+        description=(
+            "只填檔名（例如 明細.parquet），存到 Recipe 所在資料夾底下的 output 資料夾；"
+            "中間的階段有填才寫檔，最後一個階段空白時用 Recipe 的名稱"
+        ),
+    )
 
     def enabled_steps(self) -> list[Step]:
         return [s for s in self.steps if s.enabled]
@@ -104,7 +112,10 @@ class Output(_Model):
     manifest: bool = Field(
         default=True,
         title="同時寫出處理紀錄（manifest）",
-        description="在輸出檔旁邊寫一份 xxx.manifest.json：Recipe、輸入檔與輸出檔的 SHA-256、每一步的列數與警告",
+        description=(
+            "每個輸出檔在 log 資料夾各寫一份 xxx.manifest.json："
+            "Recipe、輸入檔與輸出檔的 SHA-256、每一步的列數與警告"
+        ),
     )
 
 
@@ -115,7 +126,10 @@ class Recipe(_Model):
     stages: list[Stage] = Field(
         title="階段",
         min_length=1,
-        description="依序執行；中間階段的結果是暫存檔（後面的階段用名稱引用），最後一個階段的結果寫到輸出檔",
+        description=(
+            "依序執行；後面的階段用名稱引用前面階段的結果。最後一個階段的結果一定寫檔，"
+            "中間的階段有填輸出檔名才寫（都寫到 output 資料夾）"
+        ),
     )
     output: Output = Field(title="輸出（最後一個階段的結果）")
 

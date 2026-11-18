@@ -34,7 +34,6 @@ DATA_TYPES = (
     "所有檔案 (*.*)",
 )
 RECIPE_TYPES = ("Tablade Recipe (*.json)", "所有檔案 (*.*)")
-PARQUET_TYPES = ("Parquet (*.parquet)",)
 
 
 def _wrap(fn: Callable[..., dict[str, Any]]) -> Callable[..., dict[str, Any]]:
@@ -268,6 +267,11 @@ class Api:
         return self._state()
 
     @_wrap
+    def set_stage_output(self, index: int, file: str) -> dict[str, Any]:
+        self._session.set_stage_output(index, file)
+        return self._state()
+
+    @_wrap
     def set_meta(self, values: dict[str, Any]) -> dict[str, Any]:
         self._session.set_meta(values)
         return self._state()
@@ -360,20 +364,8 @@ class Api:
 
     @_wrap
     def export_parquet(self) -> dict[str, Any]:
-        """「處理並匯出資料」：已載入資料時才開存檔對話框選輸出位置，再處理全部資料。"""
-        self._session.require_loaded()
-        folder, name = self._session.export_suggestion()
-        picked = self._dialog(
-            "save", directory=str(folder), save_filename=name, file_types=PARQUET_TYPES
-        )
-        if not picked:
-            return {"cancelled": True}
-        target = (
-            picked[0]
-            if picked[0].suffix.lower() == ".parquet"
-            else picked[0].with_suffix(".parquet")
-        )
-        return {"cancelled": False, **self._session.export(target)}
+        """「處理並匯出資料」：處理全部資料，寫到 Recipe 所在資料夾底下的 output/（檔名在輸出設定裡）。"""
+        return {"cancelled": False, **self._session.export()}
 
     @_wrap
     def download_skill(self) -> dict[str, Any]:

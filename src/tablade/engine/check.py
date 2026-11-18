@@ -85,7 +85,7 @@ def check_recipe(data: dict[str, Any], base_dir: Path, *, dry_run: bool = False)
         return result
     if dry_run:
         try:
-            _, result.report = execute(result.recipe, base_dir, write_output=False)
+            _, result.report = execute(result.recipe, base_dir)
         except RunError as err:
             result.issues.append(_issue(_step_path(result.recipe, err.step_id), str(err)))
         except (InputError, DecodeError) as err:
@@ -174,6 +174,11 @@ def format_report(report: RunReport, max_warnings: int = 10) -> str:
     lines.append(
         f"結果：{report.rows:,} 列 × {len(report.columns)} 欄（{'、'.join(report.columns)}）"
     )
+    middle = [o for o in report.outputs if o.path != report.output]
+    for o in middle:
+        lines.append(f"輸出（階段「{o.stage}」）：{o.path}（{o.rows:,} 列）")
+        if o.manifest:
+            lines.append(f"處理紀錄：{o.manifest}")
     if report.output:
         lines.append(f"輸出：{report.output}")
     if report.manifest:

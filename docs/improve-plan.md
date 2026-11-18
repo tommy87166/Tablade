@@ -49,6 +49,8 @@
 
 ## 第 2 批：每個階段都能寫檔、檔名在輸出設定、輸出放 `output/`、處理紀錄放 `log/`
 
+狀態：已完成。跟計畫不同的地方：`execute()` 用 `outputs`（階段 → 位置）與 `log_dir`，另外保留 `output=`（只寫最後一個階段，測試與「完整跑一次」用）；檔名檢查在 `export/outputs.py` 的 `plan_outputs`（畫面與匯出共用）；要寫的檔先寫成暫存檔，整個執行成功才一起改名。
+
 ### Recipe 格式（`recipe/schema.py`、`recipe/validator.py`）
 
 - `Stage` 新增 `output_file: str = ""`（title「輸出檔名」，description「只填檔名，存到 Recipe 所在資料夾底下的 output 資料夾」）。

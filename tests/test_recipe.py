@@ -379,6 +379,31 @@ def test_stage_links_are_checked():
     assert check(dup)[0]["error"] == "步驟 id「t1」和 stages[1].steps[0] 重複"
 
 
+def test_output_file_names_are_checked():
+    data = combined()  # 範例裡「品項對照」有填輸出檔名
+    assert check(data) == []
+    data["stages"][1]["output_file"] = "品項對照"  # 補上 .parquet 後和 stages[0] 重複（不分大小寫）
+    data["stages"][2]["output_file"] = "../上一層"
+    issues = {(i["path"], i["error"]) for i in check(data)}
+    assert issues == {
+        ("stages[1].output_file", "輸出檔名「品項對照.parquet」和 stages[0] 重複"),
+        (
+            "stages[2].output_file",
+            '輸出檔名「../上一層」不能有 / \\ : * ? " < > |，也不能用「.」開頭',
+        ),
+    }
+    with pytest.raises(RecipeError, match="重複"):
+        parse_recipe(data)
+    # 最後一個階段沒填時用 Recipe 的名稱（驗證器不知道 Recipe 的檔名，由呼叫的地方給）
+    clash = validator.output_issues(combined(), "品項對照.parquet")
+    assert [i["path"] for i in clash] == ["stages[3].output_file"]
+    # 中間的階段沒有被用到，但有寫檔：不提醒
+    unused = combined()
+    unused["stages"][3]["input"]["stages"] = ["文字明細"]
+    unused["stages"][2]["output_file"] = "excel.parquet"
+    assert check(unused) == []
+
+
 def test_join_right_columns_are_checked_against_the_stage():
     # 讀 CSV、Excel 的階段要有資料才知道欄位（驗證器依階段名稱拿到讀到的欄位）
     known = {"品項對照": ["品號", "類別", "建議售價"], "Excel明細": list("ABCDEF")}

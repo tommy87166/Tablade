@@ -297,8 +297,13 @@ export default function App() {
       if (res && !res.cancelled) {
         const warn = res.warnings ? `，警告 ${res.warnings.toLocaleString()} 則` : ''
         const how = res.mode === 'stream' ? '（串流處理全部資料）' : ''
-        const record = res.manifest ? `；另寫出處理紀錄 ${res.manifest.split('/').pop()}` : ''
-        const text = `已匯出 ${res.path}：${res.rows?.toLocaleString()} 列 × ${res.columns} 欄${warn}${how}${record}`
+        const outs = res.outputs ?? []
+        const record = outs.some((o) => o.manifest) ? '；處理紀錄寫在 log 資料夾' : ''
+        const files =
+          outs.length > 1
+            ? `${outs.length} 個檔到 output 資料夾：${outs.map((o) => `${o.path.split('/').pop()}（${o.rows.toLocaleString()} 列）`).join('、')}`
+            : `${res.path}：${res.rows?.toLocaleString()} 列 × ${res.columns} 欄`
+        const text = `已匯出 ${files}${warn}${how}${record}`
         setStatus({ text })
         setRun((r) => r && { ...r, result: text })
       }
@@ -317,7 +322,7 @@ export default function App() {
     redo: () => api && call('重做', () => api.redo()),
   }
 
-  /** 會依序跑好幾個階段的動作：開階段進度視窗（收到第一個階段狀態才顯示；取消存檔對話框就不顯示）。 */
+  /** 會依序跑好幾個階段的動作：開階段進度視窗（收到第一個階段狀態才顯示；動作被取消時不顯示）。 */
   async function runStages<T>(title: string, autoClose: boolean, fn: () => Promise<T | null>): Promise<T | null> {
     stageRunsRef.current = null
     setStageRuns(null)
@@ -523,6 +528,8 @@ export default function App() {
     return where
   }
   const errorCount = state.steps.filter((s) => s.status === 'error').length
+  /** 輸出檔名有錯的階段（匯出前要先改） */
+  const outputErrors = state.stages.filter((s) => s.output?.error)
 
   return (
     <TooltipProvider>
@@ -555,7 +562,11 @@ export default function App() {
           <Tooltip>
             <TooltipTrigger asChild>
               <span>
-                <Button size="sm" onClick={() => void act.exportParquet()} disabled={busy || errorCount > 0 || !input.loaded}>
+                <Button
+                  size="sm"
+                  onClick={() => void act.exportParquet()}
+                  disabled={busy || errorCount > 0 || outputErrors.length > 0 || !input.loaded}
+                >
                   <Play /> 處理並匯出資料
                 </Button>
               </span>
@@ -565,7 +576,9 @@ export default function App() {
                 ? '先在「讀取資料」按「載入資料」'
                 : errorCount > 0
                   ? '有步驟出錯，請先修正'
-                  : '處理全部資料並存成 Parquet（按下後選擇存檔位置）'}
+                  : outputErrors.length > 0
+                    ? `輸出檔名有誤（${outputErrors.map((s) => s.name).join('、')}），請先在「輸出資料」修正`
+                    : '處理全部資料，存到 Recipe 所在資料夾底下的 output 資料夾'}
             </TooltipContent>
           </Tooltip>
           {state.recipe.dirty ? <span className="ml-1.5 text-xs text-muted-foreground">尚未儲存</span> : null}
@@ -796,7 +809,11 @@ export default function App() {
                       }}
                     />
                   ) : outputSelected ? (
-                    <OutputPanel state={state} onOutput={(v) => void call('更新輸出設定', () => api.set_output(v))} />
+                    <OutputPanel
+                      state={state}
+                      onOutput={(v) => void call('更新輸出設定', () => api.set_output(v))}
+                      onStageOutput={(index, file) => void call('更新輸出檔名', () => api.set_stage_output(index, file))}
+                    />
                   ) : (
                     <InputPanel
                       state={state}

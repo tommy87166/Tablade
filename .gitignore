@@ -32,6 +32,7 @@
 recipes/
 data/
 output/
+log/
 tmp/
 
 # 本機私有封鎖清單（人名、公司名稱、專案代號等），絕不 commit

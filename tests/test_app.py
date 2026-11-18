@@ -31,6 +31,7 @@ API_METHODS = {
     "load_data",
     "set_input",
     "set_output",
+    "set_stage_output",
     "set_meta",
     "add_stage",
     "rename_stage",

@@ -8,7 +8,8 @@
       "input": { "files": ["data/品項對照.csv"], "reader": "csv", "encoding": "auto" },
       "steps": [
         { "id": "a1", "type": "trim_clean", "columns": ["品號", "類別"] }
-      ]
+      ],
+      "output_file": "品項對照.parquet"
     },
     {
       "name": "文字明細",
