@@ -11,6 +11,7 @@ from pydantic import Field
 from tablade.i18n import en, plural, t
 
 from .base import (
+    VALUE,
     ColumnRef,
     Example,
     NewColumns,
@@ -193,8 +194,8 @@ class SplitDelimited(Step):
             WarningCheck(
                 condition=pl.col(self.temp("fields")) > len(self.columns),
                 message=t(
-                    f"這一列拆出 {{}} 段，超過 {len(self.columns)} 個欄位，多的段已捨棄",
-                    f"This row split into {{}} parts, more than "
+                    f"這一列拆出 {VALUE} 段，超過 {len(self.columns)} 個欄位，多的段已捨棄",
+                    f"This row split into {VALUE} parts, more than "
                     f"{plural(len(self.columns), 'column', 'columns')}; the extra parts were dropped",
                 ),
                 detail=pl.col(self.temp("fields")),
@@ -286,11 +287,14 @@ class SplitColumn(Step):
         struct_name = self.temp("struct")
         count_name = self.temp("parts")
         out = lf.with_columns(
-            parts.struct.rename_fields(list(self.names)).alias(struct_name),
+            parts.alias(struct_name),
             (source.str.count_matches(self.delimiter, literal=True) + 1).alias(count_name),
-        ).unnest(struct_name)
+        )
+        # 一欄一個 struct.field()（不用 unnest）：新欄名和來源欄同名時直接取代來源欄
+        fields = [pl.col(struct_name).struct.field(f"field_{i}") for i in range(n)]
         if self.trim:
-            out = out.with_columns(pl.col(name).str.strip_chars() for name in self.names)
+            fields = [f.str.strip_chars() for f in fields]
+        out = out.with_columns(f.alias(name) for f, name in zip(fields, self.names, strict=True))
         return out.select([*self.output_order(lf), count_name])
 
     def warning_checks(self) -> list[WarningCheck]:
@@ -300,8 +304,8 @@ class SplitColumn(Step):
             WarningCheck(
                 condition=pl.col(self.temp("parts")) > len(self.names),
                 message=t(
-                    f"「{self.column}」拆出 {{}} 段，超過 {len(self.names)} 個新欄位，多的段已捨棄",
-                    f'"{self.column}" split into {{}} parts, more than '
+                    f"「{self.column}」拆出 {VALUE} 段，超過 {len(self.names)} 個新欄位，多的段已捨棄",
+                    f'"{self.column}" split into {VALUE} parts, more than '
                     f"{plural(len(self.names), 'new column', 'new columns')}; "
                     "the extra parts were dropped",
                 ),

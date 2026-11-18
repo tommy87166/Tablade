@@ -65,7 +65,8 @@ def test_issues_and_warning_place_in_english(english):
     w = RowWarning(
         "s1", "m", "a.xlsx", 3, sheet="S1", stage="A", orig_source_file="b.csv", orig_line_no=7
     )
-    assert warning_place(w) == "@A/a.xlsx [S1]:3 (original: b.csv:7)"
+    # 來源名稱是資料（__source_file 裡是「@階段／檔名」）：英文畫面也照資料的寫法
+    assert warning_place(w) == "@A／a.xlsx [S1]:3 (original: b.csv:7)"
 
 
 def test_error_report_in_english(workdir, english):

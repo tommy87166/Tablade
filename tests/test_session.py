@@ -970,7 +970,8 @@ def test_load_data_reports_each_stage(data):
     ]
     # 有錯的階段標成失敗，還不能算的回到等待中
     s.select_stage(1)
-    s.add_step("trim_clean", {"column": "金額"})
+    index = s.add_step("trim_clean", {"column": "金額"})
+    s.update_step(index, {"columns": ["金額"]})  # 金額已經轉成數字：清理文字出錯
     s.add_stage("新的")  # 插在文字明細前面，還沒有檔案
     s.select_stage(0)
     seen.clear()

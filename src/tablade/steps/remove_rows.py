@@ -10,10 +10,12 @@ from pydantic import Field
 from tablade.i18n import en, plural, t
 
 from .base import (
+    ROW_INDEX,
     Example,
     NonEmpty,
     Step,
     StepError,
+    clicked_column,
     collect_small,
     data_columns,
     is_blank,
@@ -186,8 +188,8 @@ class Dedupe(Step):
 
     @classmethod
     def suggest(cls, frame, context):
-        column = context.get("column")
-        return {"columns": [column]} if column in frame.columns else {}
+        column = clicked_column(frame, context)
+        return {"columns": [column]} if column else {}
 
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
         available = data_columns(lf)
@@ -200,7 +202,15 @@ class Dedupe(Step):
         subset = list(dict.fromkeys(self.columns)) or available
         if not subset:
             return lf
-        return lf.unique(subset, keep=self.keep, maintain_order=True)
+        if self.keep == "first":
+            return lf.unique(subset, keep="first", maintain_order=True)
+        # 保留最後一筆：unique(keep="last", maintain_order=True) 串流引擎不支援（整份放進記憶體）。
+        # 改成先讀一次，找出每組最後一筆的位置（記憶體只跟組數有關，和保留第一筆一樣），
+        # 再只留那些位置的列。不在同一個查詢裡 join：串流時那樣會先把整份資料暫存著等另一邊算完
+        numbered = lf.with_row_index(ROW_INDEX)
+        last = collect_small(numbered.group_by(subset).agg(pl.col(ROW_INDEX).max()))
+        keep = pl.col(ROW_INDEX).is_in(last.get_column(ROW_INDEX).implode())
+        return numbered.filter(keep).drop(ROW_INDEX)
 
     def describe(self) -> str:
         which = t("第一筆", "first") if self.keep == "first" else t("最後一筆", "last")

@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import unicodedata
 from itertools import pairwise
 from typing import Literal
 
@@ -28,7 +27,7 @@ from .base import (
     quote_list,
     sample_values,
 )
-from .filter import Condition
+from .filter import CONDITIONS_HELP, CONDITIONS_HELP_EN, Condition, check_columns
 from .registry import register
 
 MATCH_LABELS = {"all": "全部符合", "any": "任一符合"}
@@ -50,7 +49,10 @@ class Rule(BaseModel):
         json_schema_extra=en("Category", description="Rows that match this rule get this category"),
     )
     conditions: list[Condition] = Field(
-        title="條件", min_length=1, json_schema_extra=en("Conditions")
+        title="條件",
+        min_length=1,
+        description=CONDITIONS_HELP,
+        json_schema_extra=en("Conditions", description=CONDITIONS_HELP_EN),
     )
     match: Literal["all", "any"] = Field(
         default="all",
@@ -139,6 +141,7 @@ class ClassifyRows(Step):
         }
 
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
+        check_columns(lf, [c for rule in self.rules for c in rule.conditions])
         result = pl.lit(self.otherwise or None, dtype=pl.String)
         for rule in reversed(self.rules):  # 倒過來包：最上面的規則最先比對
             result = pl.when(rule.expr()).then(pl.lit(rule.label)).otherwise(result)
@@ -270,18 +273,40 @@ class ExtractRegex(Step):
 
 # ── 依固定位置拆欄 ─────────────────────────────────────────────
 
+CP950_SYMBOLS = (
+    "00A2-00A3 00A5 00A7 00AF-00B1 00B7 00D7 00F7 02C7 02C9-02CB 02CD 02D9 0391-03A1 "
+    "03A3-03A9 03B1-03C1 03C3-03C9 0401 0414-041C 0423-044F 0451 2013-2014 2018-2019 "
+    "201C-201D 2022 2025-2027 2032 2035 203B 203E 20AC 2103 2105 2109 2160-2169 2190-2193 "
+    "2196-2199 2215 221A 221E-2220 2223 2225 2229-222B 222E 2234-2235 223C 2252 2260-2261 "
+    "2266-2267 2295 2299 22A5 22BF 2460-2469 2474-247D 2500 2502 250C 2510 2514 2518 251C "
+    "2524 252C 2534 253C 2550-2574 2581-258F 2593-2595 25A0-25A1 25B2-25B3 25BC-25BD "
+    "25C6-25C7 25CB 25CE-25CF 25E2-25E5 2605-2606 2609 2640-2642 FE50-FE52 FE54-FE57 "
+    "FE59-FE66 FE68-FE6B FF64"
+)
+"""cp950（Big5）裡佔兩個位元組、但不在中日韓文字與全形符號那些區段裡的字（312 個，Unicode 碼位）：
+℃ × ± ° § ※ · 希臘字母、俄文字母、框線、① Ⅰ ★ ○ → √ 等。列印格式的報表照 Big5 的位元組數對齊，
+這些字也佔兩格；漏算的話，後面的欄位會往左偏一格（tests 用 Python 的 cp950 編碼逐字檢查這份清單）。"""
+
+
+def _ranges(codes: str) -> str:
+    return "".join("-".join(f"\\x{{{c}}}" for c in item.split("-")) for item in codes.split())
+
+
 WIDE = (
     r"[\p{Han}\x{1100}-\x{115F}\x{2E80}-\x{303F}\x{3040}-\x{30FF}\x{3100}-\x{31BF}"
-    r"\x{31F0}-\x{33FF}\x{AC00}-\x{D7A3}\x{FE30}-\x{FE4F}\x{FF01}-\x{FF60}\x{FFE0}-\x{FFE6}]"
+    r"\x{31F0}-\x{33FF}\x{AC00}-\x{D7A3}\x{FE30}-\x{FE4F}\x{FF01}-\x{FF60}\x{FFE0}-\x{FFE6}"
+    + _ranges(CP950_SYMBOLS)
+    + "]"
 )
-"""佔兩格寬的字：中日韓文字、注音、全形符號（和 cp950 / Big5 報表裡一個字佔兩個位元組相同）。"""
-FILLER = ""
+"""佔兩格寬的字：中日韓文字、注音、全形符號，以及 cp950 裡佔兩個位元組的符號（``CP950_SYMBOLS``）。
+cp950（Big5）報表裡每個非 ASCII 的字都在這裡面，所以「格數」就是 Big5 的位元組數。"""
+FILLER = "\ue000"
 """寬字後面補一個佔位字元，讓「一格寬＝一個字元」，切完再拿掉（私用區字元，資料裡不會有）。"""
 
 
-def display_width(text: str) -> int:
-    """佔幾格寬（建立步驟時猜欄位位置用，Python）：Unicode 的 East Asian Width 是 W、F 的算 2 格。"""
-    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+def one_cell_each(text: pl.Expr | pl.Series) -> pl.Expr | pl.Series:
+    """寬字後面補一個佔位字元：之後「第幾個字元」就是「第幾格寬」（執行與建立步驟時猜位置都用這個）。"""
+    return text.str.replace_all(f"({WIDE})", f"${{1}}{FILLER}")
 
 
 def guess_starts(lines: list[str | None], blank_share: float = 0.98) -> list[int]:
@@ -291,14 +316,8 @@ def guess_starts(lines: list[str | None], blank_share: float = 0.98) -> list[int
     每一段這種空白的第一格就是下一欄的開始。用空白的開頭而不是結尾：靠右對齊的數字
     （例如金額）會往左長，從空白的開頭切比較不會切到；多出來的空白之後會去掉。
     """
-    rows = []
-    for line in lines:
-        if not line or not line.strip():
-            continue
-        cells: list[str] = []
-        for ch in line:
-            cells += [ch, FILLER] if display_width(ch) == 2 else [ch]
-        rows.append(cells)
+    texts = one_cell_each(pl.Series(lines, dtype=pl.String)).to_list()
+    rows = [list(text) for text in texts if text and text.strip()]
     if not rows:
         return [1]
     width = max(len(r) for r in rows)
@@ -322,13 +341,13 @@ class SplitFixedWidth(Step):
     starts: list[int] = Field(
         title="每一欄的開始位置",
         min_length=1,
-        description="第幾個字寬，從 1 起；中文字算 2 格寬。最後一欄到行尾",
+        description="第幾個字寬，從 1 起；中文字與 ℃、※ 這類 Big5 的符號算 2 格寬。最後一欄到行尾",
         json_schema_extra={
             "ui": "int_list",
             **en(
                 "Start position of each column",
-                description="In character widths, starting at 1; a Chinese character is 2 wide. "
-                "The last column runs to the end of the line",
+                description="In character widths, starting at 1; Chinese characters and Big5 "
+                "symbols such as ℃ and ※ are 2 wide. The last column runs to the end of the line",
             ),
         },
     )
@@ -357,7 +376,8 @@ class SplitFixedWidth(Step):
     }
     ai_notes = (
         "列印格式（空白對齊）的報表用。starts 是每一欄的開始位置（第幾個字寬，從 1 起，遞增），"
-        "數量要和 names 一樣；中日韓文字與全形符號算 2 格寬（和 cp950 報表裡一個字兩個位元組相同），"
+        "數量要和 names 一樣；中日韓文字、全形符號，以及 cp950（Big5）裡佔兩個位元組的符號"
+        "（℃ × ± ° ※ ① Ⅰ α 框線等）算 2 格寬，也就是 Big5 報表的位元組數，"
         "最後一欄到行尾。通常先用 classify_rows ＋ filter 只留明細列再拆。"
     )
     examples = (
@@ -417,7 +437,7 @@ class SplitFixedWidth(Step):
                 t(f"欄位「{self.column}」不存在", f'Column "{self.column}" does not exist')
             )
         # 寬字後面補一個佔位字元：之後「第幾個字元」就是「第幾格寬」
-        cells = pl.col(self.column).cast(pl.String).str.replace_all(f"({WIDE})", f"${{1}}{FILLER}")
+        cells = one_cell_each(pl.col(self.column).cast(pl.String))
         exprs = []
         bounds = [*self.starts, None]
         for name, start, end in zip(self.names, bounds, bounds[1:], strict=False):
@@ -432,5 +452,6 @@ class SplitFixedWidth(Step):
         where = t("、", ", ").join(str(p) for p in self.starts)
         return t(
             f"把「{self.column}」依位置 {where} 拆成 {quote_list(self.names)}",
-            f'Split "{self.column}" at positions {where} into {quote_list(self.names)}',
+            f'Split "{self.column}" at {"position" if len(self.starts) == 1 else "positions"} {where} '
+            f"into {quote_list(self.names)}",
         )

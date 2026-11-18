@@ -161,7 +161,7 @@ def format_issues(issues: list[dict[str, Any]]) -> str:
 
 def warning_place(w: RowWarning) -> str:
     """警告指到的位置：「@階段／檔名［工作表］:行號（原始：檔名:行號）」。"""
-    slash = t("／", "/")
+    slash = "／"  # i18n-ignore：來源名稱的寫法（和資料裡的 __source_file 一樣，英文畫面也是）
     where = (
         t(f"{w.source_file}［{w.sheet}］", f"{w.source_file} [{w.sheet}]")
         if w.sheet

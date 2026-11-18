@@ -1,13 +1,16 @@
 /**
  * 步驟的參數表單：完全依 catalog 裡的 JSON Schema 產生（DESIGN.md §16.5）。
  * 編輯先存在本地草稿，停止輸入 350ms 後送給 Python 驗證並重算；錯誤依 path 顯示在欄位下方。
- * 父元件以步驟 id 當 key：換步驟時重新掛載，尚未送出的修改會在卸載前送出。
+ * 父元件以階段與步驟 id 當 key：換步驟時重新掛載，尚未送出的修改會在卸載前送出。
+ *
+ * - 父元件送其他指令（刪除、移動、切換、復原、存檔…）之前會先呼叫 flushRef，草稿排在那個指令前面送出。
+ * - 送出的修改還沒收到回應時，不拿 Python 回傳的參數蓋掉輸入框（較慢的回應不會把剛打的字改回去）。
  */
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 
 import { tr } from '@/i18n'
 import type { CatalogItem, StepState } from '../../bridge'
-import { editableFields, resolve, visible } from '../../lib/schema'
+import { editableFields, located, resolve, visible } from '../../lib/schema'
 import { StepScope } from '../StepScope'
 import { Field, FieldErrors, type FormContext } from './fields'
 
@@ -16,35 +19,63 @@ const DEBOUNCE_MS = 350
 interface Props {
   step: StepState
   item: CatalogItem
-  onChange: (values: Record<string, unknown>) => void
+  /** 送出修改；回傳的 Promise 結束代表 Python 已經回應 */
+  onChange: (values: Record<string, unknown>) => Promise<unknown> | void
   /** 前面的階段與「前往」「完整跑一次」（結合用）；params 由表單自己帶目前的草稿 */
   context?: Omit<FormContext, 'params' | 'onRefresh'>
   /** 「重新從資料讀取」：帶著表單上目前的參數（可能還沒送出） */
-  onRefresh?: (field: string, values: Record<string, unknown>) => void
+  onRefresh?: (field: string, values: Record<string, unknown>) => Promise<unknown> | void
+  /** 表單登記「馬上送出還沒送出的修改」，父元件送其他指令之前呼叫 */
+  flushRef?: RefObject<(() => void) | null>
 }
 
-export function StepForm({ step, item, onChange, context, onRefresh }: Props) {
+export function StepForm({ step, item, onChange, context, onRefresh, flushRef }: Props) {
   const [draft, setDraft] = useState<Record<string, unknown>>(step.params)
   const timer = useRef<number | undefined>(undefined)
+  /** 有修改還在等 350ms 才送出 */
   const pending = useRef(false)
-  const latest = useRef({ draft, onChange })
+  /** 已送出、Python 還沒回應的修改有幾個 */
+  const inflight = useRef(0)
+  /** 送出的修改全部收到回應時換一個值：再用 Python 的參數同步一次 */
+  const [settled, setSettled] = useState(0)
+  const latest = useRef({ draft, onChange, onRefresh })
   useEffect(() => {
-    latest.current = { draft, onChange }
+    latest.current = { draft, onChange, onRefresh }
   })
 
-  // undo/redo 或 Python 正規化過參數時，以 Python 的版本為準（使用者正在輸入時不覆蓋）
+  /** 送出（或「重新從資料讀取」）並記著還沒回應的數量。 */
+  const track = useCallback((sent: Promise<unknown> | void) => {
+    inflight.current += 1
+    void Promise.resolve(sent).finally(() => {
+      inflight.current -= 1
+      if (inflight.current === 0) setSettled((n) => n + 1)
+    })
+  }, [])
+
+  /** 還沒送出的修改馬上送出（父元件送其他指令前、表單卸載時）。 */
+  const flush = useCallback(() => {
+    if (!pending.current) return
+    window.clearTimeout(timer.current)
+    pending.current = false
+    track(latest.current.onChange(latest.current.draft))
+  }, [track])
+
+  useEffect(() => {
+    if (!flushRef) return
+    flushRef.current = flush
+    return () => {
+      if (flushRef.current === flush) flushRef.current = null
+    }
+  }, [flushRef, flush])
+
+  // undo/redo 或 Python 正規化過參數時，以 Python 的版本為準
+  // （使用者正在輸入、或送出的修改還沒收到回應時不覆蓋：較慢的回應不會把剛打的字改回去）
   const serverKey = JSON.stringify(step.params)
   useEffect(() => {
-    if (!pending.current) setDraft(step.params)
-  }, [serverKey, step.params])
+    if (!pending.current && inflight.current === 0) setDraft(step.params)
+  }, [serverKey, step.params, settled])
 
-  useEffect(
-    () => () => {
-      window.clearTimeout(timer.current)
-      if (pending.current) latest.current.onChange(latest.current.draft)
-    },
-    [],
-  )
+  useEffect(() => () => flush(), [flush])
 
   const schema = item.schema
   const fields = editableFields(schema)
@@ -61,13 +92,25 @@ export function StepForm({ step, item, onChange, context, onRefresh }: Props) {
     window.clearTimeout(timer.current)
     timer.current = window.setTimeout(() => {
       pending.current = false
-      latest.current.onChange(next)
+      track(latest.current.onChange(next))
     }, DEBOUNCE_MS)
   }
 
   const required = new Set(schema.required ?? [])
-  const shown = new Set(fields.map(([n]) => n))
-  const stray = step.errors.filter((i) => !shown.has(i.path.split(/[.[]/)[0]))
+  // 畫在表單上的欄位（被 ui_show_if 藏起來的不算）：其他路徑的錯誤列在最下面
+  const shown = new Set(fields.filter(([, prop]) => visible(prop, draft, schema)).map(([n]) => n))
+  // 前面寫是哪個參數（例如手寫的 Recipe 多了不認得的參數、藏起來的欄位有錯）
+  const stray = step.errors
+    .filter((i) => !shown.has(i.path.split(/[.[]/)[0]))
+    .map((i) => {
+      if (!i.path) return i
+      const top = i.path.split(/[.[]/)[0]
+      const prop = schema.properties?.[top]
+      const title = (prop ? resolve(prop, schema).title : undefined) ?? top
+      const inner = located(i, top)
+      if (inner === i) return { ...i, error: tr(`「${title}」：${i.error}`, `“${title}”: ${i.error}`) }
+      return { ...i, error: tr(`「${title}」${inner.error}`, `“${title}”, ${inner.error}`) }
+    })
 
   return (
     <div className="space-y-4">
@@ -100,7 +143,7 @@ export function StepForm({ step, item, onChange, context, onRefresh }: Props) {
                     // 還沒送出的修改一起帶過去（Python 依這份參數讀），不再另外送
                     window.clearTimeout(timer.current)
                     pending.current = false
-                    onRefresh(field, latest.current.draft)
+                    track(latest.current.onRefresh?.(field, latest.current.draft))
                   }
                 : undefined,
             }}

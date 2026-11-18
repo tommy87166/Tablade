@@ -26,6 +26,7 @@ from tablade.ingest import sources
 from tablade.ingest.sources import check_entries, peek_columns
 from tablade.recipe.schema import parse_recipe
 from tablade.steps import get
+from tablade.steps.base import VALUE
 
 
 def _recipe(stages, keep=True, manifest=False):
@@ -202,7 +203,7 @@ def test_combining_parts_with_the_same_name_is_an_error():
 # ── F-003：欄名含大括號時的警告訊息 ───────────────────────────────────────
 
 
-@pytest.mark.parametrize("column", ["金額{元}", "金額{0}", "{", "}"])
+@pytest.mark.parametrize("column", ["金額{元}", "金額{0}", "金額{}", "{", "}"])
 def test_warning_message_with_braces_in_the_column_name(tmp_path, column):
     """F-003：欄名有 {、} 時，有警告也照常執行（eager、stream），訊息裡的欄名原樣保留。"""
     (tmp_path / "a.csv").write_text(f'品名,"{column}"\n筆,12\n紙,N/A\n', encoding="utf-8")
@@ -215,9 +216,14 @@ def test_warning_message_with_braces_in_the_column_name(tmp_path, column):
 
 
 def test_fill_message_never_formats_user_text():
-    """F-003：訊息的 {} 換成值；其他的大括號（使用者的欄名）原樣保留，不會丟出例外。"""
-    assert fill_message("「金額{元}」的「{}」不是數字", "N/A") == "「金額{元}」的「N/A」不是數字"
-    assert fill_message("「{0}」：{}", 3) == "「{0}」：3"
+    """F-003：訊息裡的 VALUE 換成值；使用者的欄名裡的大括號（連 {} 也是）原樣保留，不會丟出例外。"""
+    assert (
+        fill_message(f"「金額{{元}}」的「{VALUE}」不是數字", "N/A")
+        == "「金額{元}」的「N/A」不是數字"
+    )
+    assert fill_message(f'"{VALUE}" in "金額{{}}" is not a valid integer', 3) == (
+        '"3" in "金額{}" is not a valid integer'
+    )
     assert fill_message("沒有位置 {x}", "v") == "沒有位置 {x}"
 
 

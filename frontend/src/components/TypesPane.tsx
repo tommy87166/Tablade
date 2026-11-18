@@ -1,6 +1,7 @@
 /**
  * 下方面板的「型別」分頁：目前預覽那一步每一欄的型別與概況（Python 的 session.column_info）。
- * 只有切到這個分頁時才向 Python 要資料；預覽內容變了（resetKey）就重新要。
+ * 只有切到這個分頁時才向 Python 要資料；預覽內容變了（resetKey，就是 state.preview.key）就重新要。
+ * 回應的 key 和 resetKey 不同時是過時的資料（Python 已經換了內容），不顯示。
  */
 import { useEffect, useState } from 'react'
 
@@ -47,6 +48,7 @@ export function TypesPane({ api, step, resetKey, showSystem }: Props) {
     let cancelled = false
     void api.column_info(step).then((res) => {
       if (cancelled) return
+      if (res.ok && res.key !== null && resetKey && res.key !== resetKey) return
       if (res.ok) {
         setInfo(res)
         setError(null)

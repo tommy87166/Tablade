@@ -93,7 +93,7 @@ def test_validator_messages_in_english():
     assert validator.LANG == "en"
     assert first(missing_required()) == (
         "stages[0].steps[0].n",
-        "Missing required field",
+        "Required",
         None,
     )
     assert first(unknown_field()) == ("stages[0].steps[1].nn", "Unknown field", 'Did you mean "n"?')
@@ -195,7 +195,7 @@ def test_messages_stay_chinese_by_default():
     i18n.set_lang("en")
     i18n.set_lang("zh")
     assert validator.LANG == "zh"
-    assert first(missing_required()) == ("stages[0].steps[0].n", "缺少必填欄位", None)
+    assert first(missing_required()) == ("stages[0].steps[0].n", "必填，請填寫", None)
     assert first(unknown_field()) == ("stages[0].steps[1].nn", "不認得的欄位", "是不是「n」？")
     assert first(unknown_step_type())[2] == "是不是「remove_top_rows」？"
     assert first(wrong_type())[1] == "型別錯誤：應該是整數"

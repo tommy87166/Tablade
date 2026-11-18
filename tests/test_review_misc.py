@@ -1,15 +1,21 @@
-"""審查發現（docs/review-findings.md）裡零散的幾項：檢查更新的原因代碼、自我檢測、命令列。"""
+"""審查發現（docs/review-findings.md）裡零散的幾項：檢查更新的原因代碼、漏翻檢查的「・」。"""
 
 from __future__ import annotations
 
 import io
 import json
+import sys
 import urllib.error
 from pathlib import Path
 
 import pytest
 
 from tablade import update
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import check_i18n  # noqa: E402
 
 
 class _Response(io.BytesIO):
@@ -58,6 +64,12 @@ def test_update_check_found_a_version(monkeypatch):
     monkeypatch.setattr(update.urllib.request, "urlopen", _urlopen({"tag_name": "v99.0.0"}))
     info = update.check_latest()
     assert info["newer"] and info["error"] is None and info["error_code"] is None
+
+
+def test_checker_flags_the_middle_dot_outside_tr():
+    """F-055：英文要用 " · "，中文的間隔號「・」也只能出現在 tr() 的第一個參數。"""
+    source = "\n".join(["const a = tr('・', ' · ')", "const b = `${x}・${y}`"])
+    assert [no for no, _ in check_i18n.violations(source)] == [2]
 
 
 def test_selftest_reports_io_errors_instead_of_switching_to_one_core(monkeypatch):

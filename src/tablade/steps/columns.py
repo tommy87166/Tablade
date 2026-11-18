@@ -1,4 +1,4 @@
-"""刪除欄。"""
+"""欄：刪除欄、保留和排序欄位、改欄名。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pydantic import Field, ValidationInfo, field_validator
 
 from tablade.i18n import en, plural, t
 
-from .base import Example, NonEmpty, Step, pick_column, quote_list
+from .base import Example, NonEmpty, Step, clicked_column, pick_column, quote_list
 from .registry import register
 
 By = Literal["name", "position"]
@@ -218,8 +218,8 @@ class RenameColumns(Step):
     @classmethod
     def suggest(cls, frame, context):
         # 從欄標題右鍵進來時，先填上原本的名稱，直接改就好
-        column = context.get("column")
-        return {"names": {column: column}} if column in frame.columns else {}
+        column = clicked_column(frame, context)
+        return {"names": {column: column}} if column else {}
 
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
         order = self.output_order(lf)  # 先用欄位效果檢查舊名存在、新名不重複

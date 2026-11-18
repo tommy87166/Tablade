@@ -732,13 +732,14 @@ FILTER_DATA = {
     [
         ({"op": "equals", "column": "name", "value": "Apple"}, ["Apple"]),
         ({"op": "equals", "column": "name", "value": "apple", "ignore_case": True}, ["Apple"]),
-        ({"op": "not_equals", "column": "name", "value": "Apple"}, ["banana", "Cherry", ""]),
+        # 否定的條件：空值當成空字串，所以會留下（F-004）
+        ({"op": "not_equals", "column": "name", "value": "Apple"}, ["banana", "Cherry", None, ""]),
         ({"op": "contains", "column": "name", "value": "an"}, ["banana"]),
-        ({"op": "not_contains", "column": "name", "value": "an"}, ["Apple", "Cherry", ""]),
+        ({"op": "not_contains", "column": "name", "value": "an"}, ["Apple", "Cherry", None, ""]),
         ({"op": "starts_with", "column": "name", "value": "C"}, ["Cherry"]),
         ({"op": "ends_with", "column": "name", "value": "y"}, ["Cherry"]),
         ({"op": "regex", "column": "name", "pattern": "^[A-Z]"}, ["Apple", "Cherry"]),
-        ({"op": "not_regex", "column": "name", "pattern": "^[A-Z]"}, ["banana", ""]),
+        ({"op": "not_regex", "column": "name", "pattern": "^[A-Z]"}, ["banana", None, ""]),
         ({"op": "is_empty", "column": "name"}, [None, ""]),
         ({"op": "is_not_empty", "column": "name"}, ["Apple", "banana", "Cherry"]),
         ({"op": "gt", "column": "amount", "value": 100}, ["Apple", None]),
@@ -887,7 +888,7 @@ def test_group_by_types_and_first_occurrence_order():
     assert [str(v) for v in out["小數合計"]] == ["4.50", "2.35"]
     assert out.schema["平均"] == pl.Float64 and out["平均"].to_list() == [2.0, 3.0]
     assert out["有名稱"].to_list() == [2, 1] and out.schema["有名稱"] == pl.Int64
-    assert out["幾種"].to_list() == [2, 2]  # 空值也算一種
+    assert out["幾種"].to_list() == [2, 1]  # 空值不算一種（和「有值的筆數」一樣不算空值）
     assert out.schema["最後日期"] == pl.Date
     assert out["第一個"].to_list() == ["甲", None] and out["最後一個"].to_list() == ["乙", "甲"]
     assert out["筆數"].to_list() == [2, 2] and out.schema["筆數"] == pl.Int64
@@ -937,10 +938,14 @@ def test_pivot_empty_cells_ops_and_new_values():
         "1月": [40, 5, None],
         "2月": [20, None, None],
     }
-    # 「3月」不在清單裡：警告指到這一組第一筆的行號；月份是空的不算新值
-    assert total == 1
+    # 「3月」不在清單裡：警告指到這一組第一筆的行號；月份是空的那一列的金額也不在任何一欄（F-015）
+    assert total == 2
     assert (warnings[0].source_file, warnings[0].line_no) == ("a", 3)
     assert warnings[0].message == "這一組有沒轉成欄的「月份」：3月"
+    assert (warnings[1].source_file, warnings[1].message) == (
+        "b",
+        "這一組有沒轉成欄的「月份」：（空白）",
+    )
     assert not [c for c in out.columns if c.startswith(TEMP_PREFIX)]
     last = pivot.model_copy(update={"op": "last"})
     assert run(last, df)[0]["1月"].to_list() == [30, 5, None]
@@ -948,7 +953,7 @@ def test_pivot_empty_cells_ops_and_new_values():
     assert run(count, df)[0]["1月"].to_list() == [2, 1, None]
     whole = make("pivot", on="月份", values="金額", columns=["1月", "2月", "3月"])
     out, total, _ = run(whole, df)
-    assert lines(out) == [("a", 1), ("b", 1)] and total == 0
+    assert lines(out) == [("a", 1), ("b", 1)] and total == 1  # b 的月份是空的
     assert data_of(out) == {"1月": [45, None], "2月": [20, None], "3月": [7, None]}
 
 

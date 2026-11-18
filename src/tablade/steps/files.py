@@ -52,7 +52,7 @@ class MergeFiles(Step):
     label = "合併來源檔"
     label_en = "Combine source files"
     doc_en = (
-        "Appends all source files into one in the given order and renumbers lines from 1 "
+        "Append all source files into one in the given order and renumber lines from 1 "
         "(the original source file and line number are kept in system columns)."
     )
     category = "合併"
@@ -121,7 +121,7 @@ class MergeFiles(Step):
         if self.order:
             how = t(
                 f"依「{'、'.join(self.order)}」的順序",
-                f'in the order "{", ".join(self.order)}"',
+                "in the order " + ", ".join(f'"{name}"' for name in self.order),
             )
         else:
             how = t("依原本的順序", "in the original order")

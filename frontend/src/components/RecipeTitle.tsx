@@ -40,7 +40,7 @@ export function RecipeTitle({ name, path, onCommit }: Props) {
     if (next !== name) onCommit(next)
   }
 
-  const placeholder = tr('未命名 Recipe', 'Untitled recipe')
+  const placeholder = tr('未命名 Recipe', 'Untitled Recipe')
   const input = useRef<HTMLInputElement>(null)
   const [width, setWidth] = useState(120)
   useLayoutEffect(() => {

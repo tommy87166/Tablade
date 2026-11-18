@@ -118,7 +118,7 @@ def test_describe_in_english():
     assert anti.describe() == "Keep rows not found in @對照 (門市代號 = 代號)"
     assert make("merge_files").describe() == 'Combine into "合併" in the original order'
     ordered = make("merge_files", order=["b.csv", "a.csv"], name="全部")
-    assert ordered.describe() == 'Combine into "全部" in the order "b.csv, a.csv"'
+    assert ordered.describe() == 'Combine into "全部" in the order "b.csv", "a.csv"'
 
 
 def test_aggregate_errors_in_english():
@@ -141,7 +141,10 @@ def test_pivot_warning_in_english():
     pivot = make("pivot", index=["門市"], on="月份", values="金額", columns=["1月"])
     _, total, warnings = apply_step(pivot, df)
     assert total == 1
-    assert warnings[0].message == 'This group has "月份" values not turned into columns: 3月, 4月'
+    # 只記第一個值與共幾種（串流時不能把全部的值接成一串，F-013）
+    assert warnings[0].message == (
+        'This group has "月份" values not turned into columns: 3月 (2 in all)'
+    )
 
 
 def test_join_errors_and_warnings_in_english():

@@ -2,7 +2,8 @@
 
 讀檔時每一欄都是文字（不讓 Polars 猜型別），要數字或日期時用這兩步明確轉換。
 原欄位直接換成新的型別；原本有值、轉不了的列變成空值並產生警告（附來源檔與行號），
-所以壞資料不會悄悄消失。全部用 Polars 原生運算，可以串流處理大檔。
+所以壞資料不會悄悄消失。例外：串流匯出時，被後面的步驟拿掉的列（例如之後篩掉、移除重複）不警告，
+警告只算最後還留著的列（DESIGN.md §8）。全部用 Polars 原生運算，可以串流處理大檔。
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from pydantic import Field, ValidationInfo, field_validator
 from tablade.i18n import en, plural, t
 
 from .base import (
+    VALUE,
     ColumnRefs,
     Example,
     Step,
@@ -139,8 +141,8 @@ class _Convert(Step):
             WarningCheck(
                 condition=pl.col(self.temp(f"bad{i}")).is_not_null(),
                 message=t(
-                    f"「{column}」的「{{}}」不是{self.noun()}，已改成空值",
-                    f'"{{}}" in "{column}" is not a valid {self.noun()}; replaced with null',
+                    f"「{column}」的「{VALUE}」不是{self.noun()}，已改成空值",
+                    f'"{VALUE}" in "{column}" is not a valid {self.noun()}; replaced with null',
                 ),
                 detail=pl.col(self.temp(f"bad{i}")),
             )
@@ -184,7 +186,7 @@ class ParseNumber(_Convert):
     label = "文字轉數字"
     label_en = "Text to number"
     doc_en = (
-        "Convert text to numbers: removes thousands separators; "
+        "Convert text to numbers: remove thousands separators; "
         "(1,000) and a trailing minus (1,000-) are read as negative."
     )
     category = "欄"
@@ -291,7 +293,7 @@ class ParseDate(_Convert):
         + "；custom 時在 regex 寫正規表示式（Rust regex 語法），要剛好三個群組、依序是年、月、日，"
         "建議用 ^…$ 包住整個值。calendar 一定要指定：roc 是民國年（加 1911，年要 1～3 位數），"
         "ad 是西元年（年要 4 位數）。值會先去掉前後空白再比對。不符合樣式、年份位數不對、"
-        "不存在的日期（例如 115/13/40）都會變成空值，並產生附行號的警告。"
+        "不存在的日期（例如 115/13/40、西元 0000 年）都會變成空值，並產生附行號的警告。"
     )
     examples = (
         Example(
@@ -348,7 +350,8 @@ class ParseDate(_Convert):
         digits, year = y.str.len_chars(), y.cast(pl.Int32, strict=False)
         if self.calendar == "roc":
             year = year + 1911
-        year = pl.when((digits >= low) & (digits <= high)).then(year)
+        # 西元 0 年不存在（Python 的日期沒有 0 年：預覽表格取這一列會失敗），當成轉換失敗
+        year = pl.when((digits >= low) & (digits <= high) & (year >= 1)).then(year)
         # 不能用 pl.date()：遇到不存在的日期（13 月、2 月 30 日）會讓整個執行失敗
         iso = pl.concat_str([year.cast(pl.String), m, d], separator="-")
         return iso.str.to_date("%Y-%m-%d", strict=False)

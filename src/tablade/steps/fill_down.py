@@ -18,10 +18,11 @@ from .base import (
     StepError,
     data_columns,
     is_blank,
+    missing_columns,
     pick_column,
     quote_list,
 )
-from .filter import Condition
+from .filter import CONDITIONS_HELP, CONDITIONS_HELP_EN, Condition, check_columns
 from .registry import register
 
 MATCH_LABELS_EN = {"all": "All conditions", "any": "Any condition"}
@@ -33,7 +34,10 @@ class ConditionalCopy(Step):
 
     type: Literal["conditional_copy"] = "conditional_copy"
     conditions: list[Condition] = Field(
-        title="條件", min_length=1, json_schema_extra=en("Conditions")
+        title="條件",
+        min_length=1,
+        description=CONDITIONS_HELP,
+        json_schema_extra=en("Conditions", description=CONDITIONS_HELP_EN),
     )
     match: Literal["all", "any"] = Field(
         default="all",
@@ -47,7 +51,7 @@ class ConditionalCopy(Step):
     name: NonEmpty = Field(title="新欄位名稱", json_schema_extra=en("New column name"))
 
     label = "依條件複製欄位"
-    label_en = "Copy column if"
+    label_en = "Copy column conditionally"
     doc_en = (
         "For rows that match the conditions, copy a column's value into a new column; "
         'other rows are left empty. Often followed by "Fill down" to carry section headings '
@@ -96,6 +100,7 @@ class ConditionalCopy(Step):
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
         if self.column not in data_columns(lf):
             raise StepError(t(f"欄位不存在：{self.column}", f"Column not found: {self.column}"))
+        check_columns(lf, self.conditions)
         exprs = [c.expr().fill_null(False) for c in self.conditions]
         matched = pl.all_horizontal(exprs) if self.match == "all" else pl.any_horizontal(exprs)
         copied = pl.when(matched).then(pl.col(self.column)).otherwise(None).alias(self.name)
@@ -152,20 +157,16 @@ class FillDown(Step):
         return {"columns": [column]} if column else {}
 
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
-        missing = [c for c in self.columns if c not in data_columns(lf)]
+        columns = list(dict.fromkeys(self.columns))  # 同一欄列兩次只填一次
+        missing = [c for c in columns if c not in data_columns(lf)]
         if missing:
-            raise StepError(
-                t(
-                    f"欄位不存在：{'、'.join(missing)}",
-                    f"{'Column' if len(missing) == 1 else 'Columns'} not found: {', '.join(missing)}",
-                )
-            )
+            raise missing_columns(missing)
         if self.blank_as_null:
             lf = lf.with_columns(
                 pl.when(is_blank(pl.col(c))).then(None).otherwise(pl.col(c)).alias(c)
-                for c in self.columns
+                for c in columns
             )
-        return lf.with_columns(pl.col(c).forward_fill() for c in self.columns)
+        return lf.with_columns(pl.col(c).forward_fill() for c in columns)
 
     def describe(self) -> str:
         columns = quote_list(self.columns)

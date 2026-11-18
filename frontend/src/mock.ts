@@ -61,15 +61,18 @@ const current = () => {
     // 跟 session.py 一樣：沒有資料時哪一步都算不出來（step 是 -1）
     state.preview = {
       ...state.preview,
+      key: null,
       step: -1,
       rows: null,
       columns: [],
       warnings: [],
+      warning_count: 0,
       blocked: state.preview.requested >= 0 ? { unloaded: true, step: null, stage: null } : null,
       mode: null,
       full: null,
       input_rows: null,
       sampled_steps: [],
+      sampled_refs: [],
     }
     state.stages = state.stages.map((s) => ({ ...s, status: 'waiting', status_text: '還沒載入資料', rows: null, columns: null }))
     state.steps = state.steps.map((s) => ({ ...s, status: 'waiting', rows: null, files: null }))
@@ -152,7 +155,7 @@ async function replay(run: RecordedRun) {
 async function fakeExport() {
   if (recorded) {
     await replay(recorded.export)
-    return { ok: true as const, cancelled: false, ...recorded.export.result }
+    return { ok: true as const, cancelled: false, ...recorded.export.result, state: current() }
   }
   const total = 4_074_302
   await fakeStages(
@@ -188,6 +191,7 @@ async function fakeExport() {
     mode: 'stream',
     manifest: null,
     outputs,
+    state: current(),
   }
 }
 
@@ -294,9 +298,11 @@ export const mockApi: TabladeApi = sample
       undo: () => withState(),
       redo: () => withState(),
       column_info: (step) =>
-        delay(sample.columns_info?.[loaded ? key(step) : ''] ?? { ok: true as const, step, rows: 0, sampled: false, columns: [] }),
+        delay(
+          sample.columns_info?.[loaded ? key(step) : ''] ?? { ok: true as const, step, rows: 0, sampled: false, columns: [], key: null },
+        ),
       export_parquet: fakeExport,
-      error_report: () => delay({ ok: true, text: 'Tablade 驗證結果（開發用假資料）\n\n沒有發現問題。' }),
+      error_report: () => delay({ ok: true, text: 'Tablade 驗證結果（開發用假資料）\n\n沒有發現問題。', issues: [] }),
       download_skill: () => delay({ ok: true, cancelled: true }),
     }
   : (new Proxy({}, { get: (_, name) => (name === 'ready' ? fail : fail) }) as TabladeApi)

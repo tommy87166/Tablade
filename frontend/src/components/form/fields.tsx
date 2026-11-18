@@ -10,7 +10,7 @@ import { Switch } from '@/components/ui/switch'
 import { plural, tr } from '@/i18n'
 import type { Issue, JsonSchema } from '../../bridge'
 import { OptionIcon } from './OptionIcon'
-import { defaultFor, fieldKind, issuesAt, resolve, variants, type FieldKind } from '../../lib/schema'
+import { defaultFor, fieldKind, issuesAt, located, resolve, variants, type FieldKind } from '../../lib/schema'
 
 /** 前面的階段（結合的右表選單、右表的欄位）。 */
 export interface FormStage {
@@ -63,6 +63,42 @@ export function FieldErrors({ issues }: { issues: Issue[] }) {
       ))}
     </ul>
   )
+}
+
+/** 清單型的欄位（條件、物件的陣列）自己在每一項底下顯示的錯誤：路徑是 path[i]…，i 是現有的項目 */
+function shownInItems(kind: FieldKind, issue: Issue, path: string, value: unknown): boolean {
+  if (kind !== 'conditions' && kind !== 'objects') return false
+  const m = /^\[(\d+)\]/.exec(issue.path.slice(path.length))
+  return m !== null && Array.isArray(value) && Number(m[1]) < value.length
+}
+
+/** 換條件時沿用的值轉成新欄位的型別（文字 "100" 換成數字條件時變成 100）；轉不了就不沿用（回到預設值）。 */
+function coerce(value: unknown, prop: JsonSchema, root: JsonSchema): unknown {
+  if (value === undefined || value === null) return undefined
+  const kind = fieldKind(prop, root)
+  switch (kind) {
+    case 'number':
+    case 'integer': {
+      const text = typeof value === 'string' ? value.trim() : ''
+      const n = typeof value === 'number' ? value : text !== '' ? Number(text) : Number.NaN
+      if (!Number.isFinite(n) || (kind === 'integer' && !Number.isInteger(n))) return undefined
+      return n
+    }
+    case 'string':
+    case 'regex':
+    case 'column':
+      return typeof value === 'string' ? value : typeof value === 'number' || typeof value === 'boolean' ? String(value) : undefined
+    case 'boolean':
+      return typeof value === 'boolean' ? value : undefined
+    default:
+      return value
+  }
+}
+
+/** 物件 schema 裡某個參數的標題（錯誤訊息寫位置用） */
+function titleOf(schema: JsonSchema, name: string, root: JsonSchema): string | undefined {
+  const prop = schema.properties?.[name]
+  return prop ? resolve(prop, root).title : undefined
 }
 
 function asString(value: unknown): string {
@@ -191,24 +227,34 @@ function ColumnSelect({ value, onChange, columns }: { value: unknown; onChange: 
   )
 }
 
+/**
+ * 勾選欄位：存的順序是勾的順序（取消樞紐、群組依據的順序有意義），勾選時加到最後；
+ * 選了兩欄以上時，欄名旁邊的小數字是第幾個。資料裡沒有的欄名留著（紅字），按 × 才移除。
+ */
 function ColumnChecklist({ value, onChange, columns }: { value: unknown; onChange: (v: unknown) => void; columns: string[] | null }) {
   const selected = asList(value)
   if (!columns) return <TagsEditor value={selected} onChange={onChange} placeholder={tr('欄位名稱', 'Column name')} />
   const toggle = (name: string, on: boolean) =>
-    onChange(on ? columns.filter((c) => c === name || selected.includes(c)) : selected.filter((c) => c !== name))
+    onChange(on ? [...selected.filter((c) => c !== name), name] : selected.filter((c) => c !== name))
   return (
     <div className="flex flex-wrap gap-x-4 gap-y-1.5 rounded-md border p-2">
       {columns.map((c) => (
         <label key={c} className="flex items-center gap-1.5 text-sm">
           <Checkbox checked={selected.includes(c)} onCheckedChange={(on) => toggle(c, on === true)} />
           {c}
+          {selected.length > 1 && selected.includes(c) ? (
+            <span className="text-xs text-muted-foreground tabular-nums">{selected.indexOf(c) + 1}</span>
+          ) : null}
         </label>
       ))}
       {selected
         .filter((c) => !columns.includes(c))
         .map((c) => (
-          <span key={c} className="text-sm text-destructive">
+          <span key={c} className="flex items-center gap-0.5 text-sm text-destructive">
             {tr(`${c}（不存在）`, `${c} (missing)`)}
+            <Button variant="ghost" size="icon-xs" aria-label={tr(`移除 ${c}`, `Remove ${c}`)} onClick={() => toggle(c, false)}>
+              <X />
+            </Button>
           </span>
         ))}
     </div>
@@ -271,7 +317,7 @@ function StageSelect({ value, onChange, context }: { value: unknown; onChange: (
         <p className="text-xs text-amber-700 dark:text-amber-400">
           {tr(
             '另一張表是樣本：預覽時有些列可能對不到，匯出時會用完整的資料。按「完整跑一次」用全部資料算出另一張表。',
-            'The other table is a sample: some rows may not match in the preview, but export uses the full data. Click "Run in full" to compute the other table from all data.',
+            'The other table is a sample: some rows may not match in the preview, but export uses the full data. Click “Run in full” to compute the other table from all data.',
           )}
         </p>
       ) : null}
@@ -331,22 +377,8 @@ function DataValues({ name, value, onChange, schema, root, context }: FieldProps
 /** 依位置選欄：外觀和 ColumnChecklist 一樣，存的是第幾個資料欄（從 1 起）。 */
 function PositionChecklist({ value, onChange, columns }: { value: unknown; onChange: (v: unknown) => void; columns: string[] | null }) {
   const selected = Array.isArray(value) ? value.filter((v): v is number => typeof v === 'number') : []
-  if (!columns) {
-    return (
-      <Input
-        value={selected.join(', ')}
-        placeholder={tr('例如 2, 5', 'e.g. 2, 5')}
-        onChange={(e) =>
-          onChange(
-            e.target.value
-              .split(/[,，\s]+/) // i18n-ignore
-              .map((t) => Number.parseInt(t, 10))
-              .filter((n) => Number.isInteger(n)),
-          )
-        }
-      />
-    )
-  }
+  // 沒有欄位清單時用文字輸入；打到一半的「2,」不會被改回「2」
+  if (!columns) return <IntListInput value={value} onChange={onChange} placeholder={tr('例如 2, 5', 'e.g. 2, 5')} />
   const toggle = (position: number, on: boolean) =>
     onChange(on ? [...selected.filter((p) => p !== position), position].sort((a, b) => a - b) : selected.filter((p) => p !== position))
   return (
@@ -370,7 +402,7 @@ function PositionChecklist({ value, onChange, columns }: { value: unknown; onCha
 }
 
 /** 整數清單（例如依固定位置拆欄的開始位置）：用逗號或空白分開，例如 1, 12, 18。 */
-function IntListInput({ value, onChange }: { value: unknown; onChange: (v: unknown) => void }) {
+function IntListInput({ value, onChange, placeholder }: { value: unknown; onChange: (v: unknown) => void; placeholder?: string }) {
   const numbers = Array.isArray(value) ? value.filter((v): v is number => typeof v === 'number') : []
   const serverText = numbers.join(', ')
   const [text, setText] = useState(serverText)
@@ -383,7 +415,7 @@ function IntListInput({ value, onChange }: { value: unknown; onChange: (v: unkno
   return (
     <Input
       value={text}
-      placeholder={tr('例如 1, 12, 18', 'e.g. 1, 12, 18')}
+      placeholder={placeholder ?? tr('例如 1, 12, 18', 'e.g. 1, 12, 18')}
       className="font-mono tabular-nums"
       onChange={(e) => {
         setText(e.target.value)
@@ -564,6 +596,14 @@ function ObjectListEditor(props: FieldProps) {
               </div>
             )
           })}
+          {/* 這一項其他的錯誤（例如多了不認得的參數）：上面的欄位沒有顯示的都列在這裡 */}
+          <div className="col-span-3 empty:hidden">
+            <FieldErrors
+              issues={issuesAt(issues, `${path}[${i}]`)
+                .filter((x) => !fields.some(([name]) => x.path === `${path}[${i}].${name}`))
+                .map((x) => located(x, `${path}[${i}]`, (name) => titleOf(itemSchema, name, root)))}
+            />
+          </div>
         </div>
       ))}
       <Button variant="outline" size="sm" onClick={() => onChange([...items, blank()])}>
@@ -670,7 +710,8 @@ function ConditionsEditor({ value, onChange, schema, root, columns, issues, path
     const base: Condition = { column: items[i].column, op }
     for (const [name, prop] of Object.entries(variant?.schema.properties ?? {})) {
       if (name in base) continue
-      base[name] = items[i][name] ?? defaultFor(prop, root)
+      // 沿用舊的值時轉成新條件的型別（「等於」的文字 "100" 換成「≥」時是數字 100），轉不了就清掉
+      base[name] = coerce(items[i][name], prop, root) ?? defaultFor(prop, root)
     }
     update(i, base)
   }
@@ -764,11 +805,12 @@ function ConditionsEditor({ value, onChange, schema, root, columns, issues, path
                 </div>
               )
             })}
+            {/* 這個條件其他的錯誤：上面的欄位沒有顯示的都列在這裡 */}
             <div className="col-span-3 empty:hidden">
               <FieldErrors
-                issues={issuesAt(issues, `${path}[${i}]`).filter(
-                  (x) => !['column', ...extra.map(([n]) => n)].some((n) => x.path.endsWith(`.${n}`)),
-                )}
+                issues={issuesAt(issues, `${path}[${i}]`)
+                  .filter((x) => !['column', ...extra.map(([n]) => n)].some((n) => x.path === `${path}[${i}].${n}`))
+                  .map((x) => located(x, `${path}[${i}]`, (name) => (variant ? titleOf(variant.schema, name, root) : undefined)))}
               />
             </div>
           </div>
@@ -832,7 +874,10 @@ function control(kind: FieldKind, props: FieldProps) {
 export function Field(props: FieldProps & { compact?: boolean }) {
   const schema = resolve(props.schema, props.root)
   const kind = fieldKind(props.schema, props.root)
-  const own = props.issues.filter((i) => i.path === props.path)
+  // 路徑落在這個欄位底下的錯誤都顯示（例如新欄名清單的第 2 項是空白）；條件、物件的陣列每一項自己顯示的不重複
+  const own = issuesAt(props.issues, props.path)
+    .filter((i) => !shownInItems(kind, i, props.path, props.value))
+    .map((i) => located(i, props.path))
   const inline = kind === 'boolean'
   return (
     <div className={inline ? 'flex items-center justify-between gap-3' : 'space-y-1.5'}>
@@ -844,7 +889,7 @@ export function Field(props: FieldProps & { compact?: boolean }) {
         ) : null}
       </div>
       {control(kind, props)}
-      {kind !== 'conditions' ? <FieldErrors issues={own} /> : null}
+      <FieldErrors issues={own} />
     </div>
   )
 }

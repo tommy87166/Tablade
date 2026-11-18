@@ -105,9 +105,11 @@ export type StepParams = { id: string; type: string; enabled?: boolean } & Recor
 
 export interface StepState {
   index: number
-  id: string
-  type: string
-  label: string
+  /** Recipe 裡的值：手寫或 AI 寫的 Recipe 可能沒有（null） */
+  id: string | null
+  type: string | null
+  /** 步驟名稱；不支援的類型是 type 本身（也可能是 null） */
+  label: string | null
   category: string
   enabled: boolean
   status: 'ok' | 'error' | 'pending' | 'disabled' | 'waiting'
@@ -197,6 +199,8 @@ export interface SourceFile {
   rows: number
   /** 讀 Excel 全部工作表時，這一個來源是哪個工作表 */
   sheet?: string | null
+  /** 這個檔是哪個階段讀的（處理紀錄用） */
+  stage?: string | null
 }
 
 /** 用樣本算的步驟：目前階段（stage 是空字串）的第幾步，或往上讀到、結合到的階段的第幾步 */
@@ -204,6 +208,11 @@ export interface SampledStep {
   stage: string
   number: number
   label: string
+}
+
+/** 結合的另一張表是樣本的步驟（ref 是另一張表的階段名稱） */
+export interface SampledRef extends SampledStep {
+  ref: string
 }
 
 export interface ViewState {
@@ -261,12 +270,16 @@ export interface ViewState {
   /** -1 是「讀取資料」，0..n-1 是步驟，steps.length 是「輸出資料」（預覽最後一步的結果） */
   selected: number
   preview: {
+    /** 預覽內容的指紋（內容、階段或語言變了才換；表格與型別分頁只比它，rows()／column_info() 回傳同一個）；沒有資料時是 null */
+    key: string | null
     /** 實際顯示的步驟（選取的步驟算不出來時，是它之前最後一個算得出來的） */
     step: number
     requested: number
     rows: number | null
     columns: { name: string; dtype: string; system: boolean }[]
+    /** 前幾則警告（每項檢查最多 100 則，這裡最多 200 則）；實際的數量是 warning_count */
     warnings: RowWarning[]
+    warning_count: number
     /** 選的那一步算不出來的原因（算得出來時是 null）：還沒載入、哪一步有錯、哪個前面的階段還沒有結果 */
     blocked: { unloaded: boolean; step: number | null; stage: string | null } | null
     /** 抽樣模式（用樣本算的：列數、加總可能不正確）、完整模式（資料全部讀進來，或讀匯出檔）；沒有資料時是 null */
@@ -277,10 +290,11 @@ export interface ViewState {
     full: { path: string; rows: number; input_rows: number; time: string; warning_count: number } | null
     /** 抽樣模式下，用樣本算、數字會不準的步驟（要看整個來源檔的：移除重複、群組彙總、樞紐）；沒有時是空的 */
     sampled_steps: SampledStep[]
+    /** 抽樣模式下，結合的另一張表是樣本的步驟（對不到的鍵在完整的另一張表裡可能有）；沒有時是空的 */
+    sampled_refs: SampledRef[]
   }
   can_undo: boolean
   can_redo: boolean
-  issues: Issue[]
   /** 畫面的語言（Python 記著；啟動時前端送作業系統的語言，切換時再送一次） */
   lang: Lang
 }
@@ -291,7 +305,11 @@ export interface UpdateInfo {
   latest: string | null
   newer: boolean
   url: string
+  /** 沒查到最新版的原因（Python 啟動當下的語言；有 error_code 時前端改用自己的文字，切換語言才會跟著換） */
   error: string | null
+  /** 沒查到的原因代碼：關閉檢查、還沒發布、HTTP 錯誤（http_status）、連不上、讀不出版號 */
+  error_code?: 'disabled' | 'no_release' | 'http' | 'offline' | 'bad_version' | null
+  http_status?: number | null
 }
 
 export type Cell = string | number | boolean | null
@@ -302,11 +320,11 @@ export interface Progress {
   file: string
   done: number
   total: number
-  /** done / total 的單位：檔案大小、行數或檔案數；total 是 0 時不知道總量 */
-  unit?: 'bytes' | 'rows' | 'files' | 'checks'
+  /** done / total 的單位：檔案大小、行數或檢查的項目數；total 是 0 時不知道總量 */
+  unit?: 'bytes' | 'rows' | 'checks'
 }
 
-/** 處理中每個階段的狀態（Python 推送到 window.state.stages；engine/run.py 的 StageTracker） */
+/** 處理中每個階段的狀態（Python 推送到 window.state.run 的 stages；engine/run.py 的 StageTracker） */
 export interface StageRun {
   name: string
   status: 'waiting' | 'running' | 'done' | 'error'
@@ -360,6 +378,8 @@ export interface ColumnsInfo {
   rows: number
   sampled: boolean
   columns: ColumnInfo[]
+  /** 這份資料的指紋（和 state.preview.key 不同時是過時的回應） */
+  key: string | null
 }
 
 export interface RowsPage {
@@ -367,6 +387,8 @@ export interface RowsPage {
   total: number
   columns: string[]
   rows: Cell[][]
+  /** 這份資料的指紋（和 state.preview.key 不同時是過時的回應） */
+  key: string | null
 }
 
 type WithState<T = object> = Result<{ state: ViewState } & T>
@@ -414,6 +436,7 @@ export interface TabladeApi {
   select_stage(index: number): Promise<WithState>
   full_run(index: number): Promise<WithState>
   add_step(type_name: string, context?: { column?: string; value?: Cell; exclude?: boolean }): Promise<WithState<{ index: number }>>
+  /** values 帶的 id 和第 index 步現在的 id 不同時 Python 拒絕（表單延後送出的修改不會寫到別的步驟） */
   update_step(index: number, values: Record<string, unknown>): Promise<WithState>
   refresh_values(index: number, field: string, values?: Record<string, unknown>): Promise<WithState<{ values: string[] }>>
   move_step(index: number, to: number): Promise<WithState>
@@ -422,8 +445,9 @@ export interface TabladeApi {
   select_step(index: number): Promise<WithState>
   undo(): Promise<WithState>
   redo(): Promise<WithState>
+  /** 一起回傳新的 state（「輸出資料」改讀匯出檔）；試跑出錯時也是 */
   export_parquet(): Promise<
-    Result<{
+    WithState<{
       cancelled: boolean
       path?: string
       rows?: number
@@ -437,7 +461,8 @@ export interface TabladeApi {
       trial_error?: { message: string; stage: number | null; step: number | null }
     }>
   >
-  error_report(): Promise<Result<{ text: string }>>
+  /** 報告文字與問題清單（同一次檢查：目前的 Recipe、畫面的語言） */
+  error_report(): Promise<Result<{ text: string; issues: Issue[] }>>
   download_skill(): Promise<Result<{ cancelled: boolean; path?: string; bytes?: number; version?: string }>>
 }
 

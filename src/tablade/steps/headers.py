@@ -95,11 +95,11 @@ class PromoteHeaders(Step):
             )
         order = self.output_order(lf)
         flag = self.temp("mismatch")
-        # 這個檔的第一列（只讀開頭）和 recipe 記錄的欄名不同時，在下一列標記警告
+        # 這個檔的第一列（只讀開頭）和 recipe 記錄的欄名不同時，在下一列標記警告。
+        # 用建立步驟時同一套整理（空白補成「欄N」、重複的加 _2…）再比，否則標題有空白格或
+        # 重複時，連建立步驟的那個檔都會警告
         first = collect_small(lf.select(columns).head(1))
-        differs = first.height > 0 and [
-            "" if v is None else str(v).strip() for v in first.row(0)
-        ] != list(self.names)
+        differs = first.height > 0 and self.suggest_names(list(first.row(0))) != list(self.names)
         if differs:
             out = (
                 lf.with_row_index(ROW_INDEX)

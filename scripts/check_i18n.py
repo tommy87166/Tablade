@@ -20,7 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "frontend" / "src"
 SKIP_DIRS = {"dev", "ui"}
 SKIP_FILES = {"mock.ts", "i18n.ts", "vite-env.d.ts"}
-CJK = re.compile(r"[　-〿㐀-鿿豈-﫿＀-￯]")
+CJK = re.compile(r"[\u3000-\u303f\u30fb\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]")
+"""中文字、全形標點，以及中文常用的間隔號「・」（U+30FB；英文要用 " · "）。"""
 TR_BEFORE = re.compile(r"\btr\(\s*$")
 PY_SRC = ROOT / "src" / "tablade"
 PY_MODULES = [

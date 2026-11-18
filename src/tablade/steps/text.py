@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 import polars as pl
@@ -9,7 +10,16 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 
 from tablade.i18n import en, plural, t
 
-from .base import ColumnRefs, Example, Step, StepError, data_columns, pick_column, quote_list
+from .base import (
+    ColumnRefs,
+    Example,
+    Step,
+    StepError,
+    check_regex,
+    data_columns,
+    pick_column,
+    quote_list,
+)
 from .registry import register
 
 Width = Literal["none", "alnum", "nfkc"]
@@ -31,6 +41,19 @@ FULLWIDTH.append("　")  # 全形空白
 HALFWIDTH.append(" ")
 INVISIBLE = r"[\p{Cf}[\p{Cc}--\t]]"
 """看不見的字元：零寬空白、BOM、軟連字號等格式字元，以及 Tab 以外的控制字元。"""
+LINE_BREAK = r"\r\n|[\r\n]"
+"""格子裡的換行：移除看不見的字元時換成一個空白（直接刪掉的話，前後的字會黏在一起）。"""
+GROUP_REF = re.compile(r"\$\$|\$(\d+)")
+"""「換成」裡引用群組的 $1、$12（``$$`` 是 $ 本身）。"""
+
+
+def braced_groups(replacement: str) -> str:
+    """把「換成」裡的 $1 寫成 ${1}：Polars（Rust regex）把 $1x 當成名叫「1x」的群組，結果是空字串；
+    這裡照一般人的意思，當成第 1 個群組後面接 x。``$$``（$ 本身）與 ${name} 不動。"""
+    return GROUP_REF.sub(
+        lambda m: m.group(0) if m.group(1) is None else "${" + m.group(1) + "}", replacement
+    )
+
 
 Match = Literal["contains", "whole", "regex"]
 MATCH_LABELS = {
@@ -71,16 +94,6 @@ def text_columns(lf: pl.LazyFrame, columns: list[str]) -> list[str]:
     return wanted
 
 
-def _check_regex(pattern: str) -> None:
-    """用 Polars 的引擎編譯一次（和執行時一樣）；語法錯誤丟出 ValueError。"""
-    try:
-        pl.Series([""], dtype=pl.String).str.contains(pattern)
-    except pl.exceptions.PolarsError as err:
-        raise ValueError(
-            t(f"正規表示式有誤：{err}", f"Invalid regular expression: {err}")
-        ) from None
-
-
 @register
 class TrimClean(Step):
     """清理文字：去掉前後空白、全形英數字轉半形、移除看不見的字元。"""
@@ -103,10 +116,11 @@ class TrimClean(Step):
     invisible: bool = Field(
         default=True,
         title="移除看不見的字元",
-        description="零寬空白、BOM、控制字元（Tab 保留）",
+        description="零寬空白、BOM、控制字元（Tab 保留；格子裡的換行換成空白）",
         json_schema_extra=en(
             "Remove invisible characters",
-            description="Zero-width spaces, BOM, control characters (tabs are kept)",
+            description="Zero-width spaces, BOM, control characters (tabs are kept; "
+            "line breaks in a cell become spaces)",
         ),
     )
     collapse_spaces: bool = Field(
@@ -138,16 +152,16 @@ class TrimClean(Step):
 
     @classmethod
     def suggest(cls, frame, context):
-        if context.get("column"):
-            column = pick_column(frame, context)
-            return {"columns": [column]} if column else {}
         text = [c for c, t in frame.schema.items() if t == pl.String and not c.startswith("__")]
+        # 點的是文字欄就只清理它；點的是系統欄位、數字或日期欄（套用就出錯）時和沒點一樣：全部的文字欄
+        if context.get("column") in text:
+            return {"columns": [context["column"]]}
         return {"columns": text} if text else {}
 
     def clean(self, column: str) -> pl.Expr:
         expr = pl.col(column).cast(pl.String)  # 全是 null 的欄（Null 型別）也變成文字欄
         if self.invisible:
-            expr = expr.str.replace_all(INVISIBLE, "")
+            expr = expr.str.replace_all(LINE_BREAK, " ").str.replace_all(INVISIBLE, "")
         if self.width == "alnum":
             expr = expr.str.replace_many(FULLWIDTH, HALFWIDTH)
         elif self.width == "nfkc":
@@ -218,7 +232,8 @@ class ReplaceValues(Step):
         "只能用在文字欄；replacements 由上往下依序套用，null 維持 null。"
         "match=contains 取代值裡面找到的文字（一般文字，不是正規表示式）；"
         "match=whole 整格完全等於 find 才換成 replace；"
-        "match=regex 時 find 是正規表示式（Rust regex 語法），replace 可以用 $1、${name} 引用群組。"
+        "match=regex 時 find 是正規表示式（Rust regex 語法），replace 可以用 $1、${name} 引用群組"
+        "（$1 後面直接接英數字也是第 1 個群組，例如 $1x；$$ 是 $ 本身）。"
     )
     examples = (
         Example(
@@ -248,12 +263,12 @@ class ReplaceValues(Step):
     def _valid_regex(cls, value: list[Replacement], info: ValidationInfo) -> list[Replacement]:
         if info.data.get("match") == "regex":
             for item in value:
-                _check_regex(item.find)
+                check_regex(item.find)
         return value
 
     @classmethod
     def suggest(cls, frame, context):
-        column = pick_column(frame, context)
+        column = pick_column(frame, context, text=True)
         if column is None:
             return {}
         value = context.get("value")
@@ -265,10 +280,10 @@ class ReplaceValues(Step):
         for item in self.replacements:
             if self.match == "whole":
                 expr = pl.when(expr == item.find).then(pl.lit(item.replace)).otherwise(expr)
+            elif self.match == "contains":
+                expr = expr.str.replace_all(item.find, item.replace, literal=True)
             else:
-                expr = expr.str.replace_all(
-                    item.find, item.replace, literal=self.match == "contains"
-                )
+                expr = expr.str.replace_all(item.find, braced_groups(item.replace))
         return expr.alias(column)
 
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:

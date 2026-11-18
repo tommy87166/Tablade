@@ -271,6 +271,10 @@ def _xlsx_cell(ref: str, value: Cell) -> str:
     return f'<c r="{ref}" t="inlineStr"><is><t xml:space="preserve">{text}</t></is></c>'
 
 
+XLSX_TIME = (2026, 1, 1, 0, 0, 0)
+"""假資料 .xlsx 裡每個檔的時間（zip 的格式，最小單位 2 秒）。"""
+
+
 def write_xlsx(path: str | Path, sheets: dict[str, list[list[Cell] | None]]) -> Path:
     """寫一個最小的 .xlsx：每個工作表是一串列（None 代表整列空白），格子可以是文字、數字、日期。"""
     target = Path(path)
@@ -283,12 +287,16 @@ def write_xlsx(path: str | Path, sheets: dict[str, list[list[Cell] | None]]) -> 
     head = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
     sheet_type = "application/vnd.openxmlformats-officedocument.spreadsheetml"
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as z:
+        # 每個檔的時間固定（預設是現在的時間）：同一個 seed 產生的檔每次都一樣
+        def put(name: str, data: str) -> None:
+            z.writestr(zipfile.ZipInfo(name, date_time=XLSX_TIME), data, zipfile.ZIP_DEFLATED)
+
         overrides = "".join(
             f'<Override PartName="/xl/worksheets/sheet{i + 1}.xml" '
             f'ContentType="{sheet_type}.worksheet+xml"/>'
             for i in range(len(names))
         )
-        z.writestr(
+        put(
             "[Content_Types].xml",
             f'{head}<Types xmlns="{pkg}/content-types">'
             '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
@@ -297,7 +305,7 @@ def write_xlsx(path: str | Path, sheets: dict[str, list[list[Cell] | None]]) -> 
             f'<Override PartName="/xl/styles.xml" ContentType="{sheet_type}.styles+xml"/>'
             f"{overrides}</Types>",
         )
-        z.writestr(
+        put(
             "_rels/.rels",
             f'{head}<Relationships xmlns="{pkg}/relationships">'
             f'<Relationship Id="rId1" Type="{rel}/officeDocument" Target="xl/workbook.xml"/>'
@@ -307,7 +315,7 @@ def write_xlsx(path: str | Path, sheets: dict[str, list[list[Cell] | None]]) -> 
             f'<sheet name="{escape(n)}" sheetId="{i + 1}" r:id="rId{i + 1}"/>'
             for i, n in enumerate(names)
         )
-        z.writestr(
+        put(
             "xl/workbook.xml",
             f'{head}<workbook xmlns="{main}" xmlns:r="{rel}"><sheets>{sheet_list}</sheets></workbook>',
         )
@@ -315,13 +323,13 @@ def write_xlsx(path: str | Path, sheets: dict[str, list[list[Cell] | None]]) -> 
             f'<Relationship Id="rId{i + 1}" Type="{rel}/worksheet" Target="worksheets/sheet{i + 1}.xml"/>'
             for i in range(len(names))
         )
-        z.writestr(
+        put(
             "xl/_rels/workbook.xml.rels",
             f'{head}<Relationships xmlns="{pkg}/relationships">{links}'
             f'<Relationship Id="rId{len(names) + 1}" Type="{rel}/styles" Target="styles.xml"/>'
             "</Relationships>",
         )
-        z.writestr(
+        put(
             "xl/styles.xml",
             f'{head}<styleSheet xmlns="{main}"><fonts count="1"><font/></fonts>'
             '<fills count="1"><fill/></fills><borders count="1"><border/></borders>'
@@ -337,7 +345,7 @@ def write_xlsx(path: str | Path, sheets: dict[str, list[list[Cell] | None]]) -> 
                 for r, row in enumerate(sheets[name])
                 if row
             )
-            z.writestr(
+            put(
                 f"xl/worksheets/sheet{i + 1}.xml",
                 f'{head}<worksheet xmlns="{main}"><sheetData>{rows}</sheetData></worksheet>',
             )

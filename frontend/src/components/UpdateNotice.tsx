@@ -6,6 +6,27 @@ import { Button } from '@/components/ui/button'
 import { tr } from '@/i18n'
 import type { UpdateInfo } from '../bridge'
 
+/**
+ * 沒查到最新版的原因。Python 給了代碼時用畫面目前的語言寫（切換語言會跟著換）；
+ * 沒有代碼時只好用 Python 啟動當下的語言寫好的 error。
+ */
+function reason(update: UpdateInfo): string | null {
+  switch (update.error_code) {
+    case 'disabled':
+      return tr('已關閉檢查更新', 'Update check is turned off')
+    case 'no_release':
+      return tr('GitHub 上還沒有發布版本', 'No releases on GitHub yet')
+    case 'http':
+      return tr(`無法檢查更新（HTTP ${update.http_status ?? '?'}）`, `Couldn't check for updates (HTTP ${update.http_status ?? '?'})`)
+    case 'offline':
+      return tr('無法連線到 GitHub，略過檢查更新', "Couldn't connect to GitHub; skipped the update check")
+    case 'bad_version':
+      return tr('無法判讀最新版號', "Couldn't read the latest version number")
+    default:
+      return update.error
+  }
+}
+
 interface Props {
   current: string
   /** undefined：還在查；null：不檢查（smoke test） */
@@ -25,7 +46,7 @@ export function UpdateNotice({ current, update }: Props) {
   if (!update.newer) {
     return (
       <p className="text-xs text-muted-foreground">
-        {tr(`目前版本 v${current}・${update.error ?? '已是最新版'}`, `Current version v${current} · ${update.error ?? 'Up to date'}`)}
+        {tr(`目前版本 v${current}・${reason(update) ?? '已是最新版'}`, `Current version v${current} · ${reason(update) ?? 'Up to date'}`)}
       </p>
     )
   }

@@ -227,7 +227,7 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
           const selected = state.selected === step.index
           const rows = rowsText(step.rows)
           return (
-            <ContextMenu key={step.id + step.index}>
+            <ContextMenu key={`${step.index}:${step.id ?? ''}`}>
               <ContextMenuTrigger asChild>
                 <li
                   draggable

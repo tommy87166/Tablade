@@ -23,7 +23,7 @@ MINE = {
     "parse_date": "Text to date",
     "trim_clean": "Clean text",
     "replace_values": "Replace text",
-    "conditional_copy": "Copy column if",
+    "conditional_copy": "Copy column conditionally",
     "fill_down": "Fill down",
 }
 CJK = re.compile(r"[㐀-鿿]")

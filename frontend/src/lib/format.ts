@@ -13,7 +13,6 @@ export function formatAmount(progress: Progress) {
   const { done, total, unit } = progress
   if (unit === 'rows')
     return tr(`${done.toLocaleString()} / ${total.toLocaleString()} 行`, `${done.toLocaleString()} / ${plural(total, 'line', 'lines')}`)
-  if (unit === 'files') return tr(`第 ${done + 1} / ${total} 個檔`, `File ${done + 1} of ${total}`)
   if (unit === 'checks') return tr(`${done} / ${total} 項`, `${done} / ${plural(total, 'check', 'checks')}`)
   return `${formatBytes(done)} / ${formatBytes(total)}`
 }

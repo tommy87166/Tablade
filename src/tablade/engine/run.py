@@ -58,6 +58,7 @@ from tablade.steps.base import (
     STAGE,
     SYSTEM_PREFIX,
     TEMP_PREFIX,
+    VALUE,
     Step,
     StepError,
     source_name,
@@ -409,21 +410,14 @@ def _checks(step: Step, on_input: bool = False) -> list[Any]:
 Found = dict[str, tuple[int, list[RowWarning]]]
 """每一步的（警告總數、前幾則警告）；對輸入檢查的鍵是「步驟 id:input」。"""
 
-PLACEHOLDER = "{}"
-"""警告訊息裡要換成那一列的值的位置（``WarningCheck.message``）。"""
-
 
 def fill_message(message: str, value: Any) -> str:
-    """把警告訊息的 ``{}`` 換成那一列的值。
+    """把警告訊息裡的 ``VALUE``（steps.base）換成那一列的值。
 
-    不用 ``str.format()``：訊息裡有欄名、階段名稱（使用者的資料），欄名有 ``{``、``}`` 時
-    ``format()`` 會丟出例外。只有一個 ``{}`` 時就是它；欄名本身也有 ``{}`` 時分不出哪個是位置，
-    換最後一個（中文訊息多半是「「欄名」…{}」）。
+    不用 ``str.format()`` 與 ``{}``：訊息裡有欄名、階段名稱（使用者的資料），欄名有 ``{``、``}`` 時
+    ``format()`` 會丟出例外，``{}`` 也分不出哪個是位置。``VALUE`` 是私用區的字，只會是步驟放的那一個。
     """
-    if PLACEHOLDER not in message:
-        return message
-    before, _, after = message.rpartition(PLACEHOLDER)
-    return f"{before}{value}{after}"
+    return message.replace(VALUE, str(value), 1)
 
 
 def collect_warnings(

@@ -18,6 +18,7 @@ from tablade.i18n import en, t
 from .base import (
     LINE_NO,
     SOURCE_FILE,
+    VALUE,
     ColumnRef,
     Example,
     NonEmpty,
@@ -56,6 +57,27 @@ BRINGS = ("left", "inner")
 SEPARATOR = "\x1f"
 """好幾個鍵接成一個字串比對時的分隔字元（資料裡不會有）。"""
 SHOWN_DUPLICATES = 5
+
+
+def _quoted(names: list[str]) -> str:
+    """英文訊息裡的欄名清單：每個欄名各自加引號（"a", "b"）。"""
+    return ", ".join(f'"{name}"' for name in names)
+
+
+def _places(found: list[dict]) -> str:
+    """重複的鍵在另一張表的位置：同一個檔的行號寫在一起，例如「（a.csv 第 2、3 行；b.csv 第 3 行）」。"""
+    by_file: dict[str, list[str]] = {}
+    for item in found:
+        by_file.setdefault(item["file"] or "", []).append(str(item["line"]))
+    places = []
+    for file, lines in by_file.items():
+        shown = t("、", ", ").join(lines)
+        word = "line" if len(lines) == 1 else "lines"
+        if file:
+            places.append(t(f"{file} 第 {shown} 行", f"{file}, {word} {shown}"))
+        else:
+            places.append(t(f"第 {shown} 行", f"{word} {shown}"))
+    return t(f"（{'；'.join(places)}）", f" ({'; '.join(places)})")
 
 
 class JoinKey(BaseModel):
@@ -121,7 +143,7 @@ class Join(Step):
 
     label = "結合"
     label_en = "Join"
-    doc_en = "Join: combines two tables on matching key values."
+    doc_en = "Join: combine two tables on matching key values."
     category = "合併"
     effect = {"kind": "join", "stage": "$right", "how": "$how", "names": "$columns", "on": "$on"}
     ai_notes = (
@@ -152,6 +174,7 @@ class Join(Step):
     )
 
     _right_keys: pl.Series | None = PrivateAttr(default=None)
+    _duplicates_checked: bool = PrivateAttr(default=False)
 
     @classmethod
     def suggest(cls, frame, context):
@@ -173,6 +196,14 @@ class Join(Step):
 
     def stage_refs(self) -> list[str]:
         return [self.right]
+
+    def bind(self, tables):
+        """另一張表可能換了：記下來的鍵與重複檢查的結果不帶到新的物件。"""
+        bound = super().bind(tables)
+        if bound is not self:
+            bound._right_keys = None
+            bound._duplicates_checked = False
+        return bound
 
     def _bring(self) -> list[str]:
         return list(dict.fromkeys(self.columns)) if self.how in BRINGS else []
@@ -224,39 +255,39 @@ class Join(Step):
         return types
 
     def _check_duplicates(self, right: pl.LazyFrame) -> None:
-        """右表的鍵重複就報錯（join 會默默多出列）；鍵有空值的列不會對到，不算。"""
+        """右表的鍵重複就報錯（join 會默默多出列）；鍵有空值的列不會對到，不算。
+
+        合併來源檔之前每個來源檔各自套用一次：檢查過一次就記下來，不重算。
+        """
+        if self._duplicates_checked:
+            return
         rights = list(dict.fromkeys(k.right for k in self.on))
         names = right.collect_schema().names()
-        where = [pl.col(SOURCE_FILE).first().alias("file")] if SOURCE_FILE in names else []
+        where = []
         if LINE_NO in names:
-            where.append(pl.col(LINE_NO).head(3).alias("lines"))
+            file = pl.col(SOURCE_FILE) if SOURCE_FILE in names else pl.lit(None, dtype=pl.String)
+            where.append(pl.struct(file.alias("file"), pl.col(LINE_NO).alias("line")).head(3))
         found = collect_small(
             right.filter(pl.all_horizontal(pl.col(c).is_not_null() for c in rights))
             .group_by(rights)
-            .agg(pl.len().alias("n"), *where)
+            .agg(pl.len().alias("n"), *[w.alias("where") for w in where])
             .filter(pl.col("n") > 1)
             .head(SHOWN_DUPLICATES)
         )
         if found.is_empty():
+            self._duplicates_checked = True
             return
         shown = []
         for row in found.iter_rows(named=True):
             value = t("、", ", ").join(str(row[c]) for c in rights)
-            place = ""
-            if "lines" in row:
-                lines = t("、", ", ").join(str(n) for n in row["lines"])
-                file = row.get("file") or ""
-                line_word = "line" if len(row["lines"]) == 1 else "lines"
-                place = t(
-                    f"（{row.get('file') or ''} 第 {lines} 行）".replace("（ ", "（"),
-                    f" ({file}, {line_word} {lines})" if file else f" ({line_word} {lines})",
-                )
+            place = _places(row["where"]) if "where" in row else ""
             shown.append(t(f"「{value}」{place}", f'"{value}"{place}'))
         raise StepError(
             t(
                 f"@{self.right} 的鍵「{'、'.join(rights)}」重複：{'；'.join(shown)}。"
                 f"請先在階段「{self.right}」移除重複或修正資料",
-                f'Key "{", ".join(rights)}" has duplicates in @{self.right}: {"; ".join(shown)}. '
+                (f'Key "{rights[0]}" has' if len(rights) == 1 else f"Keys {_quoted(rights)} have")
+                + f" duplicates in @{self.right}: {'; '.join(shown)}. "
                 f'Remove duplicates or fix the data in stage "{self.right}" first',
             )
         )
@@ -314,8 +345,8 @@ class Join(Step):
             WarningCheck(
                 condition=key.is_null() | ~key.is_in(self._right_keys.implode()),
                 message=t(
-                    f"「{'、'.join(lefts)}」的「{{}}」在 @{self.right} 找不到",
-                    f'"{", ".join(lefts)}" value "{{}}" not found in @{self.right}',
+                    f"「{'、'.join(lefts)}」的「{VALUE}」在 @{self.right} 找不到",
+                    f'"{", ".join(lefts)}" value "{VALUE}" not found in @{self.right}',
                 ),
                 detail=shown,
                 on_input=True,

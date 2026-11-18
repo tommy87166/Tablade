@@ -2,6 +2,7 @@
  * 依 pydantic 產生的 JSON Schema 決定表單欄位（DESIGN.md §16.5）。
  * 前端沒有任何步驟專屬的表單程式碼：新增步驟只要寫 Python，表單自動出現。
  */
+import { tr } from '@/i18n'
 import type { Issue, JsonSchema } from '../bridge'
 
 export const HIDDEN_FIELDS = new Set(['id', 'type', 'enabled'])
@@ -128,4 +129,25 @@ export function defaultFor(prop: JsonSchema, root: JsonSchema): unknown {
 /** pydantic 的錯誤路徑（例如 conditions[0].value）對應到欄位。 */
 export function issuesAt(issues: Issue[], path: string): Issue[] {
   return issues.filter((i) => i.path === path || i.path.startsWith(`${path}[`) || i.path.startsWith(`${path}.`))
+}
+
+/**
+ * 落在欄位底下（不是欄位本身）的錯誤，訊息前面寫是哪裡：清單的第幾項、第幾項的哪個參數。
+ * ``title`` 把參數名稱換成畫面上的標題（沒有就寫參數名稱）。
+ */
+export function located(issue: Issue, path: string, title?: (name: string) => string | undefined): Issue {
+  if (issue.path === path) return issue
+  const rest = issue.path.slice(path.length)
+  const m = /^(?:\[(\d+)\])?(?:\.(.+))?$/.exec(rest)
+  const name = m?.[2] ? (title?.(m[2]) ?? m[2]) : ''
+  const item = m?.[1] !== undefined ? Number(m[1]) + 1 : null
+  const where =
+    m === null
+      ? rest
+      : item !== null && name
+        ? tr(`第 ${item} 項的「${name}」`, `Item ${item}, “${name}”`)
+        : item !== null
+          ? tr(`第 ${item} 項`, `Item ${item}`)
+          : tr(`「${name}」`, `“${name}”`)
+  return { ...issue, error: tr(`${where}：${issue.error}`, `${where}: ${issue.error}`) }
 }

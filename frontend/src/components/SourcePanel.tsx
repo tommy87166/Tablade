@@ -32,7 +32,8 @@ const encodings = () => ({
 function formatBytes(n: number) {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / 1024 / 1024).toFixed(1)} MB`
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
 }
 
 interface InputProps {
@@ -76,7 +77,7 @@ function StagesInput({ state, onInput }: Pick<InputProps, 'state' | 'onInput'>) 
         <p className="text-xs text-muted-foreground">
           {tr(
             '每個來源檔各自是一個來源（名稱是「@階段／檔名」）。要接成一份（附加）就加「合併來源檔」；同名欄的型別要一樣，缺的欄補空值。',
-            'Each source file is a separate source (named "@stage/file"). To append them into one, add "Combine source files"; columns with the same name must have the same type, and missing columns are filled with nulls.',
+            'Each source file is a separate source (named "@stage/file"). To append them into one, add “Combine source files”; columns with the same name must have the same type, and missing columns are filled with nulls.',
           )}
         </p>
       </div>
@@ -89,7 +90,7 @@ function StagesInput({ state, onInput }: Pick<InputProps, 'state' | 'onInput'>) 
               ? tr(`讀的「${broken.name}」有錯，先修正那個階段`, `"${broken.name}" has errors; fix that stage first`)
               : tr(
                   '前面的階段還沒有結果：按工具列的「載入資料及預覽」',
-                  'Earlier stages have no results yet: click "Load & preview" in the toolbar',
+                  'Earlier stages have no results yet: click “Load & preview” in the toolbar',
                 )}
         </p>
       ) : input.loaded ? (
@@ -141,11 +142,11 @@ export function InputPanel({ state, onAddFiles, onAddEntry, onRemove, onInput }:
       : input.stale
         ? tr(
             '檔案清單、讀取方式或編碼已變更：按工具列的「載入資料及預覽」重新讀取',
-            'The file list or read settings changed: click "Load & preview" in the toolbar to read again',
+            'The file list, “Read as”, or encoding changed: click “Load & preview” in the toolbar to read again',
           )
         : tr(
             '還沒載入：按工具列的「載入資料及預覽」看每一步的結果',
-            'Not loaded yet: click "Load & preview" in the toolbar to see the result of each step',
+            'Not loaded yet: click “Load & preview” in the toolbar to see the result of each step',
           )
   const hintTone =
     !input.can_load && input.files.length
@@ -203,7 +204,7 @@ export function InputPanel({ state, onAddFiles, onAddEntry, onRemove, onInput }:
           <p className="rounded-md border border-dashed p-3 text-center text-xs text-muted-foreground">
             {tr(
               '還沒有檔案。按「瀏覽檔案…」選檔，或在下面輸入路徑。',
-              'No files yet. Click "Browse files…" to pick files, or enter a path below.',
+              'No files yet. Click “Browse files…” to pick files, or enter a path below.',
             )}
           </p>
         )}
@@ -322,15 +323,19 @@ interface OutputProps {
 }
 
 const EXTENSIONS: Record<OutputFormat, string> = { parquet: '.parquet', csv: '.csv' }
-/** 去掉格式的副檔名（檔名欄只填名稱） */
-const stemOf = (file: string) => file.replace(/\.(parquet|csv)$/i, '')
+/**
+ * 去掉跟格式一樣的副檔名（檔名欄只填名稱）。另一種格式的副檔名留著（格式是 Parquet 時填了 a.csv，
+ * 輸入框照樣顯示 a.csv、下面寫副檔名不合；改成 a 才會送出）。
+ */
+const stemOf = (file: string, format: OutputFormat | '' | undefined) =>
+  format && file.toLowerCase().endsWith(EXTENSIONS[format]) ? file.slice(0, -EXTENSIONS[format].length) : file
 
 /** 輸出檔名：只填檔名，後面選格式（.parquet／.csv）；檔名離開欄位或按 Enter 才送出，格式選了馬上送（檢查在 Python 做）。 */
 function OutputFileField({ stage, onChange }: { stage: StageState; onChange: (file: string, format?: OutputFormat) => void }) {
-  const saved = stemOf(stage.output_file)
-  const [draft, setDraft] = useState(saved)
   const planned = stage.output
   const format = stage.output_format || undefined
+  const saved = stemOf(stage.output_file, format)
+  const [draft, setDraft] = useState(saved)
   const commit = () => {
     if (draft.trim() !== saved) onChange(draft.trim())
   }
@@ -345,7 +350,7 @@ function OutputFileField({ stage, onChange }: { stage: StageState; onChange: (fi
           id={`output-file-${stage.index}`}
           className="h-8"
           value={draft}
-          placeholder={stage.last && planned ? stemOf(planned.file) : tr('不寫檔', 'No file')}
+          placeholder={stage.last && planned ? stemOf(planned.file, planned.format) : tr('不寫檔', 'No file')}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commit}
           onKeyDown={(e) => {
@@ -369,7 +374,7 @@ function OutputFileField({ stage, onChange }: { stage: StageState; onChange: (fi
         <p className="text-xs text-muted-foreground">
           {tr(
             'CSV 用 UTF-8（含 BOM），Excel 可以直接打開；匯出後不提供完整模式（「輸出資料」照舊是抽樣模式）。',
-            'CSV is UTF-8 (with BOM) and opens directly in Excel; there is no full mode after export ("Output" stays in sample mode).',
+            'CSV is UTF-8 (with BOM) and opens directly in Excel; there is no full mode after export (“Output” stays in sample mode).',
           )}
         </p>
       ) : null}
@@ -427,7 +432,7 @@ export function OutputPanel({ state, onOutput, onStageOutput }: OutputProps) {
       <p className="text-xs text-muted-foreground">
         {tr(
           '按「處理並匯出資料」處理全部資料，存到 output 資料夾。',
-          'Click "Process & export" to process all data and save it to the output folder.',
+          'Click “Process & export” to process all data and save it to the output folder.',
         )}
       </p>
       {field}

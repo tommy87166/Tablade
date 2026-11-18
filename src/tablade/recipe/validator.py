@@ -207,7 +207,7 @@ def _missing(columns: list[str], names: list[str]) -> None:
 def _select(columns: list[str] | None, names: list[str]) -> list[str] | None:
     """保留和排序欄位：依清單順序只留下這些欄。"""
     if not names:
-        raise EffectError(t("要選至少一個要保留的欄位", "Pick at least one column to keep"))
+        raise EffectError(t("要選至少一個要保留的欄位", "Choose at least one column to keep"))
     repeated = sorted({n for n in names if names.count(n) > 1})
     if repeated:
         raise EffectError(
@@ -258,7 +258,7 @@ def _unpivot(columns: list[str] | None, effect: dict[str, Any]) -> list[str] | N
     """取消樞紐：沒攤開的欄保留，後面接「名稱欄、值欄」。"""
     picked = _unique(list(effect.get("columns") or []))
     if not picked:
-        raise EffectError(t("要選至少一個要攤開的欄位", "Pick at least one column to unpivot"))
+        raise EffectError(t("要選至少一個要攤開的欄位", "Choose at least one column to unpivot"))
     if columns is None:
         return None
     _missing(columns, picked)
@@ -321,7 +321,7 @@ def _join(
     if keyed:
         raise EffectError(
             t(
-                f"「{'、'.join(keyed)}」是右表的鍵，不用帶進來",
+                f"「{'、'.join(keyed)}」是另一張表的鍵，不用帶進來",
                 f"No need to bring in the other table's keys: {', '.join(keyed)}",
             )
         )
@@ -352,7 +352,7 @@ def _drop(columns: list[str] | None, effect: dict[str, Any]) -> list[str] | None
     by_position = effect.get("by") == "position"
     picked = list(effect.get("positions") or []) if by_position else list(effect.get("names") or [])
     if not picked:
-        raise EffectError(t("要選至少一個要刪除的欄位", "Pick at least one column to remove"))
+        raise EffectError(t("要選至少一個要刪除的欄位", "Choose at least one column to remove"))
     if columns is None:
         return None
     if by_position:
@@ -660,9 +660,7 @@ class _Schema:
                 )
             for name in schema.get("required", []):
                 if name not in value:
-                    issues.append(
-                        _issue(path + [name], t("缺少必填欄位", "Missing required field"))
-                    )
+                    issues.append(_issue(path + [name], t("必填，請填寫", "Required")))
             for name, item in value.items():
                 if len(name) < schema.get("propertyNames", {}).get("minLength", 0):
                     issues.append(
@@ -1279,7 +1277,7 @@ def link_issues(recipe: dict[str, Any], ref_fields: dict[str, list[str]]) -> lis
                 issues.append(
                     _issue(
                         ["stages", si, "input", "stages"],
-                        t("要選至少一個前面的階段", "Pick at least one earlier stage"),
+                        t("要選至少一個前面的階段", "Choose at least one earlier stage"),
                     )
                 )
             for k, ref in enumerate(listed):

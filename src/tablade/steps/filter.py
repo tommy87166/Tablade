@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Annotated, Literal
 
 import polars as pl
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from tablade.i18n import en, t
 
-from .base import ColumnRef, Example, Step, is_blank, pick_column
+from .base import ColumnRef, Example, Step, check_regex, is_blank, missing_columns, pick_column
 from .registry import register
 
 TEXT_OPS = {
@@ -35,6 +36,39 @@ EMPTY_OPS_EN = {"is_empty": "is blank", "is_not_empty": "is not blank"}
 MATCH_LABELS_EN = {"all": "All conditions", "any": "Any condition"}
 KEEP_LABELS_EN = {"matching": "Matching rows", "non_matching": "Non-matching rows"}
 NUMBER_OPS = {"gt": ">", "ge": "≥", "lt": "<", "le": "≤", "num_equals": "="}
+CONDITIONS_HELP = (
+    "空值當成空白的文字：「不等於」「不包含」「不符合」會留下空值的列；"
+    "數值條件裡轉不成數字的值（含空值）都不符合"
+)
+CONDITIONS_HELP_EN = (
+    "Nulls count as empty text: “does not equal”, “does not contain” and “does not match” "
+    "keep rows with nulls; values that aren't numbers (including nulls) never match a number "
+    "condition"
+)
+"""條件清單的說明（篩選、將列進行分類、依條件複製欄位共用）。"""
+
+
+def text_of(column: str) -> pl.Expr:
+    """文字與正規表示式條件比對的值：空值當成空字串。
+
+    否則否定的條件（不等於、不包含、不符合）遇到空值算出來是空值、被當成不符合，
+    「保留：備註 不包含『退貨』」會默默拿掉備註是空值的列；csv 的空白格（空值）與
+    逐行讀取拆出來的空白（空字串）結果也會不一樣。
+    """
+    return pl.col(column).cast(pl.String).fill_null("")
+
+
+def number_text(value: float) -> str:
+    """數值條件的門檻：照寫的值顯示（不用科學記號、不截掉位數），加千分位，例如 1,000,000、0.000001。"""
+    return f"{Decimal(repr(value)).normalize():,f}"
+
+
+def check_columns(lf: pl.LazyFrame, conditions: list) -> None:
+    """條件引用的欄都要存在（否則是 Polars 的英文原文與一大段執行計畫）。"""
+    names = lf.collect_schema().names()
+    missing = [c for c in dict.fromkeys(x.column for x in conditions) if c not in names]
+    if missing:
+        raise missing_columns(missing)
 
 
 class _Condition(BaseModel):
@@ -57,7 +91,7 @@ class TextCondition(_Condition):
     )
 
     def expr(self) -> pl.Expr:
-        col, value = pl.col(self.column).cast(pl.String), self.value
+        col, value = text_of(self.column), self.value
         if self.ignore_case:
             col, value = col.str.to_lowercase(), value.lower()
         base = {
@@ -78,18 +112,26 @@ class TextCondition(_Condition):
 
 
 class RegexCondition(_Condition):
-    model_config = ConfigDict(title="正規表示式", json_schema_extra=en("Regex"))
+    model_config = ConfigDict(title="正規表示式", json_schema_extra=en("Regular expression"))
 
     op: Literal["regex", "not_regex"] = Field(
         title="條件",
         json_schema_extra={"ui_labels": REGEX_OPS, **en("Operator", ui_labels=REGEX_OPS_EN)},
     )
     pattern: str = Field(
-        title="正規表示式", min_length=1, json_schema_extra={"ui": "regex", **en("Pattern")}
+        title="正規表示式",
+        min_length=1,
+        json_schema_extra={"ui": "regex", **en("Regular expression")},
     )
 
+    @field_validator("pattern")
+    @classmethod
+    def _valid_regex(cls, value: str) -> str:
+        check_regex(value)
+        return value
+
     def expr(self) -> pl.Expr:
-        matched = pl.col(self.column).cast(pl.String).str.contains(self.pattern)
+        matched = text_of(self.column).str.contains(self.pattern)
         return matched if self.op == "regex" else ~matched
 
     def describe(self) -> str:
@@ -131,6 +173,7 @@ class NumberCondition(_Condition):
             .str.strip_chars()
             .cast(pl.Float64, strict=False)
         )
+        number = pl.when(number.is_finite()).then(number)  # 「inf」「NaN」這類字不算數字
         return {
             "gt": number > self.value,
             "ge": number >= self.value,
@@ -140,7 +183,7 @@ class NumberCondition(_Condition):
         }[self.op]
 
     def describe(self) -> str:
-        return f"{self.column} {NUMBER_OPS[self.op]} {self.value:g}"
+        return f"{self.column} {NUMBER_OPS[self.op]} {number_text(self.value)}"
 
 
 Condition = Annotated[
@@ -154,7 +197,10 @@ class Filter(Step):
 
     type: Literal["filter"] = "filter"
     conditions: list[Condition] = Field(
-        title="條件", min_length=1, json_schema_extra=en("Conditions")
+        title="條件",
+        min_length=1,
+        description=CONDITIONS_HELP,
+        json_schema_extra=en("Conditions", description=CONDITIONS_HELP_EN),
     )
     match: Literal["all", "any"] = Field(
         default="all",
@@ -180,6 +226,8 @@ class Filter(Step):
     ai_notes = (
         "條件的 op 決定需要哪些欄位：文字條件用 value（字串），正規表示式用 pattern，"
         "數值條件用 value（數字，比較前會去掉千分位逗號，轉不成數字的列視為不符合），空白條件不需要值。"
+        "文字與正規表示式條件把空值當成空字串：not_equals、not_contains、not_regex 會留下空值的列"
+        "（和 keep=non_matching 搭配肯定的條件結果一樣）。"
         "正規表示式是 Rust regex 語法，不支援 lookaround 與反向參照。"
     )
     examples = (
@@ -217,6 +265,7 @@ class Filter(Step):
         return {"conditions": [{"column": column, "op": "equals", "value": str(value)}], **keep}
 
     def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
+        check_columns(lf, self.conditions)
         exprs = [c.expr().fill_null(False) for c in self.conditions]
         combined = pl.all_horizontal(exprs) if self.match == "all" else pl.any_horizontal(exprs)
         return lf.filter(combined if self.keep == "matching" else ~combined)

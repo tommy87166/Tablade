@@ -48,7 +48,7 @@ export function ReportDialog({ open, onOpenChange, issues, report }: Props) {
           <DialogDescription>
             {tr(
               '把報告複製貼給 AI 助理（例如 Copilot），請它依報告修正 Recipe；也可以直接在左側步驟裡修改。',
-              'Copy the report and paste it to an AI assistant (such as Copilot) so it can fix the recipe, or edit the steps on the left directly.',
+              'Copy the report and paste it to an AI assistant (such as Copilot) so it can fix the Recipe, or edit the steps on the left directly.',
             )}
           </DialogDescription>
         </DialogHeader>

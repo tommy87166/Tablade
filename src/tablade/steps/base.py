@@ -13,8 +13,10 @@
 - ``per_file = True`` 的步驟，``apply()`` 一次**只收到一個 part**（一個來源檔，或合併後的那一份），
   直接把整個 lf 當成一個檔處理；需要整檔資訊（例如列數、第一列）時用 ``collect_small()``。
 - ``per_file = False`` 的步驟一列一列處理，可能收到任意切法的資料（預覽時是整張表）。
-- ``combines = True`` 的步驟（合併來源檔）由引擎呼叫 ``combine(parts)``，不呼叫 ``apply()``；
-  以後要接多個輸入的步驟（join、附加查詢）也要做成這種。要看整個來源檔的步驟（群組彙總、
+- ``combines = True`` 的步驟（合併來源檔）由引擎呼叫 ``combine(parts)``，不呼叫 ``apply()``：
+  把同一個階段的所有 part 接成新的 part。要用其他階段結果的步驟（結合）不是這種：參數標
+  ``ui: stage``、``stage_refs()`` 回傳要用的階段，引擎套用前用 ``bind()`` 交給步驟、``apply()``
+  裡用 ``table()`` 取得；附加查詢是讀好幾個前面的階段再合併來源檔。要看整個來源檔的步驟（群組彙總、
   移除重複、樞紐）是 ``per_file = True``：合併來源檔之前每個檔各自處理，合併之後就是整份。
 
 **串流規則**（幾 GB 的檔案也要在固定記憶體內跑完）：
@@ -87,12 +89,20 @@ class Example:
     """前面階段的結果（結合的右表）：{階段名稱: 資料}，同樣自動補上系統欄位。"""
 
 
+VALUE = "\ue001"
+"""警告訊息裡「那一列的值」的位置（``WarningCheck.message``）：Unicode 私用區的字，不會出現在欄名、階段名稱裡
+（依固定位置拆欄的佔位字元是另一個，U+E000）。
+
+不用 ``{}``：訊息裡有使用者的欄名、階段名稱，它們本身可以有 ``{``、``}``（見 ``engine.run.fill_message``）。
+"""
+
+
 @dataclass(frozen=True)
 class WarningCheck:
     condition: pl.Expr
     """在這一步的輸出上為 True 的列會產生警告。"""
     message: str
-    """可含一個 ``{}``，會換成 ``detail`` 的值。"""
+    """可含一個 ``VALUE``，會換成那一列 ``detail`` 的值（訊息照原樣用，不經過 ``str.format()``）。"""
     detail: pl.Expr | None = None
     on_input: bool = False
     """True：對這一步的**輸入**檢查（例如結合沒對到的列：內連接之後那些列就不在了）。"""
@@ -280,14 +290,48 @@ def is_blank(expr: pl.Expr) -> pl.Expr:
     return expr.cast(pl.String).str.strip_chars().fill_null("") == ""
 
 
+def check_regex(pattern: str) -> None:
+    """用 Polars 的引擎編譯一次（和執行時一樣）；語法錯誤丟出 ValueError（驗證時就擋下）。"""
+    try:
+        pl.Series([""], dtype=pl.String).str.contains(pattern)
+    except pl.exceptions.PolarsError as err:
+        raise ValueError(
+            t(f"正規表示式有誤：{err}", f"Invalid regular expression: {err}")
+        ) from None
+
+
+def missing_columns(missing: list[str]) -> StepError:
+    """「欄位不存在：…」的錯誤（兩種語言）。"""
+    noun = "Column" if len(missing) == 1 else "Columns"
+    return StepError(
+        t(f"欄位不存在：{'、'.join(missing)}", f"{noun} not found: {', '.join(missing)}")
+    )
+
+
+def clicked_column(frame: pl.DataFrame, context: dict[str, Any]) -> str | None:
+    """使用者點的欄；點在系統欄位（__ 開頭）上時是 None：系統欄位不能當步驟的參數，建議了一套用就出錯。"""
+    column = context.get("column")
+    if column in frame.columns and not str(column).startswith(SYSTEM_PREFIX):
+        return column
+    return None
+
+
 def pick_column(
-    frame: pl.DataFrame, context: dict[str, Any], prefer: str | None = None
+    frame: pl.DataFrame,
+    context: dict[str, Any],
+    prefer: str | None = None,
+    text: bool = False,
 ) -> str | None:
-    """建議要操作的欄位：使用者點的欄 → 指定的偏好欄 → 第一個資料欄。"""
+    """建議要操作的欄位：使用者點的欄 → 指定的偏好欄 → 第一個資料欄。
+
+    ``text``：只能用在文字欄的步驟，點的不是資料欄（例如系統欄位）時退回第一個文字欄，不退回日期、數字欄。
+    """
     columns = [c for c in frame.columns if not c.startswith(SYSTEM_PREFIX)]
     for candidate in (context.get("column"), prefer):
         if candidate in columns:
             return candidate
+    if text:
+        columns = [c for c in columns if frame.schema[c] == pl.String] or columns
     return columns[0] if columns else None
 
 

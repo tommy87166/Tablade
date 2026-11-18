@@ -896,3 +896,291 @@ def test_failed_stage_is_marked(workdir):
         )
     last = stage_events(seen)[-1]
     assert [s for _, s, _ in last] == ["done", "error", "waiting", "waiting"]
+
+
+# ── 分段報表與串流的警告（docs/review-findings.md 的 F-071、F-072）──────────────
+
+REPORT_NAMES = ["日期", "品號", "品名", "數量", "單價", "金額"]
+REPORT_FLATTEN = [
+    {
+        "id": "c1",
+        "type": "classify_rows",
+        "rules": [
+            {
+                "label": "段落",
+                "conditions": [{"column": "line", "op": "starts_with", "value": "門市："}],
+            },
+            {
+                "label": "合計",
+                "conditions": [
+                    {"column": "line", "op": "contains", "value": "小計"},
+                    {"column": "line", "op": "contains", "value": "總計"},
+                ],
+                "match": "any",
+            },
+            {
+                "label": "明細",
+                "conditions": [
+                    {"column": "line", "op": "regex", "pattern": r"^\d{3}/\d{2}/\d{2} "}
+                ],
+            },
+        ],
+    },
+    # 依條件複製欄位＋向下填滿：段落標題的門市帶到下面的明細（跨頁的明細也靠它補上）
+    {
+        "id": "c2",
+        "type": "conditional_copy",
+        "conditions": [{"column": "類型", "op": "equals", "value": "段落"}],
+        "column": "line",
+        "name": "門市",
+    },
+    {
+        "id": "c3",
+        "type": "replace_values",
+        "columns": ["門市"],
+        "match": "regex",
+        "replacements": [{"find": r"^門市：\s*", "replace": ""}],
+    },
+    {"id": "c4", "type": "fill_down", "columns": ["門市"]},
+    {
+        "id": "c5",
+        "type": "filter",
+        "conditions": [{"column": "類型", "op": "equals", "value": "明細"}],
+    },
+    {
+        "id": "c6",
+        "type": "split_fixed_width",
+        "starts": [1, 12, 18, 31, 38, 47],
+        "names": REPORT_NAMES,
+    },
+    {
+        "id": "c7",
+        "type": "extract_regex",
+        "column": "品號",
+        "pattern": r"^([A-Z])(\d+)$",
+        "names": ["品類", "序號"],
+    },
+    {"id": "c8", "type": "remove_columns", "columns": ["類型", "序號"]},
+    {"id": "c9", "type": "rename_columns", "names": {"品名": "商品"}},
+    {"id": "c10", "type": "parse_number", "columns": ["數量", "單價", "金額"], "kind": "integer"},
+    {"id": "c11", "type": "parse_date", "columns": ["日期"], "pattern": "slash", "calendar": "roc"},
+]
+
+
+def run_report_both(workdir: Path, steps: list[dict], name: str):
+    """兩個分段報表（cp950，有換頁），整份讀進記憶體與串流各跑一次：結果與警告都要一樣。"""
+    from tablade.fixtures import write_report
+
+    write_report(workdir / "data" / "報表_1.txt", seed=0, entries=20)
+    write_report(workdir / "data" / "報表_2.txt", seed=5, sections=2, entries=30)
+    return run_files_both(workdir, "data/報表_*.txt", "text_lines", steps, name)
+
+
+def run_files_both(
+    workdir: Path, files: str, reader: str, steps: list[dict], name: str, same_warnings: bool = True
+):
+    """讀 files 的一個階段，整份讀進記憶體與串流各跑一次：結果一樣，警告也一樣（same_warnings）。"""
+    stage = {
+        "name": "主要",
+        "output_format": "parquet",
+        "input": {"files": [files], "reader": reader, "encoding": "auto"},
+        "steps": steps,
+    }
+    data = {
+        "tablade_recipe": "1.0",
+        "name": name,
+        "stages": [stage],
+        "output": {"keep_system_columns": True, "manifest": False},
+    }
+    path = workdir / f"{name}.recipe.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+    r = parse_recipe(load_json(path))
+    _, eager = execute(r, workdir, output=workdir / "e.parquet", mode="eager")
+    _, streamed = execute(r, workdir, output=workdir / "s.parquet", mode="stream")
+    a = pl.read_parquet(workdir / "e.parquet")
+    b = pl.read_parquet(workdir / "s.parquet")
+    assert a.equals(b)
+    if same_warnings:
+        assert warnings_of(streamed) == warnings_of(eager)
+    return b, eager
+
+
+def test_stream_matches_eager_flattening_sectioned_reports(workdir):
+    """攤平分段報表的整套步驟（將列進行分類、依條件複製欄位、向下填滿、依固定位置拆欄、正規表示式擷取…），
+    兩個以上的檔：串流與整份讀進記憶體的結果一致，每個檔的門市都對（跨頁的明細也補上）。"""
+    out, _ = run_report_both(workdir, REPORT_FLATTEN, "flatten")
+    assert out.height == 20 * 3 + 30 * 2
+    # 依固定位置拆欄放在 line 的位置；擷取的欄接在來源欄後面；依條件複製的欄在最後
+    assert out.columns == [
+        "__source_file",
+        "__line_no",
+        "日期",
+        "品號",
+        "品類",
+        "商品",
+        "數量",
+        "單價",
+        "金額",
+        "門市",
+    ]
+    assert out["門市"].null_count() == 0
+    assert out.group_by("__source_file").agg(pl.col("門市").n_unique()).sort("__source_file")[
+        "門市"
+    ].to_list() == [3, 2]
+    assert out["品類"].is_in(["A", "B", "C", "D"]).all()
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        pytest.param(
+            [{"id": "u", "type": "unpivot", "columns": ["數量", "金額"], "skip_empty": True}],
+            id="取消樞紐",
+        ),
+        *[
+            pytest.param(
+                [
+                    {
+                        "id": "p",
+                        "type": "pivot",
+                        "index": ["門市"],
+                        "on": "品類",
+                        "values": "金額",
+                        "op": op,
+                        "columns": ["A", "B", "C", "D"],
+                    }
+                ],
+                id=f"樞紐（{op}）",
+            )
+            for op in ("sum", "mean", "max", "min", "count")
+        ],
+    ],
+)
+def test_stream_matches_eager_reshaping_sectioned_reports(workdir, extra):
+    """取消樞紐、樞紐（每個來源檔各自）接在攤平後面：串流與整份讀進記憶體一致。"""
+    out, _ = run_report_both(workdir, REPORT_FLATTEN + extra, "reshape")
+    assert out.height > 0
+
+
+def test_stream_warnings_for_extra_segments_and_bad_dates(workdir):
+    """拆出的段數超過欄數、轉不了的日期：串流與整份讀進記憶體的警告一樣（數量、檔名、行號）。
+
+    金額有千分位的（1,290）用「,」拆成 2 段，超過 1 欄 → 警告；沒有千分位的不警告。
+    日期把「/1」換成「/4」：10～19 日變成 40～49 日，轉不成日期 → 警告；其他日不警告。
+    """
+    steps = [
+        {"id": "x", "type": "split_delimited", "column": "金額", "columns": ["千"]},
+        {
+            "id": "r",
+            "type": "replace_values",
+            "columns": ["日期"],
+            "replacements": [{"find": "/1", "replace": "/4"}],
+        },
+        {
+            "id": "d",
+            "type": "parse_date",
+            "columns": ["日期"],
+            "pattern": "slash",
+            "calendar": "roc",
+        },
+    ]
+    out, eager, _ = run_both(workdir, steps, "warn")
+    counts = {s.id: s.warning_count for s in eager.steps}
+    assert 0 < counts["x"] < out.height
+    assert 0 < counts["d"] < out.height
+    assert counts["d"] == out["日期"].null_count()
+
+
+# ── 難搞的資料（F-075）：空值、空字串、只有空白、重複、cp950 的符號、全形字 ─────────────
+
+HARD_CSV = {
+    "難搞_1.csv": [
+        "門市,品名,金額,日期,備註",
+        '北區門市,保溫瓶,"1,290",115/01/05,門市|現金',
+        ",,,,",
+        "北區門市,  ,450,115/01/06,  ",
+        "中區門市,20℃×3※,(320),115/01/32,網路|刷卡|多",
+        "中區門市,ＡＢＣ１２３,abc,,網路",
+        '北區門市,保溫瓶,"1,290",115/01/05,門市|現金',
+    ],
+    "難搞_2.csv": [
+        "門市,品名,金額,日期,備註",
+        "南區門市,a{b}c,25,115/02/29,門市|現金",
+        ",折疊傘,320-,115/01/07,",
+        '南區門市,保溫瓶,"1,290",115/01/05,門市|現金',
+        "南區門市,　,0,115/13/01,網路|",
+    ],
+}
+"""兩個 cp950 的 CSV：同一個檔裡、兩個檔之間都有重複的列；轉不了的數字與日期；全形空白。"""
+
+HARD_ROWWISE = [
+    {"id": "h1", "type": "trim_clean", "columns": ["品名", "備註"], "width": "alnum"},
+    {
+        "id": "h2",
+        "type": "filter",
+        "conditions": [{"column": "備註", "op": "not_contains", "value": "多"}],
+    },
+    {
+        "id": "h3",
+        "type": "conditional_copy",
+        "conditions": [{"column": "門市", "op": "is_not_empty"}],
+        "column": "門市",
+        "name": "原門市",
+    },
+    {"id": "h4", "type": "fill_down", "columns": ["門市"]},
+    {
+        "id": "h5",
+        "type": "split_column",
+        "column": "備註",
+        "delimiter": "|",
+        "names": ["通路", "付款"],
+    },
+    {"id": "h6", "type": "parse_number", "columns": ["金額"], "kind": "integer"},
+    {"id": "h7", "type": "parse_date", "columns": ["日期"], "pattern": "slash", "calendar": "roc"},
+    {
+        "id": "h8",
+        "type": "classify_rows",
+        "rules": [
+            {"label": "網路", "conditions": [{"column": "通路", "op": "equals", "value": "網路"}]}
+        ],
+    },
+]
+
+
+def write_hard(workdir: Path) -> None:
+    for name, lines in HARD_CSV.items():
+        (workdir / "data" / name).write_bytes(("\r\n".join(lines) + "\r\n").encode("cp950"))
+
+
+def test_stream_matches_eager_with_hard_values(workdir):
+    """F-075：空值、空字串、只有空白、cp950 的符號、轉不了的數字與日期：串流與整份讀進記憶體的結果與警告一樣。"""
+    write_hard(workdir)
+    out, eager = run_files_both(workdir, "data/難搞_*.csv", "csv", HARD_ROWWISE, "hard")
+    counts = {s.id: s.warning_count for s in eager.steps}
+    assert counts["h6"] == 1  # abc（括號、尾端負號都是負數）
+    assert counts["h7"] == 2  # 115 年（平年）2 月 29 日、13 月；1 月 32 日那一列已經篩掉
+    assert out.filter(pl.col("品名") == "20℃×3※").height == 0  # 備註有「多」，篩掉
+    # 否定的條件不拿掉空值的列（F-004）：備註是空值、只有空白的列都留著
+    assert out.height == 9
+
+
+def test_stream_matches_eager_with_hard_values_and_summaries(workdir):
+    """F-075：同一組資料再移除重複、群組彙總（每個來源檔各自）：串流與整份讀進記憶體一樣。"""
+    write_hard(workdir)
+    steps = HARD_ROWWISE + [
+        {"id": "d", "type": "dedupe"},
+        {
+            "id": "g",
+            "type": "group_by",
+            "by": ["門市", "類型"],
+            "aggregations": [
+                {"column": "金額", "op": "sum", "name": "金額"},
+                {"column": "品名", "op": "count", "name": "有品名"},
+                {"column": "付款", "op": "n_unique", "name": "付款方式數"},
+            ],
+        },
+    ]
+    out, _ = run_files_both(
+        workdir, "data/難搞_*.csv", "csv", steps, "hard_sum", same_warnings=False
+    )
+    assert out.height > 0 and out["門市"].null_count() == 0
