@@ -415,6 +415,7 @@ expression: str = Field(
    - CLAUDE.md：補「語法表要加一項時的規則」（下面）與前端測試的指令。
 4. **前端：切詞與插入（`frontend/src/lib/expression.ts`）**
    - `tokenize(text, vocabulary, columns)`、`vocabulary(ui_syntax)`、`quote(name)`、`insertAt(text, start, end, snippet, caret)`（回傳新的文字與游標位置）。純函式、沒有 import。
+   - 測試的設定和 docs/cell-view-plan.md 共用：先做的那一邊加好，後做的只加測試檔。
    - 測試檔放在 `frontend/tests/`（在 `src` 外面，`tsc -b` 不會編到它）；`package.json` 加 `"test": "node --test tests/"`（不加依賴）；`.github/workflows/test.yml` 的前端那一步加 `npm test`。
    - 測試：「測試」的第 8 節。
 5. **前端：運算式欄位**
