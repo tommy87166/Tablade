@@ -98,6 +98,11 @@
 | 警告 | Warnings |
 | 型別 | Types |
 | 檢視（下方面板的分頁） | Inspect |
+| 自訂（步驟） | Custom |
+| 運算式 | Expression |
+| 插入欄位 | Insert column |
+| 插入語法 | Insert syntax |
+| 欄位與值／計算／比較與條件／空值／文字／日期／轉型（語法的分類） | Columns and values／Arithmetic／Comparison and conditions／Nulls／Text／Dates／Type conversion |
 | 準備檔案 | Preparing files |
 | 解不開的字 | Undecodable characters |
 | 報錯 | Report an error |

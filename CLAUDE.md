@@ -24,6 +24,7 @@ Tablade：本機執行、Power Query 式的資料清洗工具（Python + Polars 
   4. 結構有變（新增步驟或參數、改預設值）就升 `RECIPE_VERSION`（相容升 minor），再執行 `uv run python scripts/update_schema_lock.py`；只改說明文字不用升。
   5. 要用其他階段的結果（例如結合的右表）時，參數標 `json_schema_extra={"ui": "stage"}`、`stage_refs()` 回傳要用的階段，`apply()` 裡用 `self.table(名稱)` 取得（引擎套用前用 `bind()` 交給步驟，步驟不讀檔）。
 - `src/tablade/recipe/validator.py` 只能用 Python 標準函式庫、不能 import tablade（它會原封不動放進 AI skill），有測試檢查。
+- 「自訂」（`custom_expression`）的語法表（`recipe/validator.py` 的 `SYNTAX`）＝白名單＝語法選擇器的目錄＝AI skill 的說明。要加一項時（docs/custom-expression-plan.md「之後要在語法表加一項時」）：一列對一列（拆成一列一列算和整份算相同）、串流引擎支援、不讀寫檔不連網不執行 Python、會在執行時失敗的參數在解讀時擋掉、結果的型別在 DESIGN.md §7.2.1 的範圍內；寫齊 `category`、`insert`、`doc`、`example` 與英文，並在 `tests/test_custom_expression.py` 的 `CASES` 補一列。多一項或少一項寫法算結構有變（升 `RECIPE_VERSION`），改說明文字也要重跑 `update_schema_lock.py`。前端不寫死任何函式名稱（名稱從 schema 的 `ui_syntax` 來）。
 - 步驟 `apply()` 必須是純函式：不讀寫檔案、不 print、不碰 UI。
 - **串流規則**（DESIGN.md §8；幾 GB 的檔案要在固定記憶體內跑完）：
   - **各檔分開處理**：引擎讓每個來源檔各自跑步驟，到「合併來源檔」或寫出前才接起來。`per_file = True` 的步驟 `apply()` 一次只會收到一個來源檔（或合併後的那一份），需要整檔資訊（例如列數）時用 `collect_small()` 做一次小聚合；要看整個來源檔的步驟（群組彙總、移除重複、樞紐）也是 `per_file = True`（合併來源檔之前每個檔各自處理，合併之後就是整份）；輸出的列不再一對一對應輸入時加 `reshapes = True`、用 `reshape_order()` 排欄位；`combines = True`（`combine(parts)`）只給把同一個階段的來源檔接起來的步驟（合併來源檔）。結合是 `combines = False`，用 `bind()`／`table()` 取另一個階段的結果（上面第 5 點）；附加查詢是讀好幾個前面的階段再合併來源檔。

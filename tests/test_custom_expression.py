@@ -630,3 +630,16 @@ def test_export_bool_float_and_decimal(tmp_path):
     assert csv["大額"].to_list() == parquet["大額"].cast(pl.String).to_list()
     assert csv["九折"].to_list() == parquet["九折"].cast(pl.String).to_list()
     assert [float(v) for v in csv["浮點"].drop_nulls()] == parquet["浮點"].drop_nulls().to_list()
+
+
+def test_skill_lists_every_entry():
+    """AI skill 的 references/steps.md 有語法表每一項的寫法與例子；skill 的限制照樣過。"""
+    from tablade.skill import check_limits, skill_files
+
+    files = skill_files()
+    steps = files["references/steps.md"]
+    section = steps[steps.index("### 自訂的運算式可以用的寫法") :]
+    for item in SYNTAX:
+        assert item["example"].replace("|", "\\|") in section, item["id"]
+        assert item["doc"] in section, item["id"]
+    assert check_limits(files) == []

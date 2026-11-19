@@ -113,7 +113,86 @@ def _ui_text(prop: dict[str, Any]) -> str:
         "rename_map": "{現有欄名: 新欄名}",
         "new_columns": "新欄名",
         "regex": "正規表示式（Rust regex）",
+        "expression": "Polars 寫法的運算式（只能用下面「自訂的運算式可以用的寫法」）",
     }.get(prop.get("ui", ""), "")
+
+
+def _arg_text(kind: Any) -> str:
+    """語法表的參數種類（recipe/validator.py 的 ExpressionScan._arg）寫成說明。"""
+    if isinstance(kind, tuple):
+        if kind[0] == "int":
+            low, high = kind[1], kind[2]
+            return "整數" if low < -(10**9) else f"整數 {low:,}～{high:,}"
+        if kind[0] == "choice":
+            return " 或 ".join(f'`"{o}"`' for o in kind[1])
+        if kind[0] == "fixed":
+            return f"`{kind[1]!r}`"
+    return {
+        "expr": "運算式（不能直接寫字串）",
+        "value": "值（可以直接寫字串）",
+        "literal": "固定的值",
+        "str": "文字",
+        "char": "一個字的文字",
+        "type": "型別（`pl.Int64`、`pl.Float64`、`pl.String`、`pl.Decimal(38, N)`）",
+        "literals": "固定的值的清單",
+        "exprs": "運算式的清單",
+    }[kind]
+
+
+def _syntax_params(item: dict[str, Any]) -> str:
+    form = item["form"]
+    if form in ("literal", "type"):
+        return "—"
+    if form == "column":
+        return "一個文字：欄名"
+    if form == "when":
+        return "`when(條件)`、`then(值)`、`otherwise(值)`：運算式；`.then()` 後面可以再接 `.when().then()`"
+    if form == "date":
+        return "年、月、日：整數，要是存在的日期"
+    if form == "op":
+        return "兩邊：" + _arg_text(item["args"][0])
+    if item["varargs"]:
+        kind, least = item["varargs"]
+        parts = [f"{least} 個以上：{_arg_text(kind)}"]
+    else:
+        args = item["args"]
+        required = len(args) - item["optional"]
+        parts = [
+            _arg_text(kind) + ("（可以不寫）" if k >= required else "")
+            for k, kind in enumerate(args)
+        ]
+    for name, (kind, must) in item["kwargs"].items():
+        parts.append(f"`{name}=` {_arg_text(kind)}" + ("，一定要寫" if must else "，可以不寫"))
+    return "；".join(parts) or "沒有"
+
+
+def syntax_markdown() -> list[str]:
+    """「自訂」的運算式可以用的寫法（從 recipe/validator.py 的語法表產生；references/steps.md）。"""
+    out = [
+        "### 自訂的運算式可以用的寫法",
+        "",
+        "`expression` 只能用這張表裡的寫法（Tablade 只讀不執行，其他寫法一律擋下）。"
+        "▮ 是插入後游標的位置；例子用的欄名：門市、代號（文字）、數量（整數）、單價、折扣（小數 2 位）、"
+        "日期、評分（浮點數）。",
+        "",
+    ]
+    for category, _ in validator_module.SYNTAX_CATEGORIES:
+        out += [f"**{category}**", "", "| 寫法 | 參數 | 說明 | 例子 |", "|---|---|---|---|"]
+        for item in validator_module.SYNTAX:
+            if item["category"] != category:
+                continue
+            insert, caret = item["insert"], item["caret"]
+            if caret < len(insert):  # 游標不在最後面時標出來
+                insert = insert[:caret] + "▮" + insert[caret:]
+            cells = [
+                f"`{insert.strip()}`",
+                _syntax_params(item),
+                item["doc"],
+                f"`{item['example']}`",
+            ]
+            out.append("| " + " | ".join(c.replace("|", "\\|") for c in cells) + " |")
+        out.append("")
+    return out
 
 
 def _param_rows(schema: dict[str, Any], defs: dict[str, Any], skip: tuple[str, ...]) -> list[str]:
@@ -219,6 +298,8 @@ def steps_markdown(spec: dict[str, Any] | None = None) -> str:
                 *_table(example.output),
                 "",
             ]
+        if cls.type_name() == "custom_expression":
+            out += syntax_markdown()
     return "\n".join(line for line in out if line is not None) + "\n"
 
 

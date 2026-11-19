@@ -47,12 +47,12 @@ version check against GitHub at start-up (nothing is sent, nothing is downloaded
 > generated from the step schemas), let Microsoft 365 Copilot write one with the generated skill, or run it
 > from the command line. A recipe is a list of stages run in order (each stage reads files or the results of
 > earlier stages), so differently formatted data can be cleaned separately, then appended or looked up with a join.
-> 25 step types: besides removing junk rows, splitting (by delimiter or fixed position),
+> 26 step types: besides removing junk rows, splitting (by delimiter or fixed position),
 > copying a column on matching rows (e.g. a section title) and filling down, filtering and combining source files, you can classify rows and extract with regular expressions to
 > flatten sectioned print-format reports, read Excel sheets, clean text (full-width to half-width, invisible characters), replace values,
 > convert text to numbers and dates (rows that fail are reported with their line numbers), and remove, keep /
 > reorder or rename columns, remove duplicates, unpivot, group by and pivot (each source file on its own until you
-> combine them), and join another stage's result. The bottom pane's Types tab shows each column's type, clicking a cell shows its full content in the Inspect tab, and every export comes with a
+> combine them), join another stage's result, and compute a new column with a Polars expression (Custom: read, never run, and only allow-listed syntax). The bottom pane's Types tab shows each column's type, clicking a cell shows its full content in the Inspect tab, and every export comes with a
 > manifest. See the [roadmap](#️-roadmap).
 
 ---
@@ -151,6 +151,10 @@ cli.py — `tablade run recipe.json` runs the same engine without the UI
   `importlib.import_module`. Only `desktop.py` may start other programs (`subprocess`, `os.system`…;
   it opens a local folder with the system's file browser), and Polars `read_*` / `scan_*` calls may not
   read URLs or cloud storage (`storage_options`). It runs in pre-commit and CI.
+- **Custom expressions are read, never run.** An expression is parsed into a syntax tree with the standard
+  library's `ast`, checked against an allow list (the syntax table, 69 forms) and converted node by node into a
+  Polars expression. No part of the text is ever executed by Python, so opening someone else's recipe never runs
+  their code on your computer.
 - **No local server.** The page is loaded as an HTML string, so pywebview never starts its
   built-in HTTP server and no port is opened.
 - **Content-Security-Policy `default-src 'none'`** (injected at build time). The page cannot fetch, connect, frame or
@@ -342,7 +346,7 @@ tablade.spec          PyInstaller config (onefile / onedir via TABLADE_BUILD)
 | M2 UI | Step list (add, reorder, disable, delete), preview grid, parameter forms, recipe import with error report, skill download | The example cleanup can be done without writing JSON ✅ |
 | M3 Local formats & traceability | `parse_number`, `parse_date` (ROC calendar), `trim_clean`, `replace_values`, `remove_columns`, `select_columns`, `rename_columns`, types tab, manifest | Output ships with a manifest; warnings carry line numbers ✅ |
 | M4 Multi-file & Excel | glob, diagonal concat, Excel reader, `classify_rows`, `extract_regex`, `split_fixed_width` | A sectioned report example flattens completely ✅ |
-| M5 Advanced steps | `dedupe`, `unpivot`, `group_by`, `pivot`, multi-stage recipes, the `parquet` reader, `join`, append (read several stages + Combine source files) | The `sales_combined` example appends a text export and an Excel sheet, then looks up item categories ✅ |
+| M5 Advanced steps | `dedupe`, `unpivot`, `group_by`, `pivot`, multi-stage recipes, the `parquet` reader, `join`, append (read several stages + Combine source files), `custom_expression` (Custom) | The `sales_combined` example appends a text export and an Excel sheet, then looks up item categories ✅ |
 | M6 Languages | Switch the UI between Traditional Chinese and English (button left of “⋯”; defaults to the OS language) | Every screen is available in English ✅ (the recipe file, the AI skill and the CLI stay in Chinese) |
 
 ---
@@ -350,6 +354,12 @@ tablade.spec          PyInstaller config (onefile / onedir via TABLADE_BUILD)
 ## ⚠️ Known limitations
 
 - **The Copilot skill hasn't been tried in Agent Builder yet**: whether its scripts can read files uploaded in the chat, and the sandbox's Python version, still need the probe.
+- **Custom works row by row only**: totals, averages, ranks and previous rows (`.sum()`, `.over()`, `.shift()`…)
+  aren't allowed; use *Group by* and *Join* the result back. One step computes one new column and can't overwrite an
+  existing one. Where it differs from Polars itself: decimals you write (`0.9`) are exact decimals, multiplying two
+  decimals adds their places (2 places × `0.9` → 3 places, at most 18) and division gives at least 6 places; `round`
+  rounds half away from zero (Polars defaults to half to even; write `mode="half_to_even"` for that); dividing by 0
+  gives null instead of failing the run. *Insert syntax…* lists everything that can be used.
 - **A join's right table is held in memory** (the left side streams). Duplicate keys in the right table are an
   error rather than silently multiplying rows. With large inputs the preview's right table is a sample; the join
   form can run that stage once on all the data.

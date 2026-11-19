@@ -86,7 +86,7 @@
 
 **核心原則**
 
-1. **步驟是資料，不是程式碼**：recipe 只記「步驟類型＋參數」，由引擎（`engine/run.py`）對應成 Polars 操作。**不使用 `eval` / `exec` 執行使用者輸入。**
+1. **步驟是資料，不是程式碼**：recipe 只記「步驟類型＋參數」，由引擎（`engine/run.py`）對應成 Polars 操作。**不使用 `eval` / `exec` 執行使用者輸入。**「自訂」步驟的運算式也是：用標準函式庫的 `ast` 讀成語法樹、照白名單（語法表）一個節點一個節點轉成 Polars 的運算式，是**解讀、不是執行**（§7.2）。
 2. **每個步驟都是純函式**：`apply(lf: pl.LazyFrame) -> pl.LazyFrame`（參數就是步驟 model 的欄位），不讀寫檔案、不碰 UI。
 3. **UI 與引擎分離**：引擎可以只靠 CLI 完整運作；UI 只是呼叫引擎。
 4. **可追溯**：每一筆輸出都能追回來源檔名與原始實體行號。
@@ -360,7 +360,13 @@ CSV 不改成 Parquet：Polars 讀 CSV 一定要一整份檔，不管轉碼怎�
 步驟需要其他階段的結果時，參數標 `ui: "stage"`、`stage_refs()` 回傳要用的階段；引擎在套用前用 `bind()` 交給步驟，
 步驟用 `self.table(名稱)` 取得（`apply()` 仍是純函式，不讀檔）。驗證器與 session 也靠 `ui: "stage"` 找出引用。
 
-未完成：`sort`、`conditional_column`、`add_index`、`custom_expression`（限定用白名單語法組成，不可任意執行程式）。
+已完成（M5 第三批）：`custom_expression`（自訂，「欄」分類的最後一個；docs/custom-expression-plan.md）。
+
+| 類型 | 說明 | Polars 實作方向 |
+|---|---|---|
+| `custom_expression` | 自訂：一條 Polars 寫法的運算式算出新的一欄（`name`，不能蓋掉現有的欄），一列一列計算。只接受語法表（`recipe/validator.py` 的 `SYNTAX`，69 項，也是語法選擇器的目錄與 AI skill 的說明）裡的寫法；欄位只能用 `pl.col("…")`（可以讀系統欄位），`then`、`otherwise`、`pl.concat_str` 這些「運算式」的位置不能直接寫字串（Polars 會當成欄名），要寫 `pl.lit("…")`。合計、排名、上一列、`.over()` 這類要看其他列的寫法都擋下。`warn_null`（預設開）：用到的欄都有值、算出來卻是空值的列產生警告 | 驗證器的 `ExpressionScan` 用 `ast.parse(mode="eval")` 讀成語法樹（限制 2,000 字、500 個節點、50 層），檢查後轉成中間的樹；`steps/custom.py` 再轉成 Polars 的運算式，`with_columns` 接在最後。和 Polars 不一樣的地方：寫的小數是精確小數（從原始的文字讀），兩個小數相乘先轉成位數相加的小數、`/` 的被除數先轉成至少 6 位的小數（看型別用 `collect_schema()`，不跑資料）；`round` 預設四捨五入、小數 `round` 與 `cast` 讓位數變少時四捨五入並改位數；`/`、`//`、`%` 的除數是 0 時換成空值；小的整數轉成 `Int64`、`Float32` 轉成 `Float64`，一段時間（兩個日期相減）報錯並提示 `.dt.total_days()` |
+
+未完成：`sort`、`conditional_column`、`add_index`。
 
 ### 7.2.1 型別
 
@@ -369,15 +375,15 @@ CSV 不改成 Parquet：Polars 讀 CSV 一定要一整份檔，不管轉碼怎�
 | 型別 | 中文名稱 | 從哪裡來 |
 |---|---|---|
 | `String` | 文字 | 所有讀進來的資料欄（文字行、CSV、Excel 都讀成文字）、`__source_file`、`__sheet` |
-| `Int64` | 整數 | `__line_no`；`parse_number` 選整數；`group_by` / `pivot` 的筆數、有值的筆數、不同值個數 |
-| `Decimal(38, N)` | 小數（N 位） | `parse_number` 選小數（精確小數，不是浮點數）；合計維持同樣的位數 |
+| `Int64` | 整數 | `__line_no`；`parse_number` 選整數；`group_by` / `pivot` 的筆數、有值的筆數、不同值個數；`custom_expression` |
+| `Decimal(38, N)` | 小數（N 位） | `parse_number` 選小數（精確小數，不是浮點數）；合計維持同樣的位數；`custom_expression`（相乘位數相加，最多 18 位） |
 | `Date` | 日期 | `parse_date` |
-| `Float64` | 浮點數 | `group_by` / `pivot` 的平均 |
+| `Float64` | 浮點數 | `group_by` / `pivot` 的平均；`custom_expression`（有一邊是浮點數，或 `cast(pl.Float64)`） |
 | `Null` | 空 | 整欄都是空值時；文字步驟把它當成文字 |
 
 - 會改變型別的步驟：`parse_number`、`parse_date`、`group_by` / `pivot` 的彙總（合計、最大、最小、第一筆、最後一筆和原本的欄同型別），以及 `unpivot`（攤開的欄型別不一樣時轉成文字）。
 - 會檢查型別的步驟：文字步驟（`trim_clean`、`replace_values` 等）只能用在文字欄；`group_by` 的分組欄與 `pivot` 的「每一列依哪些欄」只能是文字或日期欄；合計、平均只能用在數字欄（提示先用「文字轉數字」）。
-- 型別分頁另外認得日期時間、是／否，但目前沒有步驟會產生這兩種。
+- 型別分頁另外認得日期時間、是／否；是／否（`Boolean`）目前只有 `custom_expression` 的比較、`is_null()` 這類寫法會產生，日期時間沒有步驟會產生。
 
 ### 7.3 每種步驟都要提供
 
@@ -710,6 +716,7 @@ tablade/
 | `ui: "option_cards"` | 選項卡片：每個選項一張，上面是小圖、標題、說明（`ui_option_icons`、`ui_option_hints`；例如結合的方式） |
 | `ui: "source_files"` | 來源檔的順序（合併來源檔）：列出目前的來源檔，上下移；不知道有哪些來源檔時改成標籤輸入 |
 | `ui: "stage"` | 選前面的階段（結合的右表），旁邊有「前往」；右表是樣本時有「完整跑一次」 |
+| `ui: "expression"` | 運算式的編輯框（自訂）：原生 `textarea` 疊在語法高亮的 `<pre>` 上；上面有「插入欄位」（資料欄與系統欄位，插 `pl.col("…")`）與「插入語法…」（對話框，依分類列出 `ui_syntax` 的每一項：寫法、說明、例子）。函式名稱、分類、說明都從 `ui_syntax` 來，前端不寫死；切詞是 `frontend/src/lib/expression.ts` 的純函式。高亮只是幫忙看，對錯以 Python 的驗證為準 |
 | `ui: "right_column"` / `ui: "right_columns"` | 欄位選擇器，選項是選到的那個階段的結果欄位 |
 | `ui: "data_values"` + `ui_from` | 從資料讀出的值（樞紐要變成欄的值）：預設收起來只顯示一行，旁邊「重新從資料讀取」「修改」；`ui_from` 指定的參數改了、值沒手動改過時，session 自動重新讀 |
 
@@ -844,6 +851,7 @@ tablade-recipe-skill-v1.0.zip       # 版本號＝recipe 版本（目前 1.0）
   3. 語意：依各步驟的欄位效果一步步推算欄位，檢查欄位引用存在、新欄名不衝突、欄位數相符；系統欄位只能用在條件裡（§5.1）。
      - 讀實際檔的階段，Tablade 每個檔只讀標題列、欄位取聯集（引擎讀多個檔時也是對齊成同一組欄位）；檔案太多（超過 100 個檔，Excel 超過 20 個）時不檢查那個階段的欄位引用（`ingest/sources.py` 的 `peek_columns`）。skill 裡的驗證器用 `--data` 給的 CSV 標題列（當成第一個階段的欄位）。
   4. 步驟自己的規則（`step_rules`）：pydantic 的 `field_validator` 也在驗證器裡寫一份（`tests/test_review_recipe.py` 檢查每個 field_validator 都有對應的檢查）。
+     - 自訂的運算式（`ExpressionScan`）：驗證器與 Tablade 用同一份語法表與同一段程式檢查，訊息相同；運算式裡 `pl.col` 引用的欄也照第 3 層檢查（可以是系統欄位）。只用 3.8 就有的 `ast` 寫法（AI skill 的沙箱是哪一版 Python 還不知道）。
      - 正規表示式只檢查兩邊確定一樣的部分：環顧（look-around）、反向參照、括號不成對，以及群組數（例如用正規表示式擷取的新欄名數量）。Tablade 用的是 Rust 的正規表示式（Polars），語法和 Python 的 `re` 不同，不能用 `re.compile` 判斷；其他語法錯誤以 Tablade 的驗證與試跑為準。
   5. 試跑（只在 Tablade）：用真實資料跑一次，回報每一步的列數、欄名、警告與行號。
 - 所以驗證器通過不保證 Tablade 一定接受：Tablade 匯入時另外用 pydantic 驗證（`engine/check.py`），可以再用真實資料試跑。
