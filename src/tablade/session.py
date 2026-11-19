@@ -21,6 +21,7 @@ import json
 import math
 import threading
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from difflib import get_close_matches
@@ -400,9 +401,43 @@ def column_summary(frame: pl.DataFrame | pl.LazyFrame) -> list[dict[str, Any]]:
     return out
 
 
+class _CallLock:
+    """可重入的鎖：一次 API 呼叫（最外層的 ``with``）期間拿著；最外層放開時呼叫 ``on_release``，
+    清掉這次呼叫裡記住的東西（例如檔案有沒有變，``Session._source_key``）。"""
+
+    def __init__(self, on_release: Callable[[], None]) -> None:
+        self._lock = threading.RLock()
+        self._depth = 0
+        self._owner: int | None = None
+        self._on_release = on_release
+
+    @property
+    def held(self) -> bool:
+        """這條執行緒正拿著鎖（在一次呼叫裡面）。"""
+        return self._depth > 0 and self._owner == threading.get_ident()
+
+    def __enter__(self) -> _CallLock:
+        self._lock.acquire()
+        self._depth += 1
+        self._owner = threading.get_ident()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._depth -= 1
+        try:
+            if self._depth == 0:
+                self._owner = None
+                self._on_release()
+        finally:
+            self._lock.release()
+
+
 class Session:
     def __init__(self) -> None:
-        self._lock = threading.RLock()
+        self._lock = _CallLock(self._forget_keys)
+        self._key_memo: dict[str, str] = {}
+        """一次呼叫裡算過的 ``_source_key``（檔案有沒有變）：一次 ``state()`` 會問十幾次，每次都展開檔案清單、
+        對每個檔 ``stat``，檔很多時（特別是 Windows）每個動作多好幾百毫秒。呼叫結束就清掉，下一次呼叫重新檢查。"""
         self._zip_scans: dict[Any, Any] = {}
         """讀取方式 zip_lines 的掃描結果（只讀 zip 的目錄）：依檔案清單、members、每個 zip 的大小與修改時間快取。"""
         self.recipe_path: Path | None = None
@@ -1113,11 +1148,34 @@ class Session:
                     return []
         return []
 
+    def _forget_keys(self) -> None:
+        """一次呼叫結束：忘掉這次記住的檔案指紋（下一次呼叫重新檢查檔案有沒有變）。"""
+        self._key_memo.clear()
+
     def _source_key(self, stage: dict[str, Any]) -> str:
         """讀實際檔的設定指紋：讀取方式、編碼，加上實際讀到的每個檔（位置、大小、修改時間）。
 
         用實際位置而不是清單上的寫法：另存到別的資料夾只改寫法，不需要重新載入。
+        一次呼叫裡同一個階段、同樣的設定只檢查一次（``_key_memo``）。
         """
+        memo = (
+            json.dumps(
+                [stage["uid"], str(self.base_dir), stage["input"]],
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+            if self._lock.held
+            else None
+        )
+        if memo is not None and memo in self._key_memo:
+            return self._key_memo[memo]
+        key = self._compute_source_key(stage)
+        if memo is not None:
+            self._key_memo[memo] = key
+        return key
+
+    def _compute_source_key(self, stage: dict[str, Any]) -> str:
         source = stage["input"]
         files = []
         if self.base_dir:

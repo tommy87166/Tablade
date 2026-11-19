@@ -92,7 +92,7 @@ def test_many_files_stay_within_the_budget(tmp_path):
     plan = sample_plan(parts, files, budget, 100_000, 1_000)
     frame = sample(parts, files, "zip_lines", plan)
     assert frame.height == plan.rows and plan.truncated
-    assert frame.estimated_size() <= budget * 1.3
+    assert frame.estimated_size() <= budget * 1.05
     assert 40 * 220 <= plan.rows < 40 * 3_000
     by_file = frame.group_by(SOURCE_FILE).agg(
         pl.col(LINE_NO).min().alias("first"), pl.col(LINE_NO).max().alias("last")
@@ -156,28 +156,44 @@ def _file(name: str, rows: int) -> sources.SourceFile:
     return sources.SourceFile(name, 0, "", "", rows)
 
 
-def _measured_size(parts, files) -> tuple[float, float]:
-    """（估計的一行大小, 整份實際的一行大小）。"""
-    estimate = sources._line_sizes(parts, files)[files[0].name]
-    whole = pl.concat([lf.collect() for _, lf in parts])
-    return estimate, whole.estimated_size() / whole.height
+def _filled(parts, files, reader: str, budget: int) -> float:
+    """好幾個檔依額度取樣：樣本實際的 ``estimated_size()`` 是額度的幾倍（應該接近 1）。"""
+    plan = sample_plan(parts, files, budget, 100_000, 1_000)
+    assert plan.truncated
+    return sample(parts, files, reader, plan).estimated_size() / budget
 
 
-def test_line_size_is_measured_for_text_csv_and_parquet(tmp_path):
-    parts, files = scan(zips(tmp_path, "z", files=1, rows=5_000), tmp_path)
-    estimate, actual = _measured_size(parts, files)
-    assert abs(estimate - actual) / actual < 0.3
+def _csvs(folder: Path, names: list[str], rows: int) -> list[Path]:
+    folder.mkdir(parents=True, exist_ok=True)
+    return [
+        fixtures.write_simple_csv(folder / name, n=rows, seed=i) for i, name in enumerate(names)
+    ]
 
-    csv = fixtures.write_simple_csv(tmp_path / "simple.csv", n=5_000)
-    parts, files = scan_parts([str(csv)], "csv", "cp950", tmp_path)
-    estimate, actual = _measured_size(parts, files)
-    assert abs(estimate - actual) / actual < 0.3
 
-    parquet = tmp_path / "simple.parquet"
-    pl.read_csv(csv, encoding="cp950").write_parquet(parquet)
-    parts, files = scan_parts([str(parquet)], "parquet", "auto", tmp_path)
-    estimate, actual = _measured_size(parts, files)
-    assert abs(estimate - actual) / actual < 0.3
+def test_text_sample_fills_the_budget(tmp_path):
+    parts, files = scan(zips(tmp_path, "z", files=12, rows=5_000), tmp_path)
+    assert 0.9 <= _filled(parts, files, "zip_lines", 4 * MB) <= 1.05
+
+
+def test_csv_and_parquet_samples_fill_the_budget(tmp_path):
+    csvs = _csvs(tmp_path / "csv", [f"門市銷售明細_{i:02d}.csv" for i in range(6)], 10_000)
+    parts, files = scan_parts([str(c) for c in csvs], "csv", "cp950", tmp_path)
+    assert 0.9 <= _filled(parts, files, "csv", 2 * MB) <= 1.05
+
+    folder = tmp_path / "parquet"
+    folder.mkdir()
+    for c in csvs:
+        pl.read_csv(c, encoding="cp950").write_parquet(folder / f"{c.stem}.parquet")
+    parquets = sorted(str(f) for f in folder.glob("*.parquet"))
+    parts, files = scan_parts(parquets, "parquet", "auto", tmp_path)
+    assert 0.9 <= _filled(parts, files, "parquet", 2 * MB) <= 1.05
+
+
+@pytest.mark.parametrize("stem", ["a", "門市" + "銷售明細資料" * 6 + "長檔名測試"])
+def test_long_and_short_file_names_fill_the_budget(tmp_path, stem):
+    csvs = _csvs(tmp_path / "csv", [f"{stem}_{i}.csv" for i in range(6)], 10_000)
+    parts, files = scan_parts([str(c) for c in csvs], "csv", "cp950", tmp_path)
+    assert 0.9 <= _filled(parts, files, "csv", 2 * MB) <= 1.05
 
 
 def test_csv_sample_starts_at_the_first_data_line(tmp_path):
@@ -274,7 +290,7 @@ def test_preview_sample_stays_within_the_budget(tmp_path, monkeypatch):
     )
     assert sample_info["rows"] == state["input"]["rows"] < 20 * 2_000
     frame = s.frame_at(-1)
-    assert frame.estimated_size() <= 400_000 * 1.3
+    assert frame.estimated_size() <= 400_000 * 1.05
     ends = frame.group_by(SOURCE_FILE).agg(pl.col(LINE_NO).min(), pl.col(LINE_NO).max().alias("m"))
     assert ends.height == 20 and set(ends[LINE_NO]) == {1} and set(ends["m"]) == {2_000}
 
@@ -340,3 +356,87 @@ def test_trial_before_export_has_a_budget(tmp_path, monkeypatch):
     trial = [report for mode, budget, report in calls if mode == "sample"]
     assert len(trial) == 1 and [b for m, b, _ in calls if m == "sample"] == [100_000]
     assert trial[0].sample_rows < 20 * session_module.TRIAL_HEAD
+
+
+# ── 檢查檔案有沒有變：一次呼叫只做一次 ───────────────────────────
+
+
+def count_fingerprints(monkeypatch) -> list[int]:
+    from tablade.session import Session
+
+    calls = [0]
+    original = Session._compute_source_key
+
+    def counted(self, stage):
+        calls[0] += 1
+        return original(self, stage)
+
+    monkeypatch.setattr(Session, "_compute_source_key", counted)
+    return calls
+
+
+def test_file_fingerprint_is_checked_once_per_call(tmp_path, monkeypatch):
+    paths = zips(tmp_path, "z", files=20, rows=300)
+    s = preview_session(tmp_path, paths, monkeypatch, 256 * MB)
+    s.add_step("trim_clean")
+    s.load_data()
+    calls = count_fingerprints(monkeypatch)
+    s.state()
+    assert calls[0] == 1  # 之前一次 state() 會檢查 10 次以上
+    calls[0] = 0
+    s.select(0)
+    s.state()
+    assert calls[0] == 1  # select 沒有用到；state 一次
+
+
+def test_changes_are_still_noticed_on_the_next_call(tmp_path, monkeypatch):
+    import os
+
+    paths = zips(tmp_path, "z", files=3, rows=300)
+    s = preview_session(tmp_path, paths, monkeypatch, 256 * MB)
+    s.load_data()
+    assert s.state()["input"]["loaded"]
+    stat = paths[1].stat()
+    os.utime(paths[1], ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
+    state = s.state()
+    assert not state["input"]["loaded"] and state["input"]["stale"]
+
+
+def test_only_the_changed_stage_needs_another_load(tmp_path, monkeypatch):
+    import os
+
+    first = zips(tmp_path, "a", files=2, rows=300, seed=1)
+    second = zips(tmp_path, "b", files=2, rows=300, seed=2)
+    s = preview_session(tmp_path, first, monkeypatch, 256 * MB)
+    s.add_stage("第二", before=False)
+    s.add_files(second)
+    s.set_input({"reader": "zip_lines", "encoding": "cp950", "members": MEMBERS})
+    s.load_data()
+    stat = second[0].stat()
+    os.utime(second[0], ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
+    assert s.state()["input"]["stale"]
+    s.select_stage(0)
+    state = s.state()
+    assert state["input"]["loaded"] and not state["input"]["stale"]
+
+
+def test_opening_another_recipe_does_not_reuse_fingerprints(tmp_path, monkeypatch):
+    from tablade.session import Session
+
+    a = zips(tmp_path, "a", files=2, rows=300, seed=1)
+    b = zips(tmp_path, "b", files=2, rows=500, seed=2)
+    one = preview_session(tmp_path, a, monkeypatch, 256 * MB)
+    one.save_recipe()
+    two = Session()
+    two.new(tmp_path / "two.recipe.json")
+    two.add_files(b)
+    two.set_input({"reader": "zip_lines", "encoding": "cp950", "members": MEMBERS})
+    two.save_recipe()
+    s = Session()
+    s.load_recipe(tmp_path / "many.recipe.json")
+    s.load_data()
+    assert s.state()["input"]["rows"] == 600
+    s.load_recipe(tmp_path / "two.recipe.json")
+    assert not s.state()["input"]["loaded"]
+    s.load_data()
+    assert s.state()["input"]["rows"] == 1_000

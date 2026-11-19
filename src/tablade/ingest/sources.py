@@ -1723,7 +1723,11 @@ class SamplePlan:
 
 def _line_sizes(parts: list[Part], files: list[SourceFile]) -> dict[str, float]:
     """每個檔估計一行在記憶體裡多大（bytes）：挑幾個檔讀開頭實際量，換算成「原始檔每行的大小」的比例，
-    其他檔用自己的「原始檔大小 ÷ 行數」乘上這個比例（原始檔是壓縮過的 Parquet 時，用公式估會低估很多）。"""
+    其他檔用自己的「原始檔大小 ÷ 行數」乘上這個比例（原始檔是壓縮過的 Parquet 時，用公式估會低估很多）。
+
+    量的時候各欄分開算再相加，不量整張表：單一個檔的表裡 ``__source_file`` 整欄是同一個值，整張表的
+    ``estimated_size()`` 幾乎不算它；樣本是很多個檔接起來的，這一欄每列都算一份（不這樣量，樣本會比額度大
+    2～4 成，檔名越長差越多）。"""
     lazy = dict(parts)
     raw = {f.name: f.bytes / f.rows for f in files if f.rows > 0}
     names = [f.name for f in files if f.name in raw and f.name in lazy]
@@ -1735,7 +1739,7 @@ def _line_sizes(parts: list[Part], files: list[SourceFile]) -> dict[str, float]:
     for name in picked:
         head = lazy[name].head(MEASURE_LINES).collect()
         if head.height:
-            measured += head.estimated_size()
+            measured += sum(column.estimated_size() for column in head.get_columns())
             raw_total += raw[name] * head.height
     ratio = measured / raw_total if raw_total > 0 else 1.0
     return {name: max(size * ratio, 1.0) for name, size in raw.items()}
