@@ -24,7 +24,7 @@ from tablade.steps.base import Step
 
 from .validator import check_version, link_issues
 
-RECIPE_VERSION = "1.2"
+RECIPE_VERSION = "1.3"
 """recipe 格式（也是 AI skill）的版本號：MAJOR.MINOR（DESIGN.md §17.6）。"""
 
 READERS: dict[str, dict[str, Any]] = {

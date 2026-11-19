@@ -13,6 +13,7 @@ import unicodedata
 import zipfile
 import zlib
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -760,6 +761,35 @@ def extra_delimiter_rows(
         lines.append("|".join(row))
         values.append(row)
     return lines, values
+
+
+EXPRESSION_TYPES = {
+    "門市": "文字",
+    "代號": "文字",
+    "數量": "整數",
+    "單價": "小數 2 位",
+    "折扣": "小數 2 位",
+    "日期": "日期",
+    "評分": "浮點數",
+}
+"""``expression_rows()`` 每一欄的型別（測試照這個轉成 Polars 的型別）。"""
+
+
+def expression_rows() -> dict[str, list[object]]:
+    """自訂（custom_expression）的測試用資料：四列門市銷售，最後一列全部是空值（docs/custom-expression-plan.md）。
+
+    第二列的門市前後各有一個空白；``__line_no`` 是 2～5。語法表每一項的 ``example`` 都用這些欄名。
+    """
+    return {
+        "門市": ["北區門市", " 南區 ", "東區", None],
+        "代號": ["a1", "B22", "c", None],
+        "數量": [3, 10, 0, None],
+        "單價": [Decimal("12.50"), Decimal("120.00"), Decimal("19.99"), None],
+        "折扣": [Decimal("0.00"), Decimal("10.05"), Decimal("0.55"), None],
+        "日期": [date(2026, 1, 5), date(2026, 2, 28), date(2026, 12, 31), None],
+        "評分": [0.125, 2.5, -2.5, None],
+        "__line_no": [2, 3, 4, 5],
+    }
 
 
 def write_all(directory: str | Path, seed: int = 0) -> list[Path]:

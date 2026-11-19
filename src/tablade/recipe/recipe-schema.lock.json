@@ -1,5 +1,5 @@
 {
-  "recipe_version": "1.2",
+  "recipe_version": "1.3",
   "spec": {
     "readers": {
       "csv": {
@@ -25,7 +25,7 @@
         ]
       }
     },
-    "recipe_version": "1.2",
+    "recipe_version": "1.3",
     "schema": {
       "$defs": {
         "Aggregation": {
@@ -183,6 +183,531 @@
             "conditions",
             "column",
             "name"
+          ],
+          "type": "object"
+        },
+        "CustomExpression": {
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "expression": {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string",
+              "ui": "expression",
+              "ui_syntax": [
+                {
+                  "caret": 8,
+                  "doc": "欄位（用「插入欄位」比較快）。只有這個寫法可以引用欄位",
+                  "example": "pl.col(\"數量\")",
+                  "id": "pl.col",
+                  "insert": "pl.col(\"\")"
+                },
+                {
+                  "caret": 7,
+                  "doc": "固定的值。then、otherwise、pl.concat_str 這些地方的文字要用它包起來",
+                  "example": "pl.lit(\"固定\")",
+                  "id": "pl.lit",
+                  "insert": "pl.lit()"
+                },
+                {
+                  "caret": 1,
+                  "doc": "整數（int64 的範圍內）",
+                  "example": "pl.col(\"數量\") + 1",
+                  "id": "lit.int",
+                  "insert": "0"
+                },
+                {
+                  "caret": 3,
+                  "doc": "小數：精確小數，寫幾位就是幾位。不能用科學記號",
+                  "example": "pl.col(\"單價\") * 0.9",
+                  "id": "lit.decimal",
+                  "insert": "0.0"
+                },
+                {
+                  "caret": 1,
+                  "doc": "文字，用 \"…\" 或 '…'",
+                  "example": "pl.col(\"代號\") + \"-x\"",
+                  "id": "lit.str",
+                  "insert": "\"\""
+                },
+                {
+                  "caret": 4,
+                  "doc": "是",
+                  "example": "pl.lit(True)",
+                  "id": "True",
+                  "insert": "True"
+                },
+                {
+                  "caret": 5,
+                  "doc": "否",
+                  "example": "pl.col(\"門市\").is_null() == False",
+                  "id": "False",
+                  "insert": "False"
+                },
+                {
+                  "caret": 4,
+                  "doc": "空值",
+                  "example": "pl.lit(None)",
+                  "id": "None",
+                  "insert": "None"
+                },
+                {
+                  "caret": 3,
+                  "doc": "相加；兩邊都是文字時是接起來",
+                  "example": "pl.col(\"單價\") + pl.col(\"折扣\")",
+                  "id": "+",
+                  "insert": " + "
+                },
+                {
+                  "caret": 3,
+                  "doc": "相減；兩個日期相減之後要接 .dt.total_days()",
+                  "example": "pl.col(\"單價\") - pl.col(\"折扣\")",
+                  "id": "-",
+                  "insert": " - "
+                },
+                {
+                  "caret": 3,
+                  "doc": "相乘。小數相乘的位數是兩邊相加",
+                  "example": "pl.col(\"單價\") * pl.col(\"數量\")",
+                  "id": "*",
+                  "insert": " * "
+                },
+                {
+                  "caret": 3,
+                  "doc": "相除。結果至少 6 位小數；除以 0 是空值",
+                  "example": "pl.col(\"單價\") / pl.col(\"數量\")",
+                  "id": "/",
+                  "insert": " / "
+                },
+                {
+                  "caret": 4,
+                  "doc": "相除取整數；除以 0 是空值",
+                  "example": "pl.col(\"數量\") // 4",
+                  "id": "//",
+                  "insert": " // "
+                },
+                {
+                  "caret": 3,
+                  "doc": "相除的餘數；除以 0 是空值",
+                  "example": "pl.col(\"數量\") % 4",
+                  "id": "%",
+                  "insert": " % "
+                },
+                {
+                  "caret": 1,
+                  "doc": "負號",
+                  "example": "-pl.col(\"折扣\")",
+                  "id": "neg",
+                  "insert": "-"
+                },
+                {
+                  "caret": 6,
+                  "doc": "絕對值",
+                  "example": "(pl.col(\"折扣\") - 1).abs()",
+                  "id": "abs",
+                  "insert": ".abs()"
+                },
+                {
+                  "caret": 9,
+                  "doc": "四捨五入到幾位小數，小數的位數跟著變",
+                  "example": "(pl.col(\"單價\") * 0.333).round(2)",
+                  "id": "round",
+                  "insert": ".round(2)"
+                },
+                {
+                  "caret": 8,
+                  "doc": "無條件捨去到整數（往小的方向）",
+                  "example": "pl.col(\"單價\").floor()",
+                  "id": "floor",
+                  "insert": ".floor()"
+                },
+                {
+                  "caret": 7,
+                  "doc": "無條件進位到整數（往大的方向）",
+                  "example": "pl.col(\"單價\").ceil()",
+                  "id": "ceil",
+                  "insert": ".ceil()"
+                },
+                {
+                  "caret": 6,
+                  "doc": "比下限小的變成下限，比上限大的變成上限",
+                  "example": "pl.col(\"數量\").clip(1, 5)",
+                  "id": "clip",
+                  "insert": ".clip(, )"
+                },
+                {
+                  "caret": 18,
+                  "doc": "同一列幾個值裡最大的（空值不算）",
+                  "example": "pl.max_horizontal(pl.col(\"單價\"), 20)",
+                  "id": "pl.max_horizontal",
+                  "insert": "pl.max_horizontal(, )"
+                },
+                {
+                  "caret": 18,
+                  "doc": "同一列幾個值裡最小的（空值不算）",
+                  "example": "pl.min_horizontal(pl.col(\"單價\"), 20)",
+                  "id": "pl.min_horizontal",
+                  "insert": "pl.min_horizontal(, )"
+                },
+                {
+                  "caret": 18,
+                  "doc": "同一列幾個值加起來（空值當 0）",
+                  "example": "pl.sum_horizontal(pl.col(\"單價\"), pl.col(\"折扣\"))",
+                  "id": "pl.sum_horizontal",
+                  "insert": "pl.sum_horizontal(, )"
+                },
+                {
+                  "caret": 4,
+                  "doc": "等於",
+                  "example": "pl.col(\"數量\") == 3",
+                  "id": "==",
+                  "insert": " == "
+                },
+                {
+                  "caret": 4,
+                  "doc": "不等於",
+                  "example": "pl.col(\"數量\") != 3",
+                  "id": "!=",
+                  "insert": " != "
+                },
+                {
+                  "caret": 3,
+                  "doc": "大於",
+                  "example": "pl.col(\"數量\") > 3",
+                  "id": ">",
+                  "insert": " > "
+                },
+                {
+                  "caret": 4,
+                  "doc": "大於或等於",
+                  "example": "pl.col(\"數量\") >= 3",
+                  "id": ">=",
+                  "insert": " >= "
+                },
+                {
+                  "caret": 3,
+                  "doc": "小於",
+                  "example": "pl.col(\"數量\") < 3",
+                  "id": "<",
+                  "insert": " < "
+                },
+                {
+                  "caret": 4,
+                  "doc": "小於或等於",
+                  "example": "pl.col(\"數量\") <= 3",
+                  "id": "<=",
+                  "insert": " <= "
+                },
+                {
+                  "caret": 3,
+                  "doc": "而且。兩邊的條件各自加括號",
+                  "example": "(pl.col(\"數量\") > 1) & (pl.col(\"單價\") > 15)",
+                  "id": "&",
+                  "insert": " & "
+                },
+                {
+                  "caret": 3,
+                  "doc": "或者。兩邊的條件各自加括號",
+                  "example": "(pl.col(\"數量\") > 5) | pl.col(\"門市\").is_null()",
+                  "id": "|",
+                  "insert": " | "
+                },
+                {
+                  "caret": 1,
+                  "doc": "相反（不是）。條件要加括號",
+                  "example": "~(pl.col(\"數量\") > 1)",
+                  "id": "~",
+                  "insert": "~"
+                },
+                {
+                  "caret": 8,
+                  "doc": "是清單裡的其中一個",
+                  "example": "pl.col(\"代號\").is_in([\"a1\", \"c\"])",
+                  "id": "is_in",
+                  "insert": ".is_in([])"
+                },
+                {
+                  "caret": 12,
+                  "doc": "在下限與上限之間（含兩端）",
+                  "example": "pl.col(\"數量\").is_between(1, 5)",
+                  "id": "is_between",
+                  "insert": ".is_between(, )"
+                },
+                {
+                  "caret": 8,
+                  "doc": "依條件給值：條件成立用 then 的值，否則用 otherwise 的；沒寫 otherwise 是空值。.then() 後面可以再接 .when().then()",
+                  "example": "pl.when(pl.col(\"數量\") >= 10).then(pl.lit(\"大量\")).otherwise(pl.lit(\"一般\"))",
+                  "id": "pl.when",
+                  "insert": "pl.when().then().otherwise()"
+                },
+                {
+                  "caret": 10,
+                  "doc": "是空值",
+                  "example": "pl.col(\"門市\").is_null()",
+                  "id": "is_null",
+                  "insert": ".is_null()"
+                },
+                {
+                  "caret": 14,
+                  "doc": "不是空值",
+                  "example": "pl.col(\"門市\").is_not_null()",
+                  "id": "is_not_null",
+                  "insert": ".is_not_null()"
+                },
+                {
+                  "caret": 11,
+                  "doc": "空值換成指定的值",
+                  "example": "pl.col(\"數量\").fill_null(0)",
+                  "id": "fill_null",
+                  "insert": ".fill_null()"
+                },
+                {
+                  "caret": 12,
+                  "doc": "由左到右第一個不是空值的",
+                  "example": "pl.coalesce(pl.col(\"折扣\"), 0)",
+                  "id": "pl.coalesce",
+                  "insert": "pl.coalesce(, )"
+                },
+                {
+                  "caret": 15,
+                  "doc": "把幾個值接成文字（數字會先變成文字）；有一個是空值結果就是空值",
+                  "example": "pl.concat_str([pl.col(\"代號\"), pl.lit(\"-\"), pl.col(\"數量\")])",
+                  "id": "pl.concat_str",
+                  "insert": "pl.concat_str([])"
+                },
+                {
+                  "caret": 18,
+                  "doc": "去掉前後的空白（或指定的字）",
+                  "example": "pl.col(\"門市\").str.strip_chars()",
+                  "id": "str.strip_chars",
+                  "insert": ".str.strip_chars()"
+                },
+                {
+                  "caret": 24,
+                  "doc": "去掉前面的空白（或指定的字）",
+                  "example": "pl.col(\"門市\").str.strip_chars_start()",
+                  "id": "str.strip_chars_start",
+                  "insert": ".str.strip_chars_start()"
+                },
+                {
+                  "caret": 22,
+                  "doc": "去掉後面的空白（或指定的字）",
+                  "example": "pl.col(\"門市\").str.strip_chars_end()",
+                  "id": "str.strip_chars_end",
+                  "insert": ".str.strip_chars_end()"
+                },
+                {
+                  "caret": 19,
+                  "doc": "英文轉大寫",
+                  "example": "pl.col(\"代號\").str.to_uppercase()",
+                  "id": "str.to_uppercase",
+                  "insert": ".str.to_uppercase()"
+                },
+                {
+                  "caret": 19,
+                  "doc": "英文轉小寫",
+                  "example": "pl.col(\"代號\").str.to_lowercase()",
+                  "id": "str.to_lowercase",
+                  "insert": ".str.to_lowercase()"
+                },
+                {
+                  "caret": 16,
+                  "doc": "有幾個字",
+                  "example": "pl.col(\"門市\").str.len_chars()",
+                  "id": "str.len_chars",
+                  "insert": ".str.len_chars()"
+                },
+                {
+                  "caret": 14,
+                  "doc": "從第幾個字開始取幾個字（第一個字是 0；起點是負的從後面數；長度可以不寫）",
+                  "example": "pl.col(\"門市\").str.slice(0, 2)",
+                  "id": "str.slice",
+                  "insert": ".str.slice(0, )"
+                },
+                {
+                  "caret": 10,
+                  "doc": "前面幾個字",
+                  "example": "pl.col(\"代號\").str.head(1)",
+                  "id": "str.head",
+                  "insert": ".str.head()"
+                },
+                {
+                  "caret": 10,
+                  "doc": "後面幾個字",
+                  "example": "pl.col(\"代號\").str.tail(1)",
+                  "id": "str.tail",
+                  "insert": ".str.tail()"
+                },
+                {
+                  "caret": 11,
+                  "doc": "前面補 0 到指定的長度",
+                  "example": "pl.col(\"代號\").str.zfill(4)",
+                  "id": "str.zfill",
+                  "insert": ".str.zfill()"
+                },
+                {
+                  "caret": 15,
+                  "doc": "前面補字到指定的長度（補的字是一個字）",
+                  "example": "pl.col(\"代號\").str.pad_start(4, \"*\")",
+                  "id": "str.pad_start",
+                  "insert": ".str.pad_start(, \" \")"
+                },
+                {
+                  "caret": 13,
+                  "doc": "後面補字到指定的長度（補的字是一個字）",
+                  "example": "pl.col(\"代號\").str.pad_end(4, \"*\")",
+                  "id": "str.pad_end",
+                  "insert": ".str.pad_end(, \" \")"
+                },
+                {
+                  "caret": 18,
+                  "doc": "開頭是指定的文字",
+                  "example": "pl.col(\"門市\").str.starts_with(\"北\")",
+                  "id": "str.starts_with",
+                  "insert": ".str.starts_with(\"\")"
+                },
+                {
+                  "caret": 16,
+                  "doc": "結尾是指定的文字",
+                  "example": "pl.col(\"門市\").str.ends_with(\"門市\")",
+                  "id": "str.ends_with",
+                  "insert": ".str.ends_with(\"\")"
+                },
+                {
+                  "caret": 15,
+                  "doc": "包含指定的文字（literal=True 一定要寫）",
+                  "example": "pl.col(\"門市\").str.contains(\"區\", literal=True)",
+                  "id": "str.contains",
+                  "insert": ".str.contains(\"\", literal=True)"
+                },
+                {
+                  "caret": 14,
+                  "doc": "第一個符合的文字換成另一段（literal=True 一定要寫）",
+                  "example": "pl.col(\"門市\").str.replace(\" \", \"\", literal=True)",
+                  "id": "str.replace",
+                  "insert": ".str.replace(\"\", \"\", literal=True)"
+                },
+                {
+                  "caret": 18,
+                  "doc": "所有符合的文字換成另一段（literal=True 一定要寫）",
+                  "example": "pl.col(\"門市\").str.replace_all(\" \", \"\", literal=True)",
+                  "id": "str.replace_all",
+                  "insert": ".str.replace_all(\"\", \"\", literal=True)"
+                },
+                {
+                  "caret": 19,
+                  "doc": "固定的日期（年、月、日寫整數）",
+                  "example": "pl.col(\"日期\") >= pl.date(2026, 2, 1)",
+                  "id": "pl.date",
+                  "insert": "pl.date(2026, 1, 1)"
+                },
+                {
+                  "caret": 10,
+                  "doc": "西元年",
+                  "example": "pl.col(\"日期\").dt.year()",
+                  "id": "dt.year",
+                  "insert": ".dt.year()"
+                },
+                {
+                  "caret": 11,
+                  "doc": "月（1～12）",
+                  "example": "pl.col(\"日期\").dt.month()",
+                  "id": "dt.month",
+                  "insert": ".dt.month()"
+                },
+                {
+                  "caret": 9,
+                  "doc": "日（1～31）",
+                  "example": "pl.col(\"日期\").dt.day()",
+                  "id": "dt.day",
+                  "insert": ".dt.day()"
+                },
+                {
+                  "caret": 13,
+                  "doc": "星期幾（星期一是 1，星期日是 7）",
+                  "example": "pl.col(\"日期\").dt.weekday()",
+                  "id": "dt.weekday",
+                  "insert": ".dt.weekday()"
+                },
+                {
+                  "caret": 25,
+                  "doc": "日期轉成文字（%Y 年、%m 月、%d 日）",
+                  "example": "pl.col(\"日期\").dt.to_string(\"%Y/%m\")",
+                  "id": "dt.to_string",
+                  "insert": ".dt.to_string(\"%Y/%m/%d\")"
+                },
+                {
+                  "caret": 16,
+                  "doc": "兩個日期相減之後：差幾天",
+                  "example": "(pl.col(\"日期\") - pl.date(2026, 1, 1)).dt.total_days()",
+                  "id": "dt.total_days",
+                  "insert": ".dt.total_days()"
+                },
+                {
+                  "caret": 6,
+                  "doc": "轉成另一種型別；轉不了的是空值（strict=False 一定要寫）",
+                  "example": "pl.col(\"單價\").cast(pl.Int64, strict=False)",
+                  "id": "cast",
+                  "insert": ".cast(, strict=False)"
+                },
+                {
+                  "caret": 29,
+                  "doc": "轉成整數（小數的部分直接捨去）",
+                  "example": "pl.col(\"單價\").cast(pl.Int64, strict=False)",
+                  "id": "pl.Int64",
+                  "insert": ".cast(pl.Int64, strict=False)"
+                },
+                {
+                  "caret": 31,
+                  "doc": "轉成浮點數",
+                  "example": "pl.col(\"數量\").cast(pl.Float64, strict=False)",
+                  "id": "pl.Float64",
+                  "insert": ".cast(pl.Float64, strict=False)"
+                },
+                {
+                  "caret": 30,
+                  "doc": "轉成文字",
+                  "example": "pl.col(\"單價\").cast(pl.String, strict=False)",
+                  "id": "pl.String",
+                  "insert": ".cast(pl.String, strict=False)"
+                },
+                {
+                  "caret": 38,
+                  "doc": "轉成 N 位的小數（pl.Decimal(38, N)，N 是 0～18）；位數變少時四捨五入",
+                  "example": "pl.col(\"單價\").cast(pl.Decimal(38, 1), strict=False)",
+                  "id": "pl.Decimal",
+                  "insert": ".cast(pl.Decimal(38, 2), strict=False)"
+                }
+              ]
+            },
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "name": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": {
+              "const": "custom_expression",
+              "default": "custom_expression",
+              "type": "string"
+            },
+            "warn_null": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "expression"
           ],
           "type": "object"
         },
@@ -1514,6 +2039,7 @@
                   "mapping": {
                     "classify_rows": "#/$defs/ClassifyRows",
                     "conditional_copy": "#/$defs/ConditionalCopy",
+                    "custom_expression": "#/$defs/CustomExpression",
                     "dedupe": "#/$defs/Dedupe",
                     "extract_regex": "#/$defs/ExtractRegex",
                     "fill_down": "#/$defs/FillDown",
@@ -1600,6 +2126,9 @@
                   },
                   {
                     "$ref": "#/$defs/ParseDate"
+                  },
+                  {
+                    "$ref": "#/$defs/CustomExpression"
                   },
                   {
                     "$ref": "#/$defs/Unpivot"
@@ -1807,6 +2336,13 @@
           "names": "$name"
         },
         "schema_ref": "ConditionalCopy"
+      },
+      "custom_expression": {
+        "effect": {
+          "kind": "add",
+          "names": "$name"
+        },
+        "schema_ref": "CustomExpression"
       },
       "dedupe": {
         "effect": {

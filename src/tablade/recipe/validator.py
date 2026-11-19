@@ -19,11 +19,14 @@ registry 產生後傳進來；放進 skill 時會嵌入在 ``EMBEDDED_SPEC``。
 from __future__ import annotations
 
 import argparse
+import ast
 import csv
+import datetime
 import json
 import re
 import sys
 import unicodedata
+from decimal import Decimal, InvalidOperation
 from difflib import get_close_matches
 from pathlib import Path
 from typing import Any
@@ -827,6 +830,1575 @@ class RegexScan:
         return i + 1 if p.startswith("]", i) else i
 
 
+# ── 自訂（custom_expression）的運算式：語法表與檢查 ───────────────────
+#
+# docs/custom-expression-plan.md。使用者寫的是一條 Polars 寫法的運算式（一段文字）：
+# 用 ast 讀成語法樹，照下面的語法表一個節點一個節點檢查，轉成 ``ExpressionScan.tree``（中間的樹）；
+# tablade/steps/custom.py 再把它轉成 Polars 的運算式。沒有任何一段使用者的文字會被 Python 執行
+# （不用 eval、exec、compile），取屬性也只用語法表裡的名字。
+#
+# 語法表＝白名單＝語法選擇器的目錄＝AI skill 的說明：要多加或拿掉一項，只改這張表（再補測試）。
+
+SYNTAX_CATEGORIES = (
+    ("欄位與值", "Columns and values"),
+    ("計算", "Arithmetic"),
+    ("比較與條件", "Comparison and conditions"),
+    ("空值", "Nulls"),
+    ("文字", "Text"),
+    ("日期", "Dates"),
+    ("轉型", "Type conversion"),
+)
+"""語法選擇器的分類（照這個順序）與英文。"""
+
+CARET = "▮"
+"""語法表的 ``insert`` 裡標出插入後游標位置的字（載入時拿掉，換成 ``caret``）。"""
+
+EXPR_MAX_CHARS = 2000
+EXPR_MAX_NODES = 500
+EXPR_MAX_DEPTH = 50
+INT64_MIN, INT64_MAX = -(2**63), 2**63 - 1
+DECIMAL_MAX_SCALE = 18
+TEXT_LEN_MAX = 100_000
+PAD_LEN_MAX = 1_000
+
+
+def _syntax(
+    id: str,
+    category: int,
+    insert: str,
+    doc: str,
+    doc_en: str,
+    example: str,
+    form: str,
+    args: tuple[Any, ...] = (),
+    optional: int = 0,
+    varargs: tuple[Any, int] | None = None,
+    kwargs: dict[str, tuple[Any, bool]] | None = None,
+) -> dict[str, Any]:
+    """語法表的一項。``form`` 是寫法的種類（column、literal、op、unary、func、method、type）；
+    ``args`` 是每個位置參數的種類，最後 ``optional`` 個可以不寫；``varargs`` 是（種類, 至少幾個）；
+    ``kwargs`` 是 {名稱: (種類, 一定要寫)}。參數的種類見 ``ExpressionScan._arg``。"""
+    zh, en_name = SYNTAX_CATEGORIES[category]
+    return {
+        "id": id,
+        "category": zh,
+        "insert": insert.replace(CARET, ""),
+        "caret": insert.index(CARET) if CARET in insert else len(insert),
+        "doc": doc,
+        "example": example,
+        "en": {"category": en_name, "doc": doc_en},
+        "form": form,
+        "args": args,
+        "optional": optional,
+        "varargs": varargs,
+        "kwargs": kwargs or {},
+    }
+
+
+_INT_TEXT = ("int", 0, TEXT_LEN_MAX)
+_INT_PAD = ("int", 0, PAD_LEN_MAX)
+_LITERAL_TRUE = (("fixed", True), True)
+_STRICT_FALSE = (("fixed", False), True)
+ROUND_MODES = ("half_away_from_zero", "half_to_even")
+
+SYNTAX: list[dict[str, Any]] = [
+    # 欄位與值
+    _syntax(
+        "pl.col",
+        0,
+        'pl.col("▮")',
+        "欄位（用「插入欄位」比較快）。只有這個寫法可以引用欄位",
+        'A column ("Insert column" is quicker). This is the only way to refer to a column',
+        'pl.col("數量")',
+        "column",
+    ),
+    _syntax(
+        "pl.lit",
+        0,
+        "pl.lit(▮)",
+        "固定的值。then、otherwise、pl.concat_str 這些地方的文字要用它包起來",
+        "A fixed value. Wrap text in it where then, otherwise or pl.concat_str expect an expression",
+        'pl.lit("固定")',
+        "func",
+        args=("literal",),
+    ),
+    _syntax(
+        "lit.int",
+        0,
+        "0",
+        "整數（int64 的範圍內）",
+        "A whole number (within the int64 range)",
+        'pl.col("數量") + 1',
+        "literal",
+    ),
+    _syntax(
+        "lit.decimal",
+        0,
+        "0.0",
+        "小數：精確小數，寫幾位就是幾位。不能用科學記號",
+        "A decimal: exact, with as many places as written. No scientific notation",
+        'pl.col("單價") * 0.9',
+        "literal",
+    ),
+    _syntax(
+        "lit.str",
+        0,
+        '"▮"',
+        "文字，用 \"…\" 或 '…'",
+        "Text, in \"…\" or '…'",
+        'pl.col("代號") + "-x"',
+        "literal",
+    ),
+    _syntax("True", 0, "True", "是", "True", "pl.lit(True)", "literal"),
+    _syntax("False", 0, "False", "否", "False", 'pl.col("門市").is_null() == False', "literal"),
+    _syntax("None", 0, "None", "空值", "Null", "pl.lit(None)", "literal"),
+    # 計算
+    _syntax(
+        "+",
+        1,
+        " + ",
+        "相加；兩邊都是文字時是接起來",
+        "Add; joins the two when both are text",
+        'pl.col("單價") + pl.col("折扣")',
+        "op",
+        args=("value", "value"),
+    ),
+    _syntax(
+        "-",
+        1,
+        " - ",
+        "相減；兩個日期相減之後要接 .dt.total_days()",
+        "Subtract; after subtracting two dates, add .dt.total_days()",
+        'pl.col("單價") - pl.col("折扣")',
+        "op",
+        args=("value", "value"),
+    ),
+    _syntax(
+        "*",
+        1,
+        " * ",
+        "相乘。小數相乘的位數是兩邊相加",
+        "Multiply. Multiplying decimals adds up their decimal places",
+        'pl.col("單價") * pl.col("數量")',
+        "op",
+        args=("value", "value"),
+    ),
+    _syntax(
+        "/",
+        1,
+        " / ",
+        "相除。結果至少 6 位小數；除以 0 是空值",
+        "Divide. The result has at least 6 decimal places; dividing by 0 gives null",
+        'pl.col("單價") / pl.col("數量")',
+        "op",
+        args=("value", "value"),
+    ),
+    _syntax(
+        "//",
+        1,
+        " // ",
+        "相除取整數；除以 0 是空值",
+        "Divide and round down to a whole number; dividing by 0 gives null",
+        'pl.col("數量") // 4',
+        "op",
+        args=("value", "value"),
+    ),
+    _syntax(
+        "%",
+        1,
+        " % ",
+        "相除的餘數；除以 0 是空值",
+        "Remainder of a division; dividing by 0 gives null",
+        'pl.col("數量") % 4',
+        "op",
+        args=("value", "value"),
+    ),
+    _syntax("neg", 1, "-", "負號", "Negate", '-pl.col("折扣")', "unary", args=("expr",)),
+    _syntax("abs", 1, ".abs()", "絕對值", "Absolute value", '(pl.col("折扣") - 1).abs()', "method"),
+    _syntax(
+        "round",
+        1,
+        ".round(2)",
+        "四捨五入到幾位小數，小數的位數跟著變",
+        "Round half away from zero to a number of decimal places; decimals get that many places",
+        '(pl.col("單價") * 0.333).round(2)',
+        "method",
+        args=(("int", 0, DECIMAL_MAX_SCALE),),
+        kwargs={"mode": (("choice", ROUND_MODES), False)},
+    ),
+    _syntax(
+        "floor",
+        1,
+        ".floor()",
+        "無條件捨去到整數（往小的方向）",
+        "Round down to a whole number",
+        'pl.col("單價").floor()',
+        "method",
+    ),
+    _syntax(
+        "ceil",
+        1,
+        ".ceil()",
+        "無條件進位到整數（往大的方向）",
+        "Round up to a whole number",
+        'pl.col("單價").ceil()',
+        "method",
+    ),
+    _syntax(
+        "clip",
+        1,
+        ".clip(▮, )",
+        "比下限小的變成下限，比上限大的變成上限",
+        "Values below the lower bound become the lower bound; above the upper bound, the upper bound",
+        'pl.col("數量").clip(1, 5)',
+        "method",
+        args=("expr", "expr"),
+    ),
+    _syntax(
+        "pl.max_horizontal",
+        1,
+        "pl.max_horizontal(▮, )",
+        "同一列幾個值裡最大的（空值不算）",
+        "The largest of several values in the same row (nulls are skipped)",
+        'pl.max_horizontal(pl.col("單價"), 20)',
+        "func",
+        varargs=("expr", 2),
+    ),
+    _syntax(
+        "pl.min_horizontal",
+        1,
+        "pl.min_horizontal(▮, )",
+        "同一列幾個值裡最小的（空值不算）",
+        "The smallest of several values in the same row (nulls are skipped)",
+        'pl.min_horizontal(pl.col("單價"), 20)',
+        "func",
+        varargs=("expr", 2),
+    ),
+    _syntax(
+        "pl.sum_horizontal",
+        1,
+        "pl.sum_horizontal(▮, )",
+        "同一列幾個值加起來（空值當 0）",
+        "The sum of several values in the same row (nulls count as 0)",
+        'pl.sum_horizontal(pl.col("單價"), pl.col("折扣"))',
+        "func",
+        varargs=("expr", 2),
+    ),
+    # 比較與條件
+    _syntax(
+        "==", 2, " == ", "等於", "Equal to", 'pl.col("數量") == 3', "op", args=("value", "value")
+    ),
+    _syntax(
+        "!=",
+        2,
+        " != ",
+        "不等於",
+        "Not equal to",
+        'pl.col("數量") != 3',
+        "op",
+        args=("value", "value"),
+    ),
+    _syntax(
+        ">", 2, " > ", "大於", "Greater than", 'pl.col("數量") > 3', "op", args=("value", "value")
+    ),
+    _syntax(
+        ">=",
+        2,
+        " >= ",
+        "大於或等於",
+        "Greater than or equal to",
+        'pl.col("數量") >= 3',
+        "op",
+        args=("value", "value"),
+    ),
+    _syntax(
+        "<", 2, " < ", "小於", "Less than", 'pl.col("數量") < 3', "op", args=("value", "value")
+    ),
+    _syntax(
+        "<=",
+        2,
+        " <= ",
+        "小於或等於",
+        "Less than or equal to",
+        'pl.col("數量") <= 3',
+        "op",
+        args=("value", "value"),
+    ),
+    _syntax(
+        "&",
+        2,
+        " & ",
+        "而且。兩邊的條件各自加括號",
+        "And. Put each condition in parentheses",
+        '(pl.col("數量") > 1) & (pl.col("單價") > 15)',
+        "op",
+        args=("expr", "expr"),
+    ),
+    _syntax(
+        "|",
+        2,
+        " | ",
+        "或者。兩邊的條件各自加括號",
+        "Or. Put each condition in parentheses",
+        '(pl.col("數量") > 5) | pl.col("門市").is_null()',
+        "op",
+        args=("expr", "expr"),
+    ),
+    _syntax(
+        "~",
+        2,
+        "~",
+        "相反（不是）。條件要加括號",
+        "Not. Put the condition in parentheses",
+        '~(pl.col("數量") > 1)',
+        "unary",
+        args=("expr",),
+    ),
+    _syntax(
+        "is_in",
+        2,
+        ".is_in([▮])",
+        "是清單裡的其中一個",
+        "Is one of the values in the list",
+        'pl.col("代號").is_in(["a1", "c"])',
+        "method",
+        args=("literals",),
+    ),
+    _syntax(
+        "is_between",
+        2,
+        ".is_between(▮, )",
+        "在下限與上限之間（含兩端）",
+        "Is between the lower and upper bounds (both included)",
+        'pl.col("數量").is_between(1, 5)',
+        "method",
+        args=("expr", "expr"),
+    ),
+    _syntax(
+        "pl.when",
+        2,
+        "pl.when(▮).then().otherwise()",
+        "依條件給值：條件成立用 then 的值，否則用 otherwise 的；沒寫 otherwise 是空值。"
+        ".then() 後面可以再接 .when().then()",
+        "A value by condition: the then value where the condition holds, otherwise the otherwise "
+        "value; null when otherwise is left out. More .when().then() can follow .then()",
+        'pl.when(pl.col("數量") >= 10).then(pl.lit("大量")).otherwise(pl.lit("一般"))',
+        "when",
+    ),
+    # 空值
+    _syntax("is_null", 3, ".is_null()", "是空值", "Is null", 'pl.col("門市").is_null()', "method"),
+    _syntax(
+        "is_not_null",
+        3,
+        ".is_not_null()",
+        "不是空值",
+        "Is not null",
+        'pl.col("門市").is_not_null()',
+        "method",
+    ),
+    _syntax(
+        "fill_null",
+        3,
+        ".fill_null(▮)",
+        "空值換成指定的值",
+        "Replace nulls with a value",
+        'pl.col("數量").fill_null(0)',
+        "method",
+        args=("value",),
+    ),
+    _syntax(
+        "pl.coalesce",
+        3,
+        "pl.coalesce(▮, )",
+        "由左到右第一個不是空值的",
+        "The first value from the left that is not null",
+        'pl.coalesce(pl.col("折扣"), 0)',
+        "func",
+        varargs=("expr", 2),
+    ),
+    # 文字
+    _syntax(
+        "pl.concat_str",
+        4,
+        "pl.concat_str([▮])",
+        "把幾個值接成文字（數字會先變成文字）；有一個是空值結果就是空值",
+        "Join several values into text (numbers become text first); null if any of them is null",
+        'pl.concat_str([pl.col("代號"), pl.lit("-"), pl.col("數量")])',
+        "func",
+        args=("exprs",),
+        kwargs={"separator": ("str", False)},
+    ),
+    _syntax(
+        "str.strip_chars",
+        4,
+        ".str.strip_chars()",
+        "去掉前後的空白（或指定的字）",
+        "Remove leading and trailing spaces (or the given characters)",
+        'pl.col("門市").str.strip_chars()',
+        "method",
+        args=("str",),
+        optional=1,
+    ),
+    _syntax(
+        "str.strip_chars_start",
+        4,
+        ".str.strip_chars_start()",
+        "去掉前面的空白（或指定的字）",
+        "Remove leading spaces (or the given characters)",
+        'pl.col("門市").str.strip_chars_start()',
+        "method",
+        args=("str",),
+        optional=1,
+    ),
+    _syntax(
+        "str.strip_chars_end",
+        4,
+        ".str.strip_chars_end()",
+        "去掉後面的空白（或指定的字）",
+        "Remove trailing spaces (or the given characters)",
+        'pl.col("門市").str.strip_chars_end()',
+        "method",
+        args=("str",),
+        optional=1,
+    ),
+    _syntax(
+        "str.to_uppercase",
+        4,
+        ".str.to_uppercase()",
+        "英文轉大寫",
+        "Convert letters to uppercase",
+        'pl.col("代號").str.to_uppercase()',
+        "method",
+    ),
+    _syntax(
+        "str.to_lowercase",
+        4,
+        ".str.to_lowercase()",
+        "英文轉小寫",
+        "Convert letters to lowercase",
+        'pl.col("代號").str.to_lowercase()',
+        "method",
+    ),
+    _syntax(
+        "str.len_chars",
+        4,
+        ".str.len_chars()",
+        "有幾個字",
+        "Number of characters",
+        'pl.col("門市").str.len_chars()',
+        "method",
+    ),
+    _syntax(
+        "str.slice",
+        4,
+        ".str.slice(0, ▮)",
+        "從第幾個字開始取幾個字（第一個字是 0；起點是負的從後面數；長度可以不寫）",
+        "Take a number of characters from a position (the first is 0; a negative start counts "
+        "from the end; the length can be left out)",
+        'pl.col("門市").str.slice(0, 2)',
+        "method",
+        args=(("int", INT64_MIN, INT64_MAX), _INT_TEXT),
+        optional=1,
+    ),
+    _syntax(
+        "str.head",
+        4,
+        ".str.head(▮)",
+        "前面幾個字",
+        "The first characters",
+        'pl.col("代號").str.head(1)',
+        "method",
+        args=(_INT_TEXT,),
+    ),
+    _syntax(
+        "str.tail",
+        4,
+        ".str.tail(▮)",
+        "後面幾個字",
+        "The last characters",
+        'pl.col("代號").str.tail(1)',
+        "method",
+        args=(_INT_TEXT,),
+    ),
+    _syntax(
+        "str.zfill",
+        4,
+        ".str.zfill(▮)",
+        "前面補 0 到指定的長度",
+        "Pad with leading zeros to a length",
+        'pl.col("代號").str.zfill(4)',
+        "method",
+        args=(_INT_PAD,),
+    ),
+    _syntax(
+        "str.pad_start",
+        4,
+        '.str.pad_start(▮, " ")',
+        "前面補字到指定的長度（補的字是一個字）",
+        "Pad at the start to a length (with a single character)",
+        'pl.col("代號").str.pad_start(4, "*")',
+        "method",
+        args=(_INT_PAD, "char"),
+        optional=1,
+    ),
+    _syntax(
+        "str.pad_end",
+        4,
+        '.str.pad_end(▮, " ")',
+        "後面補字到指定的長度（補的字是一個字）",
+        "Pad at the end to a length (with a single character)",
+        'pl.col("代號").str.pad_end(4, "*")',
+        "method",
+        args=(_INT_PAD, "char"),
+        optional=1,
+    ),
+    _syntax(
+        "str.starts_with",
+        4,
+        '.str.starts_with("▮")',
+        "開頭是指定的文字",
+        "Starts with the text",
+        'pl.col("門市").str.starts_with("北")',
+        "method",
+        args=("str",),
+    ),
+    _syntax(
+        "str.ends_with",
+        4,
+        '.str.ends_with("▮")',
+        "結尾是指定的文字",
+        "Ends with the text",
+        'pl.col("門市").str.ends_with("門市")',
+        "method",
+        args=("str",),
+    ),
+    _syntax(
+        "str.contains",
+        4,
+        '.str.contains("▮", literal=True)',
+        "包含指定的文字（literal=True 一定要寫）",
+        "Contains the text (literal=True is required)",
+        'pl.col("門市").str.contains("區", literal=True)',
+        "method",
+        args=("str",),
+        kwargs={"literal": _LITERAL_TRUE},
+    ),
+    _syntax(
+        "str.replace",
+        4,
+        '.str.replace("▮", "", literal=True)',
+        "第一個符合的文字換成另一段（literal=True 一定要寫）",
+        "Replace the first match with other text (literal=True is required)",
+        'pl.col("門市").str.replace(" ", "", literal=True)',
+        "method",
+        args=("str", "str"),
+        kwargs={"literal": _LITERAL_TRUE},
+    ),
+    _syntax(
+        "str.replace_all",
+        4,
+        '.str.replace_all("▮", "", literal=True)',
+        "所有符合的文字換成另一段（literal=True 一定要寫）",
+        "Replace every match with other text (literal=True is required)",
+        'pl.col("門市").str.replace_all(" ", "", literal=True)',
+        "method",
+        args=("str", "str"),
+        kwargs={"literal": _LITERAL_TRUE},
+    ),
+    # 日期
+    _syntax(
+        "pl.date",
+        5,
+        "pl.date(2026, 1, 1)",
+        "固定的日期（年、月、日寫整數）",
+        "A fixed date (year, month and day as whole numbers)",
+        'pl.col("日期") >= pl.date(2026, 2, 1)',
+        "date",
+    ),
+    _syntax("dt.year", 5, ".dt.year()", "西元年", "Year", 'pl.col("日期").dt.year()', "method"),
+    _syntax(
+        "dt.month",
+        5,
+        ".dt.month()",
+        "月（1～12）",
+        "Month (1–12)",
+        'pl.col("日期").dt.month()',
+        "method",
+    ),
+    _syntax(
+        "dt.day", 5, ".dt.day()", "日（1～31）", "Day (1–31)", 'pl.col("日期").dt.day()', "method"
+    ),
+    _syntax(
+        "dt.weekday",
+        5,
+        ".dt.weekday()",
+        "星期幾（星期一是 1，星期日是 7）",
+        "Day of the week (Monday is 1, Sunday is 7)",
+        'pl.col("日期").dt.weekday()',
+        "method",
+    ),
+    _syntax(
+        "dt.to_string",
+        5,
+        '.dt.to_string("%Y/%m/%d")',
+        "日期轉成文字（%Y 年、%m 月、%d 日）",
+        "Date to text (%Y year, %m month, %d day)",
+        'pl.col("日期").dt.to_string("%Y/%m")',
+        "method",
+        args=("str",),
+    ),
+    _syntax(
+        "dt.total_days",
+        5,
+        ".dt.total_days()",
+        "兩個日期相減之後：差幾天",
+        "After subtracting two dates: the number of days",
+        '(pl.col("日期") - pl.date(2026, 1, 1)).dt.total_days()',
+        "method",
+    ),
+    # 轉型
+    _syntax(
+        "cast",
+        6,
+        ".cast(▮, strict=False)",
+        "轉成另一種型別；轉不了的是空值（strict=False 一定要寫）",
+        "Convert to another type; values that can't be converted become null "
+        "(strict=False is required)",
+        'pl.col("單價").cast(pl.Int64, strict=False)',
+        "method",
+        args=("type",),
+        kwargs={"strict": _STRICT_FALSE},
+    ),
+    _syntax(
+        "pl.Int64",
+        6,
+        ".cast(pl.Int64, strict=False)",
+        "轉成整數（小數的部分直接捨去）",
+        "Convert to a whole number (the decimal part is dropped)",
+        'pl.col("單價").cast(pl.Int64, strict=False)',
+        "type",
+    ),
+    _syntax(
+        "pl.Float64",
+        6,
+        ".cast(pl.Float64, strict=False)",
+        "轉成浮點數",
+        "Convert to a float",
+        'pl.col("數量").cast(pl.Float64, strict=False)',
+        "type",
+    ),
+    _syntax(
+        "pl.String",
+        6,
+        ".cast(pl.String, strict=False)",
+        "轉成文字",
+        "Convert to text",
+        'pl.col("單價").cast(pl.String, strict=False)',
+        "type",
+    ),
+    _syntax(
+        "pl.Decimal",
+        6,
+        ".cast(pl.Decimal(38, 2), strict=False)",
+        "轉成 N 位的小數（pl.Decimal(38, N)，N 是 0～18）；位數變少時四捨五入",
+        "Convert to a decimal with N places (pl.Decimal(38, N), N from 0 to 18); rounds half away "
+        "from zero when places are dropped",
+        'pl.col("單價").cast(pl.Decimal(38, 1), strict=False)',
+        "type",
+    ),
+]
+SYNTAX_BY_ID = {item["id"]: item for item in SYNTAX}
+
+_BIN_OPS = {
+    "Add": "+",
+    "Sub": "-",
+    "Mult": "*",
+    "Div": "/",
+    "FloorDiv": "//",
+    "Mod": "%",
+    "BitAnd": "&",
+    "BitOr": "|",
+}
+_COMPARE_OPS = {"Eq": "==", "NotEq": "!=", "Gt": ">", "GtE": ">=", "Lt": "<", "LtE": "<="}
+
+_HINT_GROUP = (
+    "要看整份資料，預覽是樣本，算出來會和匯出的不一樣；請用「群組彙總」，需要的話再「結合」回來",
+    "it needs the whole data, and the preview is a sample, so the result would differ from the "
+    'export; use "Group by", then "Join" it back if needed',
+)
+_HINT_OTHER_ROWS = (
+    "要看其他列；只是要把上面的值往下帶的話，用「向下填滿」",
+    'it needs other rows; to carry values down from above, use "Fill down"',
+)
+_HINT_ROW_COUNT = (
+    "會改變列數；請用「篩選」「移除重複」",
+    'it changes the number of rows; use "Filter" or "Remove duplicates"',
+)
+_HINT_PYTHON = ("會執行 Python 的程式", "it runs Python code")
+_HINT_NAME = ("欄名由「新欄位名稱」決定", 'the column name comes from "New column name"')
+_HINT_ONE = ("一步只算一欄", "each step computes a single column")
+_BLOCKED_METHODS: dict[str, tuple[str, str]] = {
+    **dict.fromkeys(
+        (
+            "sum",
+            "mean",
+            "median",
+            "min",
+            "max",
+            "count",
+            "n_unique",
+            "first",
+            "last",
+            "std",
+            "var",
+            "quantile",
+            "mode",
+            "product",
+            "arg_min",
+            "arg_max",
+            "len",
+            "all",
+            "any",
+            "over",
+        ),
+        _HINT_GROUP,
+    ),
+    **dict.fromkeys(
+        (
+            "shift",
+            "diff",
+            "cum_sum",
+            "cum_count",
+            "cum_max",
+            "cum_min",
+            "cum_prod",
+            "rank",
+            "sort",
+            "sort_by",
+            "forward_fill",
+            "backward_fill",
+            "rolling_sum",
+            "rolling_mean",
+        ),
+        _HINT_OTHER_ROWS,
+    ),
+    **dict.fromkeys(
+        (
+            "filter",
+            "head",
+            "tail",
+            "unique",
+            "explode",
+            "drop_nulls",
+            "slice",
+            "gather",
+            "sample",
+            "reverse",
+        ),
+        _HINT_ROW_COUNT,
+    ),
+    **dict.fromkeys(("map_elements", "map_batches", "pipe"), _HINT_PYTHON),
+    "replace_strict": (
+        "串流處理不支援；請用「取代文字」或 pl.when",
+        'streaming doesn\'t support it; use "Replace text" or pl.when',
+    ),
+    "alias": _HINT_NAME,
+}
+_BLOCKED_PL: dict[str, tuple[str, str]] = {
+    "all": _HINT_ONE,
+    "exclude": _HINT_ONE,
+    "len": _HINT_GROUP,
+}
+_SUGGEST = ("可以用的寫法見「插入語法」", 'see "Insert syntax" for what can be used')
+_PL_TYPES = {"Int64": "pl.Int64", "Float64": "pl.Float64", "String": "pl.String"}
+
+
+class _ExprError(ValueError):
+    pass
+
+
+def _fail(text: str) -> _ExprError:
+    return _ExprError(text)
+
+
+def _blocked(shown: str, why: str | tuple[str, str] | None = None) -> _ExprError:
+    """「不能用 `….xxx()`」＋原因與建議（沒有特別的原因時：見「插入語法」）。
+    ``why`` 是已經依語言選好的文字，或模組層的（中文, 英文）。"""
+    if isinstance(why, tuple):
+        why = t(*why)
+    reason = why or t(*_SUGGEST)
+    return _fail(t(f"不能用 `{shown}`：", f"`{shown}` can't be used: ") + reason)
+
+
+def _shown(id: str) -> str:
+    """寫法在訊息裡的樣子：``pl.concat_str()``、``.round()``、``.str.slice()``。"""
+    if id.startswith("pl."):
+        return f"{id}()"
+    return f".{id}()"
+
+
+class ExpressionScan:
+    """讀一條運算式（不執行）：``error`` 是第一個問題（沒有問題時是 None），``columns`` 是引用到的欄名
+    （依出現的順序），``ids`` 是用到的語法表的寫法，``tree`` 是給 steps/custom.py 轉成 Polars 的中間的樹。
+
+    中間的樹（tuple）：
+    - ``("col", 欄名)``
+    - ``("lit", 種類, 值)``：種類是 int、decimal（``Decimal``）、str、bool、none
+    - ``("op", id, 左, 右)``、``("unary", id, 運算式)``
+    - ``("call", id, 接在誰後面（函式是 None）, 位置參數, 關鍵字參數)``：參數是中間的樹或字面值
+    - ``("when", [(條件, 值), …], otherwise 的值或 None)``
+    - ``("type", id, 小數位數或 None)``（只在 cast 的參數裡）
+    """
+
+    def __init__(self, text: str) -> None:
+        self.error: str | None = None
+        self.columns: list[str] = []
+        self.ids: set[str] = set()
+        self.tree: Any = None
+        self._source = ""
+        try:
+            self.tree = self._scan(text)
+        except _ExprError as err:
+            self.error = str(err)
+            self.tree = None
+
+    # ── 讀成語法樹 ──
+
+    def _scan(self, text: str) -> Any:
+        too_big = _fail(
+            t(
+                f"運算式太長或太複雜（最多 {EXPR_MAX_CHARS:,} 個字、{EXPR_MAX_NODES} 個節點、"
+                f"{EXPR_MAX_DEPTH} 層）",
+                f"The expression is too long or too complex (at most {EXPR_MAX_CHARS:,} characters, "
+                f"{EXPR_MAX_NODES} nodes and {EXPR_MAX_DEPTH} levels)",
+            ),
+        )
+        if len(text) > EXPR_MAX_CHARS or "\0" in text:
+            raise too_big
+        source = text.strip()
+        lines = [line.strip() for line in source.splitlines()]
+        if not any(line and not line.startswith("#") for line in lines):
+            raise _fail(t("運算式是空的", "The expression is empty"))
+        try:
+            tree = ast.parse(source, mode="eval")
+        except SyntaxError as err:
+            if "too many nested" in str(err.msg):
+                raise too_big from None
+            raise self._syntax_error(source, err) from None
+        except (RecursionError, MemoryError, ValueError):
+            raise too_big from None
+        nodes, stack = 0, [(tree.body, 1)]
+        while stack:
+            node, depth = stack.pop()
+            nodes += 1
+            if nodes > EXPR_MAX_NODES or depth > EXPR_MAX_DEPTH:
+                raise too_big
+            stack.extend(
+                (child, depth + 1)
+                for child in ast.iter_child_nodes(node)
+                if not isinstance(child, (ast.expr_context, ast.operator, ast.cmpop, ast.unaryop))
+            )
+        self._source = source
+        return self._expr(tree.body, "expr")
+
+    @staticmethod
+    def _syntax_error(source: str, err: SyntaxError) -> _ExprError:
+        where = (
+            t(
+                f"（第 {err.lineno} 行第 {err.offset} 個字附近）",
+                f" (near line {err.lineno}, character {err.offset})",
+            )
+            if err.lineno and err.offset
+            else ""
+        )
+        if any(ch in source for ch in "（）［］｛｝“”‘’，＂＇"):  # i18n-ignore：全形的符號
+            return _fail(
+                t(
+                    f"運算式的語法有誤{where}：括號、引號、逗號要用半形的 ( ) [ ] \" ' ,",
+                    f"The expression has a syntax error{where}: use half-width brackets, quotes "
+                    "and commas ( ) [ ] \" ' ,",
+                ),
+            )
+        return _fail(
+            t(
+                f"運算式的語法有誤{where}：檢查括號、引號有沒有成對，換行的運算式要用括號包起來",
+                f"The expression has a syntax error{where}: check that brackets and quotes are "
+                "paired, and wrap an expression that spans lines in parentheses",
+            ),
+        )
+
+    # ── 運算式 ──
+
+    def _expr(self, node: ast.expr, kind: str) -> Any:
+        """``kind`` 是 expr（不能直接寫字串）或 value（字串是文字）。"""
+        literal = self._literal_node(node)
+        if literal is not None:
+            lit = self._literal(literal[0], literal[1])
+            if lit[1] == "str" and kind == "expr":
+                raise _fail(
+                    t(
+                        f'這裡不能直接寫字串 {self._segment(node)}：文字請寫成 pl.lit("…")，'
+                        '欄位請寫成 pl.col("…")',
+                        f"A plain string {self._segment(node)} can't go here: write text as "
+                        'pl.lit("…") and columns as pl.col("…")',
+                    ),
+                )
+            self.ids.add(_LITERAL_IDS[lit[1]] if lit[1] != "bool" else str(lit[2]))
+            return lit
+        if isinstance(node, ast.BinOp):
+            name = type(node.op).__name__
+            if name == "Pow":
+                raise _blocked("**")
+            if name not in _BIN_OPS:
+                raise _blocked(self._op_text(node.op))
+            return self._binary(_BIN_OPS[name], node.left, node.right)
+        if isinstance(node, ast.Compare):
+            if len(node.ops) > 1:
+                raise _fail(
+                    t(
+                        "不能連著比較（例如 1 < x < 3）：請用 .is_between(…)，或兩個比較用 & 接起來",
+                        "Chained comparisons (like 1 < x < 3) can't be used: use .is_between(…), or "
+                        "join two comparisons with &",
+                    ),
+                )
+            name = type(node.ops[0]).__name__
+            if name in ("In", "NotIn"):
+                raise _blocked("in", t("請用 .is_in([…])", "use .is_in([…])"))
+            if name in ("Is", "IsNot"):
+                raise _blocked(
+                    "is",
+                    t(
+                        "請用 .is_null()、.is_not_null() 或 ==",
+                        "use .is_null(), .is_not_null() or ==",
+                    ),
+                )
+            return self._binary(_COMPARE_OPS[name], node.left, node.comparators[0])
+        if isinstance(node, ast.UnaryOp):
+            name = type(node.op).__name__
+            if name == "USub":
+                return self._unary("neg", node.operand)
+            if name == "Invert":
+                return self._unary("~", node.operand)
+            if name == "Not":
+                raise _blocked(
+                    "not",
+                    t("請用 ~，條件加括號：~(…)", "use ~ with the condition in parentheses: ~(…)"),
+                )
+            raise _blocked("+")
+        if isinstance(node, ast.BoolOp):
+            word = "and" if isinstance(node.op, ast.And) else "or"
+            sign = "&" if word == "and" else "|"
+            raise _blocked(
+                word,
+                t(
+                    f"在 Polars 的運算式裡意思不對；請用 {sign}，兩邊的條件各自加括號",
+                    f"it doesn't mean that in Polars expressions; use {sign} with each condition in "
+                    "parentheses",
+                ),
+            )
+        if isinstance(node, ast.IfExp):
+            raise _blocked(
+                "… if … else …",
+                t("請用 pl.when(…).then(…).otherwise(…)", "use pl.when(…).then(…).otherwise(…)"),
+            )
+        if isinstance(node, ast.Call):
+            return self._call(node)
+        if isinstance(node, ast.Attribute):
+            if (
+                isinstance(node.value, ast.Name)
+                and node.value.id == "pl"
+                and node.attr in _PL_TYPES
+            ):
+                raise _fail(
+                    t(
+                        "型別只能寫在 .cast(…, strict=False) 裡",
+                        "Types can only be used in .cast(…, strict=False)",
+                    ),
+                )
+            if isinstance(node.value, ast.Name) and node.value.id == "pl":
+                raise _blocked(f"pl.{node.attr}")
+            raise _blocked(f".{node.attr}")
+        if isinstance(node, ast.Name):
+            raise self._name_error(node.id)
+        raise self._other_error(node)
+
+    def _other_error(self, node: ast.AST) -> _ExprError:
+        """語法表以外的其他語法（清單、[ ]、lambda、f-string…）。"""
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set, ast.Dict)):
+            return _fail(
+                t(
+                    "清單只能寫在 .is_in([…])、pl.concat_str([…]) 裡",
+                    "Lists can only be used in .is_in([…]) and pl.concat_str([…])",
+                ),
+            )
+        names = {
+            ast.Subscript: "[ ]",
+            ast.Lambda: "lambda",
+            ast.JoinedStr: 'f"…"',
+            ast.NamedExpr: ":=",
+            ast.ListComp: "[… for …]",
+            ast.SetComp: "{… for …}",
+            ast.DictComp: "{… for …}",
+            ast.GeneratorExp: "(… for …)",
+            ast.Starred: "*",
+        }
+        shown = next((v for k, v in names.items() if isinstance(node, k)), None) or self._short(
+            node
+        )
+        why = _HINT_PYTHON if isinstance(node, ast.Lambda) else None
+        return _blocked(shown, why)
+
+    @staticmethod
+    def _name_error(name: str) -> _ExprError:
+        if name == "pl":
+            return _fail(
+                t(
+                    'pl 後面要接寫法，例如 pl.col("…")',
+                    'pl must be followed by something, like pl.col("…")',
+                )
+            )
+        return _fail(
+            t(
+                f'不能用 `{name}`：只能用 pl. 開頭的寫法（例如 pl.col("…")）與字面值；{_SUGGEST[0]}',
+                f'`{name}` can\'t be used: only pl. syntax (like pl.col("…")) and literal values; '
+                f"{_SUGGEST[1]}",
+            ),
+        )
+
+    @staticmethod
+    def _op_text(op: ast.AST) -> str:
+        return {
+            "BitXor": "^",
+            "LShift": "<<",
+            "RShift": ">>",
+            "MatMult": "@",
+        }.get(type(op).__name__, type(op).__name__)
+
+    def _binary(self, id: str, left: ast.expr, right: ast.expr) -> Any:
+        kinds = SYNTAX_BY_ID.get(id)
+        if kinds is None:
+            raise _blocked(id)
+        self.ids.add(id)
+        a, b = kinds["args"]
+        return ("op", id, self._expr(left, a), self._expr(right, b))
+
+    def _unary(self, id: str, operand: ast.expr) -> Any:
+        if id not in SYNTAX_BY_ID:
+            raise _blocked(id)
+        self.ids.add(id)
+        return ("unary", id, self._expr(operand, "expr"))
+
+    # ── 字面值 ──
+
+    @staticmethod
+    def _literal_node(node: ast.expr) -> tuple[ast.Constant, bool] | None:
+        """字面值的節點與有沒有負號（``-2`` 在語法樹裡是負號加一個常數）；不是字面值時是 None。"""
+        if isinstance(node, ast.Constant):
+            return node, False
+        if (
+            isinstance(node, ast.UnaryOp)
+            and isinstance(node.op, ast.USub)
+            and isinstance(node.operand, ast.Constant)
+            and isinstance(node.operand.value, (int, float, complex))
+            and not isinstance(node.operand.value, bool)
+        ):
+            return node.operand, True
+        return None
+
+    def _literal(self, node: ast.Constant, negative: bool) -> tuple[str, str, Any]:
+        value = node.value
+        if value is None:
+            return ("lit", "none", None)
+        if isinstance(value, bool):
+            return ("lit", "bool", value)
+        if isinstance(value, int):
+            value = -value if negative else value
+            if not INT64_MIN <= value <= INT64_MAX:
+                raise _fail(
+                    t(
+                        f"整數 {value} 超過範圍（int64）",
+                        f"The whole number {value} is out of range (int64)",
+                    )
+                )
+            return ("lit", "int", value)
+        if isinstance(value, float):
+            text = (self._segment(node) or "").replace("_", "")
+            if "e" in text.lower():
+                raise _blocked(
+                    text,
+                    t(
+                        "小數不能用科學記號，請直接寫出來（例如 0.001）",
+                        "write decimals out in full (like 0.001)",
+                    ),
+                )
+            try:
+                number = Decimal(("-" if negative else "") + text)
+            except InvalidOperation:
+                raise _blocked(text) from None
+            exponent = number.as_tuple().exponent
+            scale = -exponent if isinstance(exponent, int) and exponent < 0 else 0
+            if scale > DECIMAL_MAX_SCALE or len(number.as_tuple().digits) > 38:
+                raise _fail(
+                    t(
+                        f"小數 {text} 的位數太多（最多 {DECIMAL_MAX_SCALE} 位小數）",
+                        f"The decimal {text} has too many digits (at most {DECIMAL_MAX_SCALE} decimal "
+                        "places)",
+                    ),
+                )
+            return ("lit", "decimal", number)
+        if isinstance(value, str):
+            return ("lit", "str", value)
+        if isinstance(value, bytes):
+            raise _blocked('b"…"')
+        if isinstance(value, complex):
+            raise _blocked(self._segment(node) or "j")
+        raise _blocked("...")
+
+    def _segment(self, node: ast.AST) -> str:
+        return ast.get_source_segment(self._source, node) or ""
+
+    def _short(self, node: ast.AST) -> str:
+        text = " ".join(self._segment(node).split()) or type(node).__name__
+        return text if len(text) <= 30 else text[:29] + "…"
+
+    # ── 函式與方法 ──
+
+    def _call(self, node: ast.Call) -> Any:
+        func = node.func
+        if isinstance(func, ast.Name):
+            raise _fail(
+                t(
+                    f"不能用 `{func.id}(…)`：只能用 pl. 開頭的函式與運算式的方法；{_SUGGEST[0]}",
+                    f"`{func.id}(…)` can't be used: only pl. functions and expression methods; "
+                    f"{_SUGGEST[1]}",
+                ),
+            )
+        if not isinstance(func, ast.Attribute):
+            if isinstance(func, ast.Lambda):
+                raise self._other_error(func)
+            raise _blocked(f"{self._short(func)}(…)")
+        attr, recv = func.attr, func.value
+        if isinstance(recv, ast.Name):
+            if recv.id == "pl":
+                return self._pl_call(attr, node)
+            raise self._name_error(recv.id)
+        if attr in ("then", "otherwise", "when"):
+            return self._when(node)
+        if isinstance(recv, ast.Attribute) and not (
+            isinstance(recv.value, ast.Name) and recv.value.id == "pl"
+        ):
+            space, base = recv.attr, recv.value
+            if space == "name":
+                raise _blocked(f".name.{attr}()", _HINT_NAME)
+            if space not in ("str", "dt"):
+                raise _blocked(f".{space}.{attr}()")
+            id = f"{space}.{attr}"
+        else:
+            id, base = attr, recv
+        entry = SYNTAX_BY_ID.get(id)
+        if entry is None or entry["form"] != "method":
+            why = _BLOCKED_METHODS.get(attr) if "." not in id else None
+            raise _blocked(_shown(id), why)
+        if id == "fill_null" and any(kw.arg == "strategy" for kw in node.keywords):
+            raise _blocked("fill_null(strategy=…)", _HINT_OTHER_ROWS)
+        if self._literal_node(base) is not None:
+            raise _fail(
+                t(
+                    f'`{_shown(id)}` 要接在運算式後面，例如 pl.col("…"){_shown(id)}',
+                    f'`{_shown(id)}` must follow an expression, like pl.col("…"){_shown(id)}',
+                ),
+            )
+        receiver = self._expr(base, "expr")
+        self.ids.add(id)
+        args, kwargs = self._args(entry, node)
+        if id == "cast":
+            self.ids.add(args[0][1])
+        return ("call", id, receiver, args, kwargs)
+
+    def _pl_call(self, attr: str, node: ast.Call) -> Any:
+        id = f"pl.{attr}"
+        entry = SYNTAX_BY_ID.get(id)
+        if attr in _PL_TYPES or attr == "Decimal":
+            raise _fail(
+                t(
+                    "型別只能寫在 .cast(…, strict=False) 裡",
+                    "Types can only be used in .cast(…, strict=False)",
+                ),
+            )
+        if entry is None:
+            raise _blocked(f"{id}()", _BLOCKED_PL.get(attr))
+        self.ids.add(id)
+        if entry["form"] == "column":
+            return ("col", self._column_name(node))
+        if entry["form"] == "when":
+            raise _fail(
+                t("pl.when(…) 後面要接 .then(…)", "pl.when(…) must be followed by .then(…)")
+            )
+        if entry["form"] == "date":
+            return self._date(node)
+        if attr == "lit":
+            self._no_keywords(id, node)
+            if len(node.args) != 1:
+                raise self._count_error(id, 1)
+            literal = self._literal_node(node.args[0])
+            if literal is None:
+                raise _fail(
+                    t(
+                        "pl.lit(…) 裡只能寫固定的值（文字、數字、True、False、None）",
+                        "pl.lit(…) only takes a fixed value (text, a number, True, False or None)",
+                    ),
+                )
+            lit = self._literal(*literal)
+            self.ids.add(_LITERAL_IDS[lit[1]] if lit[1] != "bool" else str(lit[2]))
+            return ("call", id, None, [lit], {})
+        args, kwargs = self._args(entry, node)
+        return ("call", id, None, args, kwargs)
+
+    def _column_name(self, node: ast.Call) -> str:
+        self._no_keywords("pl.col", node)
+        if not node.args:
+            raise _fail(
+                t(
+                    'pl.col(…) 要寫一個欄名：pl.col("欄名")',
+                    'pl.col(…) needs a column name: pl.col("name")',
+                )
+            )
+        arg = node.args[0]
+        if len(node.args) > 1 or isinstance(arg, (ast.List, ast.Tuple)):
+            raise _fail(
+                t(
+                    f"pl.col(…) 只能寫一個欄名：{_HINT_ONE[0]}",
+                    f"pl.col(…) takes a single column name: {_HINT_ONE[1]}",
+                ),
+            )
+        if isinstance(arg, ast.Attribute):
+            raise _fail(
+                t(
+                    f"pl.col(…) 不能用型別選欄：{_HINT_ONE[0]}",
+                    f"pl.col(…) can't pick columns by type: {_HINT_ONE[1]}",
+                ),
+            )
+        if not (isinstance(arg, ast.Constant) and isinstance(arg.value, str)):
+            raise _fail(
+                t(
+                    'pl.col(…) 的欄名要寫成文字：pl.col("欄名")',
+                    'The column name in pl.col(…) must be text: pl.col("name")',
+                ),
+            )
+        name = arg.value
+        if name == "*" or (name.startswith("^") and name.endswith("$")):
+            raise _fail(
+                t(
+                    f'不能用 pl.col("{name}")：Polars 會把它當成好幾欄（* 或正規表示式）；{_HINT_ONE[0]}',
+                    f'pl.col("{name}") can\'t be used: Polars treats it as several columns (* or a '
+                    f"regular expression); {_HINT_ONE[1]}",
+                ),
+            )
+        if name not in self.columns:
+            self.columns.append(name)
+        return name
+
+    def _date(self, node: ast.Call) -> Any:
+        self._no_keywords("pl.date", node)
+        parts: list[int] = []
+        for arg in node.args:
+            literal = self._literal_node(arg)
+            value = literal[0].value if literal else None
+            if not isinstance(value, int) or isinstance(value, bool) or (literal and literal[1]):
+                raise _fail(
+                    t(
+                        "pl.date(…) 只能寫整數：pl.date(2026, 1, 31)",
+                        "pl.date(…) only takes whole numbers: pl.date(2026, 1, 31)",
+                    ),
+                )
+            parts.append(value)
+        if len(parts) != 3:
+            raise self._count_error("pl.date", 3)
+        try:
+            datetime.date(*parts)
+        except (ValueError, OverflowError):
+            raise _fail(
+                t(
+                    f"沒有這個日期：pl.date({parts[0]}, {parts[1]}, {parts[2]})",
+                    f"No such date: pl.date({parts[0]}, {parts[1]}, {parts[2]})",
+                ),
+            ) from None
+        return ("call", "pl.date", None, parts, {})
+
+    def _when(self, node: ast.Call) -> Any:
+        """``pl.when(…).then(…)[.when(…).then(…)]…[.otherwise(…)]`` 整串。"""
+        attr = node.func.attr  # type: ignore[attr-defined]
+        otherwise = None
+        if attr == "otherwise":
+            otherwise = node
+            node = node.func.value  # type: ignore[attr-defined,assignment]
+            if not (isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "then"):
+                raise _fail(
+                    t(
+                        ".otherwise(…) 要接在 pl.when(…).then(…) 後面",
+                        ".otherwise(…) must follow pl.when(…).then(…)",
+                    ),
+                )
+        elif attr == "when":
+            raise _fail(
+                t("pl.when(…) 後面要接 .then(…)", "pl.when(…) must be followed by .then(…)")
+            )
+        pairs: list[tuple[ast.Call, ast.Call]] = []
+        while True:
+            then = node
+            when = then.func.value  # type: ignore[attr-defined]
+            if not (isinstance(when, ast.Call) and getattr(when.func, "attr", None) == "when"):
+                raise _fail(t(".then(…) 要接在 pl.when(…) 後面", ".then(…) must follow pl.when(…)"))
+            pairs.append((when, then))
+            head = when.func.value  # type: ignore[attr-defined]
+            if isinstance(head, ast.Name) and head.id == "pl":
+                break
+            if not (isinstance(head, ast.Call) and getattr(head.func, "attr", None) == "then"):
+                raise _fail(
+                    t(
+                        ".when(…) 要接在 pl.when(…).then(…) 後面",
+                        ".when(…) must follow pl.when(…).then(…)",
+                    )
+                )
+            node = head
+        self.ids.add("pl.when")
+        branches = []
+        for when, then in reversed(pairs):
+            branches.append((self._one("pl.when", when), self._one(".then", then)))
+        last = self._one(".otherwise", otherwise) if otherwise is not None else None
+        return ("when", branches, last)
+
+    def _one(self, shown: str, node: ast.Call) -> Any:
+        self._no_keywords(shown.lstrip("."), node)
+        if len(node.args) != 1:
+            raise self._count_error(shown, 1)
+        return self._expr(node.args[0], "expr")
+
+    def _no_keywords(self, id: str, node: ast.Call) -> None:
+        for kw in node.keywords:
+            raise self._keyword_error(id, kw.arg)
+        for arg in node.args:
+            if isinstance(arg, ast.Starred):
+                raise _blocked("*")
+
+    @staticmethod
+    def _keyword_error(id: str, name: str | None) -> _ExprError:
+        if name is None:
+            return _blocked("**")
+        shown = _shown(id)
+        return _fail(t(f"`{shown}` 不能寫 {name}=", f"`{shown}` doesn't take {name}="))
+
+    @staticmethod
+    def _count_error(id: str, low: int, high: int | None = -1) -> _ExprError:
+        """參數個數不對：剛好 low 個（high 是 -1）、low～high 個、low 個以上（high 是 None）。"""
+        shown = _shown(id) if not id.startswith(".") else f"{id}()"
+        if high is None:
+            return _fail(
+                t(f"`{shown}` 要寫 {low} 個以上的參數", f"`{shown}` takes at least {low} arguments")
+            )
+        if high == -1 or high == low:
+            noun = "argument" if low == 1 else "arguments"
+            return _fail(t(f"`{shown}` 要寫 {low} 個參數", f"`{shown}` takes {low} {noun}"))
+        return _fail(
+            t(f"`{shown}` 要寫 {low}～{high} 個參數", f"`{shown}` takes {low} to {high} arguments")
+        )
+
+    def _args(self, entry: dict[str, Any], node: ast.Call) -> tuple[list[Any], dict[str, Any]]:
+        id = entry["id"]
+        for arg in node.args:
+            if isinstance(arg, ast.Starred):
+                raise _blocked("*")
+        positional = list(node.args)
+        if entry["varargs"]:
+            kind, least = entry["varargs"]
+            if len(positional) < least:
+                raise self._count_error(id, least, None)
+            args = [self._arg(id, kind, arg) for arg in positional]
+        else:
+            spec = entry["args"]
+            least = len(spec) - entry["optional"]
+            if not least <= len(positional) <= len(spec):
+                raise self._count_error(id, least, len(spec))
+            args = [self._arg(id, spec[k], arg) for k, arg in enumerate(positional)]
+        kwargs: dict[str, Any] = {}
+        for kw in node.keywords:
+            if kw.arg is None or kw.arg not in entry["kwargs"]:
+                raise self._keyword_error(id, kw.arg)
+            kwargs[kw.arg] = self._arg(id, entry["kwargs"][kw.arg][0], kw.value, kw.arg)
+        for name, (kind, required) in entry["kwargs"].items():
+            if required and name not in kwargs:
+                raise _fail(
+                    t(
+                        f"`{_shown(id)}` 一定要寫 {name}={kind[1]!r}",
+                        f"`{_shown(id)}` requires {name}={kind[1]!r}",
+                    ),
+                )
+        return args, kwargs
+
+    def _arg(self, id: str, kind: Any, node: ast.expr, keyword: str | None = None) -> Any:
+        """一個參數。種類：expr、value（運算式；value 可以直接寫字串）、literal（任何字面值）、
+        str、char（一個字）、("int", 最小, 最大)、("choice", 選項)、("fixed", 一定要是這個值)、
+        type（pl.Int64 這類型別）、literals（字面值的清單）、exprs（運算式的清單）。"""
+        shown = _shown(id)
+        if kind in ("expr", "value"):
+            return self._expr(node, kind)
+        if kind == "exprs":
+            if not isinstance(node, ast.List) or not node.elts:
+                raise _fail(
+                    t(
+                        f'`{shown}` 要寫一個清單：[pl.col("…"), pl.lit("…")]',
+                        f'`{shown}` takes a list: [pl.col("…"), pl.lit("…")]',
+                    ),
+                )
+            return [self._expr(item, "expr") for item in node.elts]
+        if kind == "literals":
+            if not isinstance(node, ast.List) or not node.elts:
+                raise _fail(
+                    t(f'`{shown}` 要寫一個清單：["a", "b"]', f'`{shown}` takes a list: ["a", "b"]')
+                )
+            values = []
+            for item in node.elts:
+                literal = self._literal_node(item)
+                if literal is None:
+                    raise _fail(
+                        t(
+                            f"`{shown}` 的清單裡只能寫固定的值",
+                            f"The list in `{shown}` only takes fixed values",
+                        )
+                    )
+                values.append(self._literal(*literal))
+            return values
+        if kind == "type":
+            return self._type(node)
+        literal = self._literal_node(node)
+        value = literal[0].value if literal else None
+        if literal and literal[1]:
+            value = -value  # type: ignore[operator]
+        label = f"{keyword}=" if keyword else t("參數", "argument")
+        if isinstance(kind, tuple) and kind[0] == "fixed":
+            if value is not kind[1]:
+                raise _fail(
+                    t(
+                        f"`{shown}` 一定要寫 {keyword}={kind[1]!r}",
+                        f"`{shown}` requires {keyword}={kind[1]!r}",
+                    )
+                )
+            return value
+        if isinstance(kind, tuple) and kind[0] == "choice":
+            if value not in kind[1]:
+                options = t("、", ", ").join(f'"{o}"' for o in kind[1])
+                raise _fail(
+                    t(
+                        f"`{shown}` 的 {label} 只能是 {options}",
+                        f"`{shown}` {label} must be one of {', '.join(repr(o) for o in kind[1])}",
+                    ),
+                )
+            return value
+        if isinstance(kind, tuple) and kind[0] == "int":
+            low, high = kind[1], kind[2]
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise _fail(
+                    t(
+                        f"`{shown}` 的{label}要寫整數",
+                        f"The {label} of `{shown}` must be a whole number",
+                    )
+                )
+            if not low <= value <= high:
+                raise _fail(
+                    t(
+                        f"`{shown}` 的{label}要在 {low:,}～{high:,} 之間（寫的是 {value:,}）",
+                        f"The {label} of `{shown}` must be between {low:,} and {high:,} (got {value:,})",
+                    ),
+                )
+            return value
+        if kind in ("str", "char"):
+            if not isinstance(value, str):
+                raise _fail(
+                    t(
+                        f'`{shown}` 的{label}要寫文字（"…"）',
+                        f'The {label} of `{shown}` must be text ("…")',
+                    )
+                )
+            if kind == "char" and len(value) != 1:
+                raise _fail(
+                    t(
+                        f"`{shown}` 補的字要剛好一個字",
+                        f"The fill character of `{shown}` must be one character",
+                    )
+                )
+            return value
+        raise _blocked(shown)  # 語法表寫錯的種類
+
+    def _type(self, node: ast.expr) -> Any:
+        hint = t(
+            "型別要寫成 pl.Int64、pl.Float64、pl.String 或 pl.Decimal(38, 2)",
+            "Write the type as pl.Int64, pl.Float64, pl.String or pl.Decimal(38, 2)",
+        )
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "pl"
+        ):
+            if node.attr in _PL_TYPES and _PL_TYPES[node.attr] in SYNTAX_BY_ID:
+                return ("type", _PL_TYPES[node.attr], None)
+            if node.attr in ("Date", "Datetime"):
+                raise _fail(
+                    t(
+                        "cast 不能轉成日期：請用「文字轉日期」",
+                        'cast can\'t convert to a date: use "Parse dates"',
+                    ),
+                )
+            if node.attr == "Boolean":
+                raise _fail(
+                    t(
+                        'cast 不能轉成是／否：請用比較，例如 pl.col("數量") > 0',
+                        'cast can\'t convert to true/false: use a comparison, like pl.col("qty") > 0',
+                    ),
+                )
+            raise _fail(hint)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "pl"
+            and node.func.attr == "Decimal"
+            and "pl.Decimal" in SYNTAX_BY_ID
+        ):
+            self._no_keywords("pl.Decimal", node)
+            values: list[int | None] = []
+            for arg in node.args:
+                literal = self._literal_node(arg)
+                value = literal[0].value if literal and not literal[1] else None
+                values.append(
+                    value if isinstance(value, int) and not isinstance(value, bool) else None
+                )
+            if len(values) != 2 or values[0] != 38 or values[1] is None:
+                raise _fail(
+                    t(
+                        "小數的型別要寫成 pl.Decimal(38, 位數)",
+                        "Write the decimal type as pl.Decimal(38, places)",
+                    )
+                )
+            if not values[1] <= DECIMAL_MAX_SCALE:
+                raise _fail(
+                    t(
+                        f"pl.Decimal 的位數要在 0～{DECIMAL_MAX_SCALE} 之間",
+                        f"The places of pl.Decimal must be between 0 and {DECIMAL_MAX_SCALE}",
+                    ),
+                )
+            return ("type", "pl.Decimal", values[1])
+        raise _fail(hint)
+
+
+_LITERAL_IDS = {"int": "lit.int", "decimal": "lit.decimal", "str": "lit.str", "none": "None"}
+
+
+def syntax_catalog() -> list[dict[str, Any]]:
+    """給畫面（語法選擇器）的語法表：只有 id、category、insert、caret、doc、example、en。"""
+    keys = ("id", "category", "insert", "caret", "doc", "example", "en")
+    return [{k: dict(item[k]) if k == "en" else item[k] for k in keys} for item in SYNTAX]
+
+
 def step_rules(
     step: dict[str, Any], step_schema: dict[str, Any], schema: _Schema, path: list[str | int]
 ) -> list[Issue]:
@@ -934,6 +2506,10 @@ def step_rules(
                     ),
                 )
             )
+    if kind == "custom_expression" and isinstance(step.get("expression"), str):
+        scan = ExpressionScan(step["expression"])
+        if scan.error:
+            issues.append(_issue(path + ["expression"], scan.error))
     if kind in ("split_delimited", "split_column"):
         issues += _merge_column_rules(
             step, path, "columns" if kind == "split_delimited" else "names"
@@ -1525,7 +3101,14 @@ def _semantic(
             path: list[str | int] = ["stages", si, "steps", i]
             before = len(issues)
             issues += step_rules(step, ref_schema, schema, path)
-            for ref_path, ref, in_condition in schema.column_refs(step, ref_schema, path):
+            refs = schema.column_refs(step, ref_schema, path)
+            if kind == "custom_expression" and isinstance(step.get("expression"), str):
+                # 運算式裡 pl.col 引用的欄（可以讀系統欄位，和條件一樣）；語法錯由 step_rules 報
+                where = path + ["expression"]
+                refs = list(refs) + [
+                    (where, c, True) for c in ExpressionScan(step["expression"]).columns
+                ]
+            for ref_path, ref, in_condition in refs:
                 if ref.startswith("__"):
                     issues += _system_ref_issues(ref_path, ref, in_condition, system)
                 elif columns is not None and ref not in columns:

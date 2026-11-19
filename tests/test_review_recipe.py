@@ -382,6 +382,24 @@ F024_REJECT = {
         },
         "stages[0].steps[0].merge_column",
     ),
+    "custom_expression：用了語法表以外的寫法": (
+        {
+            "id": "s1",
+            "type": "custom_expression",
+            "name": "x",
+            "expression": 'pl.col("line").sum()',
+        },
+        "stages[0].steps[0].expression",
+    ),
+    "custom_expression：then 裡直接寫字串": (
+        {
+            "id": "s1",
+            "type": "custom_expression",
+            "name": "x",
+            "expression": 'pl.when(pl.col("line") == "a").then("b")',
+        },
+        "stages[0].steps[0].expression",
+    ),
     "split_delimited：沒選 merge_into 卻填了 merge_column": (
         {"id": "s1", "type": "split_delimited", "columns": ["a", "b"], "merge_column": "a"},
         "stages[0].steps[0].merge_column",
@@ -411,6 +429,8 @@ def test_f024_messages_match_pydantic():
         "split_delimited：merge_into 沒填 merge_column",
         "split_column：merge_column 不是拆出來的欄名",
         "split_delimited：沒選 merge_into 卻填了 merge_column",
+        "custom_expression：用了語法表以外的寫法",
+        "custom_expression：then 裡直接寫字串",
     ):
         data = recipe(F024_REJECT[title][0])
         assert errors(data)[0]["error"] == strict_error(data), title
@@ -531,6 +551,7 @@ def test_f024_every_pydantic_rule_has_a_validator_check():
         ("condition:RegexCondition", "pattern"),
         ("split_delimited", "merge_column"),  # step_rules：_merge_column_rules
         ("split_column", "merge_column"),
+        ("custom_expression", "expression"),  # step_rules：ExpressionScan
     }
     assert _field_validators() <= covered
 

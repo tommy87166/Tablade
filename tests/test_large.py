@@ -203,6 +203,46 @@ def test_stream_matches_eager_with_conversions_and_removed_columns(workdir):
     assert pick(streamed) == pick(eager)
 
 
+def test_stream_matches_eager_with_custom_expression(workdir):
+    """自訂（docs/custom-expression-plan.md）：文字轉數字之後算小數、除法、條件；串流與整份讀進記憶體一致。"""
+    data = json.loads(EXAMPLE.read_text(encoding="utf-8"))
+    data["tablade_recipe"] = "1.3"
+    data["stages"][0]["steps"] += [
+        {"id": "n", "type": "parse_number", "columns": ["金額"]},
+        {
+            "id": "c1",
+            "type": "custom_expression",
+            "name": "九折",
+            "expression": '(pl.col("金額") * 0.9).round(2)',
+        },
+        {
+            "id": "c2",
+            "type": "custom_expression",
+            "name": "每行",
+            "expression": 'pl.col("金額") / (pl.col("__line_no") - 5)',  # 第 5 行除以 0：警告
+        },
+        {
+            "id": "c3",
+            "type": "custom_expression",
+            "name": "大額",
+            "expression": 'pl.col("金額") > 1000',
+        },
+    ]
+    (workdir / "custom.recipe.json").write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+    r = parse_recipe(load_json(workdir / "custom.recipe.json"))
+    _, eager = execute(r, workdir, output=workdir / "e.parquet", mode="eager")
+    _, streamed = execute(r, workdir, output=workdir / "s.parquet", mode="stream")
+    a = pl.read_parquet(workdir / "e.parquet")
+    b = pl.read_parquet(workdir / "s.parquet")
+    assert a.equals(b) and b.height == 70
+    assert b.schema["九折"] == pl.Decimal(38, 2) and b.schema["大額"] == pl.Boolean
+    assert b.schema["每行"] == pl.Decimal(38, 6)
+    pick = lambda rep: sorted(  # noqa: E731
+        (w.source_file, w.line_no, w.message) for s in rep.steps for w in s.warnings
+    )
+    assert pick(streamed) == pick(eager) and streamed.warning_count >= 1
+
+
 def test_stream_matches_eager_with_text_and_column_steps(workdir):
     """清理文字、取代文字、改欄名、保留和排序欄位：串流與整份讀進記憶體的結果一致。"""
     data = json.loads(EXAMPLE.read_text(encoding="utf-8"))

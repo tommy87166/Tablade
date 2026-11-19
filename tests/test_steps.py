@@ -126,6 +126,7 @@ def test_registry_metadata_is_complete():
         "replace_values",
         "parse_number",
         "parse_date",
+        "custom_expression",
         "unpivot",
         "group_by",
         "pivot",
