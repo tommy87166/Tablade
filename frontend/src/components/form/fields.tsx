@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrig
 import { Switch } from '@/components/ui/switch'
 import { plural, tr } from '@/i18n'
 import type { Issue, JsonSchema } from '../../bridge'
+import { ExpressionField } from './ExpressionField'
 import { OptionIcon } from './OptionIcon'
 import { defaultFor, fieldKind, issuesAt, located, resolve, variants, type FieldKind } from '../../lib/schema'
 
@@ -44,6 +45,8 @@ export interface FieldProps {
   value: unknown
   onChange: (value: unknown) => void
   columns: string[] | null
+  /** 這一步輸入的系統欄位（自訂的運算式可以讀） */
+  systemColumns?: string[] | null
   /** 這一步之前的來源檔（來源檔順序用） */
   files?: string[] | null
   issues: Issue[]
@@ -856,6 +859,10 @@ function control(kind: FieldKind, props: FieldProps) {
       return <OptionCards value={value} onChange={onChange} schema={schema} />
     case 'own_name':
       return <ColumnSelect value={value} onChange={onChange} columns={ownNames(props)} />
+    case 'expression':
+      return (
+        <ExpressionField value={value} onChange={onChange} columns={columns} systemColumns={props.systemColumns ?? null} syntax={schema.ui_syntax ?? []} />
+      )
     case 'right_columns':
       return <ColumnChecklist value={value} onChange={onChange} columns={rightStage(props.root, props.context)?.columns ?? null} />
     case 'column_order':

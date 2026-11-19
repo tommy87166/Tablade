@@ -131,6 +131,7 @@ export function StepForm({ step, item, onChange, context, onRefresh, flushRef }:
             value={name in draft ? draft[name] : resolve(prop, schema).default}
             onChange={(v) => set(name, v)}
             columns={step.input_columns}
+            systemColumns={step.input_system_columns}
             files={step.input_files}
             issues={step.errors}
             required={required.has(name)}

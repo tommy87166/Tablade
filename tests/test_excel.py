@@ -233,6 +233,8 @@ def test_all_sheets_in_the_session(tmp_path):
         ("乙.xlsx", "一月"),
     ]
     s.add_step("merge_files", index=0)
+    # 自訂的「插入欄位」：讀全部工作表時，系統欄位有 __sheet
+    assert "__sheet" in s.state()["steps"][0]["input_system_columns"]
     # 合併來源檔的順序清單：每個工作表各自是一個來源
     assert s.state()["steps"][0]["input_files"] == [
         "甲.xlsx［一月］",

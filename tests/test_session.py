@@ -75,6 +75,10 @@ def test_build_the_example_recipe_like_a_user(data):
     assert [st["rows"] for st in state["steps"]] == [90, 88, 82, 82, 80, 80, 80, 70]
     assert [st["delta"] for st in state["steps"]] == [-4, -2, -6, 0, -2, 0, 0, -10]
     assert state["steps"][6]["input_columns"] == ["日期", "門市", "品號", "品名", "備註", "金額"]
+    # 自訂的「插入欄位」：每一步有輸入的系統欄位
+    assert all(
+        st["input_system_columns"] == ["__source_file", "__line_no"] for st in state["steps"]
+    )
     assert state["steps"][7]["describe"] == "排除：金額 開頭是「(」"
     assert last_rows(s) == EXPECTED
 
@@ -984,3 +988,12 @@ def test_load_data_reports_each_stage(data):
         ("Excel明細", "done"),
         ("預設階段", "waiting"),  # 讀的文字明細有錯，算不出來
     ]
+
+
+def test_input_system_columns_follows_input_columns(data):
+    """input_system_columns 和 input_columns 一樣：還沒有資料時是 None。"""
+    s = Session()
+    s.new(data / "x.recipe.json")
+    s.add_step("remove_blank_rows")
+    step = s.state()["steps"][0]
+    assert step["input_columns"] is None and step["input_system_columns"] is None

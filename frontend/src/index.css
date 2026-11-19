@@ -21,6 +21,10 @@
     --color-chart-3: var(--chart-3);
     --color-chart-2: var(--chart-2);
     --color-chart-1: var(--chart-1);
+    --color-expr-column: var(--expr-column);
+    --color-expr-string: var(--expr-string);
+    --color-expr-number: var(--expr-number);
+    --color-expr-keyword: var(--expr-keyword);
     --color-ring: var(--ring);
     --color-input: var(--input);
     --color-border: var(--border);
@@ -50,6 +54,11 @@
 
 :root {
     --brand: #fd5108;
+    /* 自訂的運算式：語法高亮（frontend/src/components/form/ExpressionField.tsx） */
+    --expr-column: #0b6e4f;
+    --expr-string: #8a5300;
+    --expr-number: #1f5fbf;
+    --expr-keyword: #8b3fbf;
     --background: oklch(1 0 0);
     --foreground: oklch(0.145 0 0);
     --card: oklch(1 0 0);
@@ -116,6 +125,10 @@
     --sidebar-accent-foreground: oklch(0.985 0 0);
     --sidebar-border: oklch(1 0 0 / 10%);
     --sidebar-ring: oklch(0.556 0 0);
+    --expr-column: #5ed3a8;
+    --expr-string: #f0b46a;
+    --expr-number: #8ab4ff;
+    --expr-keyword: #d3a2f5;
 }
 
 @layer base {

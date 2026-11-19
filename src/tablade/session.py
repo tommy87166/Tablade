@@ -91,6 +91,7 @@ from .steps.base import (
     Step,
     data_values,
     source_name,
+    system_columns,
     too_many_values,
 )
 
@@ -202,21 +203,22 @@ def _fill(item: _Computed, frame: pl.DataFrame) -> None:
 
 @dataclass(frozen=True)
 class _Shape:
-    """步驟清單用的數字：列數、資料欄位、來源（這個階段的輸入或某一步的結果）。"""
+    """步驟清單用的數字：列數、資料欄位、系統欄位、來源（這個階段的輸入或某一步的結果）。"""
 
     rows: int
     columns: list[str]
     files: list[str]
+    system: list[str]
 
     @classmethod
     def of(cls, item: _Computed) -> _Shape:
-        return cls(
-            item.rows, [c for c in item.schema if not c.startswith(SYSTEM_PREFIX)], item.files
-        )
+        names = list(item.schema)
+        data = [c for c in names if not c.startswith(SYSTEM_PREFIX)]
+        return cls(item.rows, data, item.files, system_columns(names))
 
     @classmethod
     def frame(cls, frame: pl.DataFrame) -> _Shape:
-        return cls(frame.height, _data_columns(frame), _files(frame))
+        return cls(frame.height, _data_columns(frame), _files(frame), system_columns(frame.columns))
 
 
 def _new_stage(name: str) -> dict[str, Any]:
@@ -1667,6 +1669,8 @@ class Session:
                         if item.done and previous is not None and enabled
                         else None,
                         "input_columns": previous.columns if previous is not None else None,
+                        # 運算式可以讀的系統欄位（自訂的「插入欄位」）
+                        "input_system_columns": previous.system if previous is not None else None,
                         "files": len(item.files) if item.done and enabled else None,
                         "input_files": previous.files if previous is not None else None,
                         "warning_count": item.warning_count,

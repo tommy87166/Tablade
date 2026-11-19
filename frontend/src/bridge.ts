@@ -19,6 +19,17 @@ export interface Issue {
   severity: 'error' | 'warning'
 }
 
+/** 自訂的運算式可以用的一種寫法（語法選擇器的一項） */
+export interface SyntaxEntry {
+  id: string
+  category: string
+  /** 插入的文字；caret 是插入後游標在這段文字裡的位置 */
+  insert: string
+  caret: number
+  doc: string
+  example: string
+}
+
 export type JsonSchema = {
   type?: string | string[]
   title?: string
@@ -42,6 +53,9 @@ export type JsonSchema = {
     | 'data_values'
     | 'option_cards'
     | 'own_name'
+    | 'expression'
+  /** ui 是 expression 時：語法表（Python 的 recipe/validator.py 的 SYNTAX；語法選擇器的目錄，已經換成畫面的語言） */
+  ui_syntax?: SyntaxEntry[]
   /** ui 是 data_values 時：從哪個參數指定的欄讀出值；own_name 時：選項是哪個參數（這一步自己的欄名清單） */
   ui_from?: string
   ui_labels?: Record<string, string>
@@ -118,6 +132,8 @@ export interface StepState {
   rows: number | null
   delta: number | null
   input_columns: string[] | null
+  /** 這一步輸入的系統欄位（自訂的運算式可以讀） */
+  input_system_columns: string[] | null
   /** 這一步處理後有幾個來源檔 */
   files: number | null
   /** 這一步之前的來源檔（依目前順序） */

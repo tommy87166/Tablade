@@ -121,6 +121,91 @@ def test_preview_cells_have_no_hover_tooltip():
     assert "title=" not in rows
 
 
+def test_expression_editor_has_no_hard_coded_syntax():
+    """自訂的編輯框、語法選擇器、切詞不寫死語法表的函式名稱（名稱都從 schema 的 ui_syntax 來）。
+
+    切詞要認得的 True、False、None、pl、col、str、dt 除外。
+    """
+    import re
+
+    from tablade.recipe.validator import SYNTAX
+
+    allowed = {"True", "False", "None", "pl", "col", "str", "dt"}
+    names = set()
+    for item in SYNTAX:
+        names |= set(re.findall(r"[A-Za-z_]\w*", item["id"].split(".")[-1]))
+    names -= allowed
+    names -= {"int", "decimal", "neg", "lit"}  # 不是函式名稱的 id 片段（lit.int、neg…）
+    files = [
+        FRONTEND / "src" / "lib" / "expression.ts",
+        FRONTEND / "src" / "components" / "form" / "ExpressionField.tsx",
+        FRONTEND / "src" / "components" / "form" / "SyntaxPicker.tsx",
+        FRONTEND / "src" / "components" / "form" / "Highlighted.tsx",
+    ]
+    found = []
+    for path in files:
+        words = set(
+            re.findall(r"[A-Za-z_]\w*", " ".join(_js_strings(path.read_text(encoding="utf-8"))))
+        )
+        found += [f"{path.name}: {w}" for w in sorted(words & names)]
+    assert found == []
+
+
+def _js_strings(code: str) -> list[str]:
+    """TypeScript 原始碼裡的字串（'…'、"…"、`…`）；略過註解與正規表示式。"""
+    out, i, n = [], 0, len(code)
+    while i < n:
+        ch = code[i]
+        if code.startswith("//", i):
+            i = code.find("\n", i) % (n + 1) if "\n" in code[i:] else n
+            continue
+        if code.startswith("/*", i):
+            i = code.find("*/", i) + 2
+            continue
+        if ch in "'\"`":
+            j, text = i + 1, ""
+            while j < n and code[j] != ch:
+                if code[j] == "\\":
+                    text += code[j : j + 2]
+                    j += 2
+                elif ch == "`" and code.startswith("${", j):  # 樣板字串裡的 ${…} 是程式，不是文字
+                    depth, j = 1, j + 2
+                    while j < n and depth:
+                        depth += {"{": 1, "}": -1}.get(code[j], 0)
+                        j += 1
+                else:
+                    text += code[j]
+                    j += 1
+            out.append(text)
+            i = j + 1
+            continue
+        if ch == "/" and code[:i].rstrip()[-1:] in (
+            "(",
+            ",",
+            "=",
+            ":",
+            "!",
+            "&",
+            "|",
+            "?",
+            "{",
+            ";",
+        ):
+            j, klass = i + 1, False
+            while j < n and (code[j] != "/" or klass):
+                if code[j] == "\\":
+                    j += 1
+                elif code[j] == "[":
+                    klass = True
+                elif code[j] == "]":
+                    klass = False
+                j += 1
+            i = j + 1
+            continue
+        i += 1
+    return out
+
+
 def test_bridge_types_match_python_api():
     source = (FRONTEND / "src" / "bridge.ts").read_text(encoding="utf-8")
     block = source.split("export interface TabladeApi {", 1)[1].split("\n}\n", 1)[0]

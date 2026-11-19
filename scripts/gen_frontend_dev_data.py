@@ -3,7 +3,7 @@
 
     uv run python scripts/gen_frontend_dev_data.py
 
-用假資料跑一次範例 recipe（最後再加上轉型別、刪除欄、清理文字、取代文字、改欄名、保留和排序欄位、
+用假資料跑一次範例 recipe（最後再加上轉型別、自訂、刪除欄、清理文字、取代文字、改欄名、保留和排序欄位、
 移除重複、群組彙總、樞紐、取消樞紐，看得到這些步驟的表單），
 把每一步（含讀取資料、輸出資料）的畫面狀態、前 200 列與型別分頁的內容存起來。之後用一般瀏覽器跑
 ``npm --prefix frontend run dev`` 時，``src/mock.ts`` 會用這份資料，畫面和真的一樣。
@@ -62,6 +62,12 @@ def all_steps_recipe() -> dict:
             "columns": ["日期"],
             "pattern": "slash",
             "calendar": "roc",
+        },
+        {
+            "id": "d15",
+            "type": "custom_expression",
+            "name": "含稅",
+            "expression": 'pl.col("金額") * 1.05',
         },
         {"id": "d11", "type": "remove_columns", "columns": ["單號"]},
         {
@@ -152,6 +158,11 @@ def add_demo_steps(session) -> None:
     session.add_step("parse_date", {"column": "日期"}, index=len(session.steps))
     session.update_step(
         len(session.steps) - 1, {"columns": ["日期"], "pattern": "slash", "calendar": "roc"}
+    )
+    session.add_step("custom_expression", {"column": "金額"}, index=len(session.steps))
+    session.update_step(
+        len(session.steps) - 1,
+        {"name": "九折", "expression": '(pl.col("金額") * 0.9).round(2)'},
     )
     session.add_step("remove_columns", {"column": "單號"}, index=len(session.steps))
     session.add_step("trim_clean", {"column": "品名"}, index=len(session.steps))

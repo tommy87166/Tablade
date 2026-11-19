@@ -71,7 +71,8 @@ export function vocabulary(items: SyntaxItem[]): Vocabulary {
 
 /** 欄名放進 pl.col("…") 的字串：前後加引號，裡面的 \ 與 " 加反斜線。 */
 export function quote(name: string): string {
-  return `"${name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+  const escaped = name.split('\\').join('\\\\').split('"').join('\\"')
+  return '"' + escaped + '"'
 }
 
 /** 字串的內容（拿掉引號、處理反斜線），用來比對欄名。 */
