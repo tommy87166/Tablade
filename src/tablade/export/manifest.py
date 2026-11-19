@@ -142,6 +142,17 @@ def build_manifest(
                     if f.replaced
                     else {}
                 ),
+                # 只認 CRLF：照原樣留在行裡的換行有幾個、前幾個在第幾行
+                **(
+                    {
+                        "line_breaks": {
+                            "inner": f.inner_breaks,
+                            "inner_lines": list(f.inner_break_lines),
+                        }
+                    }
+                    if f.inner_breaks
+                    else {}
+                ),
             }
             for f in report.inputs
             if f.stage in keep

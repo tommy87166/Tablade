@@ -137,6 +137,14 @@
   - 合法的 UTF-8 檔照樣直接讀原檔。`auto`＋寬鬆：先照原本的流程嚴格地試 UTF-8 → cp950，有一個成功就沒有換字；兩種都失敗時，從第一個不合 UTF-8 的那一行起取最多 4 MB（zip 裡的檔用 UTF-8 失敗那一段，還在記憶體裡），兩種都寬鬆地解、數換掉的字數，選少的那個，警告寫「自動選了…」。一樣多時選 cp950（例如只有英數字和造字的檔，`8F 46` 當 UTF-8 解也只換 1 個，但 `F` 會漏出來），只有檔案開頭是 UTF-8 的 BOM 時選 UTF-8。
   - 嚴格模式的錯誤訊息，逐行讀取時後面提示「可以把『解不開的字』改成『換成 �』（Recipe：input 的 `"decode_errors": "replace"`）」。
   - 已知的限制：不同的造字都是 `��`，分不出來、也換不回來（之後要的話另加「cp950＋造字區」編碼，見計畫的「不做的事」）；UTF-8 的固定位置報表換字後可能偏。
+- **換行**（`line_breaks`，計畫在 docs/line-breaks-plan.md）：預設 `"any"`，`\r\n`、`\n`、單獨的 `\r` 都算換行。每一筆都用 CRLF 結尾、某個文字欄位裡有人按了 Enter 時，那一筆會被拆成兩行。
+  - 只有逐行讀取（`text_lines`、`zip_lines`）可以設 `"crlf"`：只在 `\r\n` 切行，欄位裡單獨的 `\n`、`\r` 照原樣留在那一行的 `line` 裡（要清掉用「清理文字」的「移除看不見的字元」，會換成空白）。CSV 本來就認引號；pydantic 與驗證器都擋其他讀取方式。預設值不寫進 Recipe，舊版的 Tablade 也能開沒用到的 Recipe。
+  - 做法：`scan_lines` 只在 `\n` 切行、行尾的 `\r` 拿掉，單獨的 `\r` 本來就留在行裡。所以轉碼時（`transcode.decode_range`）單獨的 `\r` 不改，單獨的 `\n` 換成 `U+FDD0`（Unicode 的非字元），`_scan_one` 讀回來時換回 `\n`（一般的運算式，串流可以用）。原檔已經有 `U+FDD0` 時報錯。
+  - UTF-8 的檔在 `_check_utf8` 一次讀完時順便數 `\r\n`、單獨的 `\n`、單獨的 `\r`（`transcode.EndingCounter`；跨兩塊的 `\r\n` 算一組）：選了 `crlf`、又有單獨的 `\n` 或 `\r` 時才轉成暫存檔，沒有時照樣直接讀原檔。
+  - 切段（平行轉碼的 `segment_bounds`、zip 的 `_cut`）只在 `\r\n` 後面切；行號（`LineCounter(crlf=True)`、錯誤訊息、寬鬆解碼的行號）只算 `\r\n`。`__line_no` 就是第幾筆。
+  - 留在行裡的換行有幾個、前 10 個在第幾行記在 `SourceFile.inner_breaks`、`inner_break_lines`，警告顯示在讀取資料、步驟清單、警告分頁、命令列的報告，處理紀錄記在 `inputs[].line_breaks`（§9）。
+  - 擋錯：選了 `crlf`，留在行裡的換行超過 10 個、又比 `\r\n` 的一半多時報錯（整個檔只用 LF 換行，會讀成一行）。轉碼時一段一段收統計，在寫成 Parquet 之前就停下；zip 裡的檔一整段（4 MB）都沒有 `\r\n` 時也停下，不把整個檔放進記憶體。
+  - 提示：`any` 時，檔案的換行 95% 以上是 `\r\n`、又有單獨的 `\n` 或 `\r`，讀取資料下面顯示提示（`line_break_hint`）：可以改成「只認 CRLF」。`tablade profile` 也寫同樣的提示。
 
 ### 5.3 多檔
 
@@ -446,6 +454,7 @@ CSV 不改成 Parquet：Polars 讀 CSV 一定要一整份檔，不管轉碼怎�
 - `inputs[].rows` 是讀進來的資料列數：逐行讀取（`text_lines`、`zip_lines`）是行數；CSV 不含標題列（7 行的檔是 6）；Excel、Parquet 是列數。
 - zip 裡的檔（`zip_lines`）：`inputs[].file` 是「zip 的路徑/zip 裡的路徑」，`bytes`、`sha256` 是解開後的內容，`archive` 是 zip 本身（`{file, bytes, sha256}`）。沒有符合的檔、略過的 zip 記在最上層的 `archives_without_matches`（`[{stage?, file}]`，有才寫）。
 - 寬鬆解碼（`decode_errors: "replace"`，§5.2）換了字的檔多 `decode`：`replaced` 是換成 `�` 的字數，`replaced_lines` 是前 10 個有換字的行（同一行只記一次）；沒有換字的檔沒有這個欄位。
+- 只認 CRLF（`line_breaks: "crlf"`，§5.2）時有換行留在行裡的檔多 `line_breaks`：`inner` 是留在行裡的換行數，`inner_lines` 是前 10 個在第幾行；沒有的檔沒有這個欄位。
 - `output.columns` 只列資料欄：輸出檔保留了系統欄位（`__source_file`、`__line_no`…，「保留系統欄位」開著）時也不列在這裡。
 - 處理紀錄也先寫暫存檔，和輸出檔一起改名（§6）：不會留下半個檔案，改名到一半失敗時一起還原。自我檢測的「完整執行範例 Recipe」也檢查 manifest 的 SHA-256。
 - 有好幾個階段時：`stage` 記寫出這個檔的階段，`inputs[].stage`、`steps[].stage` 記是哪個階段的，`stages` 記它往上用到的階段的結果（列數、欄位；暫存檔會刪掉，不記雜湊）。
@@ -862,7 +871,7 @@ tablade-recipe-skill-v1.0.zip       # 版本號＝recipe 版本（目前 1.0）
 - recipe：`"tablade_recipe": "MAJOR.MINOR"`。
   - minor：相容的變更（新增步驟、新增選用參數）
   - major：不相容的變更。升級舊 recipe 的程式等之後真的有 major 變更時再做；目前不同 major 的 recipe 直接報「不相容的 Recipe 版本」
-- **skill 版本 = recipe 版本**（zip 檔名、SKILL.md、驗證器常數都標示）。App 版本另外計算（例如 Tablade 0.3.0 可以支援 recipe 1.4；目前是 Tablade 1.0.1、recipe 1.1）。
+- **skill 版本 = recipe 版本**（zip 檔名、SKILL.md、驗證器常數都標示）。App 版本另外計算（例如 Tablade 0.3.0 可以支援 recipe 1.4；目前是 Tablade 1.0.1、recipe 1.2）。
 - **由 CI 把關**：repo 存一份 `recipe-schema.lock.json`（schema 結構的快照，不含標題、說明、選項文字），測試重新產生後比對；步驟定義變了但版本沒升，CI 就失敗並提示該升 minor 還是 major。只改說明文字不用升。
 - Tablade 開啟 recipe：版本比 App 新 → 提示更新 Tablade；同一個 major、比較舊的 minor → 照常開啟（minor 都相容）；不同 major → 報不相容。
 - 驗證器遇到不同 major 或比自己新的 minor → 提示改用對應版本的 skill。

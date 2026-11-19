@@ -46,10 +46,15 @@ from ..i18n import t
 from . import excel, zip_lines
 from .encoding import AUTO_ORDER, SUPPORTED, DecodeError
 from .transcode import (
+    ANY,
     CHUNK,
+    CRLF,
     LENIENT,
+    PLACEHOLDER,
     REPLACED_LINES,
+    EndingCounter,
     LineCounter,
+    PlaceholderError,
     Stats,
     count_replaced,
     decode_range,
@@ -120,6 +125,12 @@ class SourceFile:
     """前 ``REPLACED_LINES`` 個有換字的行（同一行只記一次）。"""
     auto_picked: bool = False
     """``auto``＋寬鬆時 UTF-8、cp950 都解不開，取樣比較後選了 ``encoding``（警告裡寫出來）。"""
+    endings: tuple[int, int, int] = (0, 0, 0)
+    """逐行讀取：（``\\r\\n``, 單獨的 ``\\n``, 單獨的 ``\\r``）各有幾個（「都算換行」時的提示用）。"""
+    inner_breaks: int = 0
+    """「只認 CRLF」（``line_breaks: "crlf"``）時，照原樣留在行裡的換行（單獨的 ``\\n``、``\\r``）有幾個。"""
+    inner_break_lines: tuple[int, ...] = ()
+    """前 ``REPLACED_LINES`` 個留著換行的行（同一行只記一次）。"""
 
     @property
     def name(self) -> str:
@@ -142,31 +153,92 @@ class Prepared:
     replaced_lines: tuple[int, ...] = ()
     auto_picked: bool = False
     """寬鬆解碼的結果，見 ``SourceFile`` 同名的欄位。"""
+    endings: tuple[int, int, int] = (0, 0, 0)
+    inner_breaks: int = 0
+    inner_break_lines: tuple[int, ...] = ()
+    """換行的統計，見 ``SourceFile`` 同名的欄位。"""
+
+
+class BreaksError(InputError):
+    """「只認 CRLF」用在不是 CRLF 換行的檔（整個檔會變成一行）。"""
+
+
+NOT_CRLF_MIN = 10
+"""「只認 CRLF」：留在行裡的換行超過這麼多個、又比 ``\\r\\n`` 的一半多，就當成不是 CRLF 換行的檔。
+很小的檔（幾行）不擋：讀成一行也不會怎樣，警告裡看得到。"""
+
+
+def _mostly_not_crlf(crlf: int, inner: int) -> bool:
+    return inner > NOT_CRLF_MIN and inner > crlf / 2
+
+
+def _not_crlf(name: str) -> BreaksError:
+    return BreaksError(
+        t(
+            f"「{name}」不是用 CRLF 換行（大部分是單獨的 LF 或 CR），不能選「只認 CRLF」："
+            "請把「換行」改回「都算換行」",
+            f'"{name}" doesn\'t use CRLF line breaks (mostly a lone LF or CR), so "CRLF only" '
+            'can\'t be used: set "Line breaks" back to "Any line break"',
+        )
+    )
+
+
+def _placeholder_error(name: str) -> InputError:
+    return InputError(
+        t(
+            f"「{name}」裡有 U+FDD0 這個字，不能選「只認 CRLF」：請把「換行」改回「都算換行」",
+            f'"{name}" contains the character U+FDD0, so "CRLF only" can\'t be used: '
+            'set "Line breaks" back to "Any line break"',
+        )
+    )
 
 
 @dataclass
 class Replaced:
-    """寬鬆解碼的統計，照檔案順序一段一段加進來（平行轉碼時段也是照順序收的，行號才對）。"""
+    """轉碼的統計（寬鬆解碼換的字、換行），照檔案順序一段一段加進來（平行轉碼時段也是照順序收的，行號才對）。
+
+    ``crlf``（只認 CRLF）時，留在行裡的換行比 ``\\r\\n`` 的一半還多就丟出 ``BreaksError``：在寫成 Parquet
+    之前（段交出去之前）就停下，不會把整個只用 LF 換行的檔讀成一行。
+    """
 
     count: int = 0
     """換成 ``�`` 的字數。"""
     lines: list[int] = field(default_factory=list)
     """前 ``REPLACED_LINES`` 個有換字的行（從 1 算，同一行只記一次）。"""
     newlines: int = 0
-    """已經收到的段共有幾個 ``\\n``。"""
+    """已經收到的段共有幾個換行（「只認 CRLF」時是 ``\\r\\n``）。"""
+    endings: list[int] = field(default_factory=lambda: [0, 0, 0])
+    """（``\\r\\n``, 單獨的 ``\\n``, 單獨的 ``\\r``）各有幾個。"""
+    inner: int = 0
+    inner_lines: list[int] = field(default_factory=list)
+    """「只認 CRLF」時留在行裡的換行：幾個、前 ``REPLACED_LINES`` 個在第幾行。"""
+    crlf: bool = False
+    name: str = ""
 
     def add(self, stats: Stats) -> None:
-        count, lines, newlines = stats
+        count, lines, newlines, endings, inner, inner_lines = stats
         self.count += count
-        for before in lines:
-            line = self.newlines + before + 1
-            if len(self.lines) < REPLACED_LINES and (not self.lines or self.lines[-1] != line):
-                self.lines.append(line)
+        _append_lines(self.lines, self.newlines, lines)
+        _append_lines(self.inner_lines, self.newlines, inner_lines)
         self.newlines += newlines
+        self.endings = [a + b for a, b in zip(self.endings, endings, strict=True)]
+        self.inner += inner
+        if self.crlf and _mostly_not_crlf(self.endings[0], self.inner):
+            raise _not_crlf(self.name)
 
     def clear(self) -> None:
-        self.count, self.newlines = 0, 0
+        self.count, self.newlines, self.inner = 0, 0, 0
         self.lines.clear()
+        self.inner_lines.clear()
+        self.endings = [0, 0, 0]
+
+
+def _append_lines(found: list[int], newlines: int, befores: tuple[int, ...]) -> None:
+    """把一段的行號（段開頭起有幾個換行）換成整個檔的行號，記到 ``found``（最多 ``REPLACED_LINES`` 個、不重複）。"""
+    for before in befores:
+        line = newlines + before + 1
+        if len(found) < REPLACED_LINES and (not found or found[-1] != line):
+            found.append(line)
 
 
 def _alive(prepared: Prepared) -> bool:
@@ -342,12 +414,15 @@ def _failure(encoding: str, offset: int, newlines: int, byte: int) -> str:
 _LONE_CR = re.compile(rb"\r(?!\n)")
 
 
-def _check_utf8(path: Path, progress: Progress) -> tuple[str, bool, bool, str | None, int]:
+def _check_utf8(
+    path: Path, progress: Progress
+) -> tuple[str, bool, bool, str | None, int, tuple[int, int, int]]:
     """一次讀完：回傳（sha256, 是否有 BOM, 是否有單獨的 \\r 換行, UTF-8 錯誤訊息或 None,
-    第一個不合 UTF-8 的位置；``auto``＋寬鬆從這裡取樣）。"""
+    第一個不合 UTF-8 的位置（``auto``＋寬鬆從這裡取樣）, （``\\r\\n``, 單獨的 ``\\n``, 單獨的 ``\\r``）各有幾個）。"""
     digest = hashlib.sha256()
     decoder = codecs.getincrementaldecoder("utf-8")()
     total, done, breaks = path.stat().st_size, 0, LineCounter()
+    endings = EndingCounter()
     bom, lone_cr, error, carry, bad = False, False, None, b"", 0
     with path.open("rb") as f:
         while chunk := f.read(CHUNK):
@@ -366,6 +441,7 @@ def _check_utf8(path: Path, progress: Progress) -> tuple[str, bool, bool, str | 
                     pos = min(max(err.start, 0), len(chunk) - 1)
                     bad = done + pos
                     error = _failure("utf-8", bad, breaks.before(chunk, pos), chunk[pos])
+            endings.feed(chunk)
             breaks.feed(chunk)
             done += len(chunk)
             _report(progress, t("檢查編碼", "Checking encoding"), path.name, done, total)
@@ -383,7 +459,7 @@ def _check_utf8(path: Path, progress: Progress) -> tuple[str, bool, bool, str | 
                 f"utf-8 在檔案結尾（第 {line} 行）有不完整的字元",
                 f"utf-8: incomplete character at the end of the file (line {line})",
             )
-    return digest.hexdigest(), bom, lone_cr, error, bad
+    return digest.hexdigest(), bom, lone_cr, error, bad, endings.finish()
 
 
 PARALLEL_MIN = 64 << 20
@@ -436,9 +512,10 @@ def release_workers() -> None:
     _shutdown_pool(wait=True)
 
 
-def _line_of(path: Path, offset: int) -> int:
-    """offset 之前有幾個換行（只在解碼失敗、要寫錯誤訊息時才算；和逐行讀取一樣，單獨的 ``\\r`` 也算）。"""
-    breaks, done = LineCounter(), 0
+def _line_of(path: Path, offset: int, crlf: bool = False) -> int:
+    """offset 之前有幾個換行（只在解碼失敗、要寫錯誤訊息時才算；和逐行讀取一樣，單獨的 ``\\r`` 也算，
+    ``crlf`` 時只算 ``\\r\\n``）。"""
+    breaks, done = LineCounter(crlf), 0
     with path.open("rb") as f:
         while done < offset and (chunk := f.read(min(CHUNK, offset - done))):
             breaks.feed(chunk)
@@ -451,10 +528,11 @@ def _decode_error(
     encoding: str,
     failure: tuple[int, int],
     newlines_before: Callable[[int], int] | None = None,
+    crlf: bool = False,
 ) -> DecodeError:
     """轉不了的字的訊息（第幾行）；``newlines_before(offset)`` 是那個位置之前有幾個換行（預設讀原檔來數）。"""
     offset, byte = failure
-    newlines = (newlines_before or (lambda pos: _line_of(path, pos)))(offset)
+    newlines = (newlines_before or (lambda pos: _line_of(path, pos, crlf)))(offset)
     if byte < 0:
         return DecodeError(
             t(
@@ -510,7 +588,15 @@ def _transcode_parallel(
     middle = "utf-8" if encoding == "utf-8-sig" else encoding
     parts = [target.with_name(f"{target.name}.part{i}") for i in range(len(cuts) - 1)]
     jobs = [
-        (str(path), encoding if i == 0 else middle, cuts[i], cuts[i + 1], str(parts[i]), "strict")
+        (
+            str(path),
+            encoding if i == 0 else middle,
+            cuts[i],
+            cuts[i + 1],
+            str(parts[i]),
+            "strict",
+            ANY,
+        )
         for i in range(len(parts))
     ]
     digest = hashlib.sha256()  # SHA-256 一定要從頭讀到尾：主程序另外用一條執行緒算
@@ -621,6 +707,7 @@ def _segments(
     ahead: int,
     errors: str = "strict",
     replaced: Replaced | None = None,
+    breaks: str = ANY,
 ) -> Iterator[Path]:
     """在換行處切段、轉成 UTF-8，依檔案順序一段一段交出（每段一個文字檔，呼叫的人用完就刪）。
 
@@ -630,9 +717,11 @@ def _segments(
     轉不了的字依檔案順序回報第一個（和單核心相同的訊息）；開不了工作程序、工作程序意外結束時丟出
     ``PoolUnavailable``。結束時（包括出錯、呼叫的人提早停下）刪掉還沒交出的段。
     ``errors`` 是 ``LENIENT`` 時解不開的字換成 ``�``，每段的統計照檔案順序加進 ``replaced``。
+    ``breaks`` 是 ``CRLF`` 時只在 ``\\r\\n`` 後面切段。
     """
     total = path.stat().st_size
-    cuts = segment_bounds(str(path), total, segment)
+    crlf = breaks == CRLF
+    cuts = segment_bounds(str(path), total, segment, crlf)
     # 中間的段不是檔案開頭：utf-8-sig 不能在那裡拿掉 BOM
     middle = "utf-8" if encoding == "utf-8-sig" else encoding
     jobs = [
@@ -643,6 +732,7 @@ def _segments(
             cuts[i + 1],
             str(folder / f"{i:06d}.txt"),
             errors,
+            breaks,
         )
         for i in range(len(cuts) - 1)
     ]
@@ -657,7 +747,7 @@ def _segments(
 
     def received(failure: Any, stats: Stats) -> None:
         if failure is not None:
-            raise _decode_error(path, encoding, failure)
+            raise _decode_error(path, encoding, failure, crlf=crlf)
         if replaced is not None:
             replaced.add(stats)
 
@@ -745,6 +835,7 @@ def _stage_lines(
     segment: int | None = None,
     errors: str = "strict",
     replaced: Replaced | None = None,
+    breaks: str = ANY,
 ) -> tuple[str, tuple[Path, ...], int]:
     """逐行讀取、要轉碼的檔：轉成 UTF-8 後一段一段寫成 zstd 壓縮的 Parquet，放在 ``folder``。
 
@@ -766,7 +857,9 @@ def _stage_lines(
     try:
         try:
             files = _write_lines(
-                _segments(path, encoding, folder, progress, step, workers, ahead, errors, replaced),
+                _segments(
+                    path, encoding, folder, progress, step, workers, ahead, errors, replaced, breaks
+                ),
                 folder,
             )
         except PoolUnavailable:
@@ -777,7 +870,9 @@ def _stage_lines(
             if replaced is not None:
                 replaced.clear()
             files = _write_lines(
-                _segments(path, encoding, folder, progress, step, None, 2, errors, replaced),
+                _segments(
+                    path, encoding, folder, progress, step, None, 2, errors, replaced, breaks
+                ),
                 folder,
             )
     except BaseException:
@@ -798,10 +893,14 @@ ZIP_GROUP = 8
 _LONE_CR_TEXT = re.compile(rb"\r(?!\n)")
 
 
-def _cut(buffer: bytes) -> int:
+def _cut(buffer: bytes, crlf: bool = False) -> int:
     """可以切段的位置（之後的下一段從這裡開始）：最後一個 ``\\n`` 後面；沒有時最後一個單獨的 ``\\r`` 後面
     （緊接著 ``\\n`` 的不算，``\\r\\n`` 才不會被切開）；都沒有時是 0（還不能切）。
-    cp950、Big5-HKSCS、UTF-8 的多位元組字元裡都沒有 0x0A、0x0D，所以這裡一定是一個字元的開頭。"""
+    cp950、Big5-HKSCS、UTF-8 的多位元組字元裡都沒有 0x0A、0x0D，所以這裡一定是一個字元的開頭。
+    ``crlf`` 時只在 ``\\r\\n`` 後面切。"""
+    if crlf:
+        i = buffer.rfind(b"\r\n")
+        return 0 if i < 0 else i + 2
     i = buffer.rfind(b"\n")
     if i >= 0:
         return i + 1
@@ -837,6 +936,7 @@ def _stream_segments(
     ahead: int,
     errors: str = "strict",
     replaced: Replaced | None = None,
+    breaks: str = ANY,
 ) -> Iterator[Path]:
     """依序讀出的位元組（zip 裡的檔）在換行處切段、轉成 UTF-8，依順序一段一段交出（每段一個文字檔）。
 
@@ -849,7 +949,8 @@ def _stream_segments(
     """
     middle = "utf-8" if encoding == "utf-8-sig" else encoding
     label = t("解壓與轉碼", "Extracting and transcoding")
-    Work = tuple[bytes, str, int, str, str]
+    crlf = breaks == CRLF
+    Work = tuple[bytes, str, int, str, str, str]
     pending: collections.deque[tuple[Any, Work, int]] = collections.deque()
     made: list[Path] = []
     handed: set[Path] = set()
@@ -858,18 +959,18 @@ def _stream_segments(
     def job(data: bytes) -> tuple[Work, int]:
         """這一段的工作（位元組, 編碼, 起點, 暫存檔, errors）與它之前有幾個換行。"""
         dst = folder / f"{len(made):06d}.txt"
-        work = (data, encoding if not made else middle, state["start"], str(dst), errors)
+        work = (data, encoding if not made else middle, state["start"], str(dst), errors, breaks)
         before = state["newlines"]
         made.append(dst)
         state["start"] += len(data)
-        state["newlines"] += line_breaks(data)
+        state["newlines"] += line_breaks(data, crlf)
         return work, before
 
     def finished(outcome: tuple[Any, Stats], work: Work, before: int) -> Path:
         failure, stats = outcome
-        data, _, start, dst, _ = work
+        data, _, start, dst, _, _ = work
         if failure is not None:
-            count = lambda offset: before + line_breaks(data[: offset - start])  # noqa: E731
+            count = lambda offset: before + line_breaks(data[: offset - start], crlf)  # noqa: E731
             err = _decode_error(Path(name), encoding, failure, count)
             at = min(max(failure[0] - start, 0), len(data))
             err.sample = _sample_lines(data, data.rfind(b"\n", 0, at) + 1)  # type: ignore[attr-defined]
@@ -885,10 +986,14 @@ def _stream_segments(
         while chunk := read(min(CHUNK, segment)):
             buffer += chunk
             if len(buffer) >= segment:
-                cut = _cut(buffer)
+                cut = _cut(buffer, crlf)
                 if cut:
                     yield buffer[:cut]
                     buffer = buffer[cut:]
+                elif (
+                    crlf and b"\n" in buffer
+                ):  # 一整段都沒有 CRLF：不是 CRLF 換行的檔，不要整個放進記憶體
+                    raise _not_crlf(name)
         if buffer:
             yield buffer
 
@@ -940,6 +1045,7 @@ def _stage_member(
     segment: int | None = None,
     errors: str = "strict",
     replaced: Replaced | None = None,
+    breaks: str = ANY,
 ) -> tuple[str, tuple[Path, ...], int, bool]:
     """zip 裡的一個檔：一邊解壓一邊切段、轉成 UTF-8，一段一段寫成 Parquet（和 ``_stage_lines`` 同一種暫存）。
 
@@ -976,6 +1082,7 @@ def _stage_member(
                 2 * count,
                 errors,
                 replaced,
+                breaks,
             )
             try:
                 files = _write_lines(segments, folder, ZIP_GROUP)
@@ -1042,6 +1149,9 @@ def _with_replaced(prepared: Prepared, replaced: Replaced, picked: bool = False)
         replaced=replaced.count,
         replaced_lines=tuple(replaced.lines),
         auto_picked=picked,
+        endings=tuple(replaced.endings),  # type: ignore[arg-type]
+        inner_breaks=replaced.inner,
+        inner_break_lines=tuple(replaced.inner_lines),
     )
 
 
@@ -1051,6 +1161,7 @@ def prepare_member(
     encoding: str = "auto",
     progress: Progress = None,
     errors: str = "strict",
+    breaks: str = ANY,
 ) -> Prepared:
     """zip 裡的一個檔：暫存成一段一段的 Parquet（zip 裡的檔不能直接交給 Polars 讀，UTF-8 的也一樣）。結果會快取。
 
@@ -1078,6 +1189,7 @@ def prepare_member(
         member.compressed,
         encoding,
         errors,
+        breaks,
     )
     with _lock:
         if key in _cache and _alive(_cache[key]):  # type: ignore[index]
@@ -1085,10 +1197,20 @@ def prepare_member(
     folder = staging_dir() / hashlib.sha256(repr(key).encode()).hexdigest()[:24]
 
     def stage(candidate: str, mode: str = "strict", picked: bool = False) -> Prepared:
-        replaced = Replaced()
-        sha, files, lines, bom = _stage_member(
-            member, name, candidate, folder, progress, errors=mode, replaced=replaced
-        )
+        replaced = Replaced(crlf=breaks == CRLF, name=name)
+        try:
+            sha, files, lines, bom = _stage_member(
+                member,
+                name,
+                candidate,
+                folder,
+                progress,
+                errors=mode,
+                replaced=replaced,
+                breaks=breaks,
+            )
+        except PlaceholderError:
+            raise _placeholder_error(name) from None
         label = ("utf-8-sig" if bom else "utf-8") if candidate.startswith("utf-8") else candidate
         prepared = Prepared(folder, label, sha, member.size, False, lines, files)
         return _with_replaced(prepared, replaced, picked)
@@ -1244,6 +1366,7 @@ def _scan_zip_parts(
     progress: Progress,
     on_file: Callable[[int, str], None] | None,
     errors: str = "strict",
+    breaks: str = ANY,
 ) -> tuple[list[Part], list[SourceFile]]:
     """讀取方式 ``zip_lines``：zip 裡每個符合的檔是一個來源（名稱是「zip 的路徑/zip 裡的路徑」）。"""
     scan = scan_zips(entries, members, base_dir)
@@ -1263,7 +1386,7 @@ def _scan_zip_parts(
                 on_file(i, name)
             i += 1
             try:
-                prepared = prepare_member(member, name, encoding, progress, errors)
+                prepared = prepare_member(member, name, encoding, progress, errors, breaks)
             except zip_lines.ZipError as err:
                 raise InputError(str(err)) from None
             lf, rows = _scan_one(prepared, "text_lines", name)
@@ -1290,6 +1413,7 @@ def prepare(
     progress: Progress = None,
     lines: bool = False,
     errors: str = "strict",
+    breaks: str = ANY,
 ) -> Prepared:
     """確保檔案可以用 UTF-8 掃描：必要時轉碼成暫存檔。結果會快取。
 
@@ -1308,6 +1432,7 @@ def prepare(
             )
         )
     lenient = lines and errors == LENIENT
+    crlf = lines and breaks == CRLF
     stat = path.stat()
     key = (
         str(path.resolve()),
@@ -1316,6 +1441,7 @@ def prepare(
         encoding,
         lines,
         LENIENT if lenient else "strict",
+        CRLF if crlf else ANY,
     )
     with _lock:
         if key in _cache and _alive(_cache[key]):
@@ -1328,10 +1454,19 @@ def prepare(
         """用 candidate 轉碼成暫存：逐行讀取是 Parquet，CSV 是 UTF-8 文字。"""
         if lines:
             folder = staging_dir() / name
-            replaced = Replaced()
-            digest, files, count = _stage_lines(
-                path, candidate, folder, progress, errors=mode, replaced=replaced
-            )
+            replaced = Replaced(crlf=crlf, name=path.name)
+            try:
+                digest, files, count = _stage_lines(
+                    path,
+                    candidate,
+                    folder,
+                    progress,
+                    errors=mode,
+                    replaced=replaced,
+                    breaks=CRLF if crlf else ANY,
+                )
+            except PlaceholderError:
+                raise _placeholder_error(path.name) from None
             prepared = Prepared(folder, candidate, digest, stat.st_size, False, count, files)
             return _with_replaced(prepared, replaced, picked)
         staged = staging_dir() / f"{name}.txt"
@@ -1341,10 +1476,16 @@ def prepare(
     if stat.st_size == 0:
         prepared = Prepared(path, "utf-8", hashlib.sha256().hexdigest(), 0, False, 0)
     elif encoding in ("auto", "utf-8", "utf-8-sig"):
-        digest, bom, lone_cr, error, bad = _check_utf8(path, progress)
+        digest, bom, lone_cr, error, bad, endings = _check_utf8(path, progress)
         utf8 = "utf-8-sig" if bom else "utf-8"
-        if error is None and not lone_cr:
-            prepared = Prepared(path, utf8, digest, stat.st_size, bom, _count_lines(path))
+        # 只認 CRLF：有單獨的 \n 或 \r 時轉成暫存檔（藏起單獨的 \n、數留在行裡的換行）；不然直接讀
+        stray = (endings[1] + endings[2] > 0) if crlf else lone_cr
+        if crlf and error is None and _mostly_not_crlf(endings[0], endings[1] + endings[2]):
+            raise _not_crlf(path.name)
+        if error is None and not stray:
+            prepared = Prepared(
+                path, utf8, digest, stat.st_size, bom, _count_lines(path), endings=endings
+            )
         elif error is None:  # UTF-8，但有單獨的 \r 換行：轉成暫存檔統一換行
             prepared = replace(convert("utf-8-sig"), encoding=utf8, sha256=digest)
         elif encoding != "auto":
@@ -1393,6 +1534,8 @@ def _scan_one(prepared: Prepared, reader: str, name: str) -> tuple[pl.LazyFrame,
                 prepared.effective, name="line", row_index_name=LINE_NO, row_index_offset=1
             )
         line = pl.col("line")
+        if prepared.inner_breaks:  # 只認 CRLF：暫存時藏起來的單獨 \n 換回來
+            line = line.str.replace_all(PLACEHOLDER, "\n", literal=True)
         if prepared.bom:
             line = pl.when(pl.col(LINE_NO) == 1).then(line.str.strip_prefix("﻿")).otherwise(line)
         lf = lf.select(
@@ -1484,6 +1627,7 @@ def scan_parts(
     on_file: Callable[[int, str], None] | None = None,
     members: str = "",
     decode_errors: str = "error",
+    line_breaks: str = ANY,
 ) -> tuple[list[Part], list[SourceFile]]:
     """每個來源檔一個 LazyFrame（依檔案清單的順序），欄位對齊成同一組。
 
@@ -1491,13 +1635,16 @@ def scan_parts(
     ``members`` 只有 ``reader="zip_lines"`` 時用：zip 裡要讀的檔（檔案清單是 zip）。
     ``decode_errors`` 只有逐行讀取（``text_lines``、``zip_lines``）時用：``"replace"`` 是寬鬆解碼，
     解不開的字換成 ``�``（``SourceFile.replaced`` 記字數）；其他讀取方式一律嚴格。
+    ``line_breaks`` 也只有逐行讀取時用：``"crlf"`` 只在 ``\\r\\n`` 切行，單獨的 ``\\n``、``\\r`` 留在行裡
+    （docs/line-breaks-plan.md）。
     ``on_file(i, 名稱)`` 在開始讀第 i 個檔（從 0 起）之前呼叫（畫面上的「已處理幾個檔」）。
     """
     lenient = decode_errors == "replace" and reader in ("text_lines", "zip_lines")
     errors = LENIENT if lenient else "strict"
+    breaks = CRLF if line_breaks == CRLF and reader in ("text_lines", "zip_lines") else ANY
     if reader == "zip_lines":
         parts, files = _scan_zip_parts(
-            entries, members, encoding, base_dir, progress, on_file, errors
+            entries, members, encoding, base_dir, progress, on_file, errors, breaks
         )
         return align(parts), files
     parts, files = [], []
@@ -1522,7 +1669,9 @@ def scan_parts(
             parts.append((name, lf))
             files.append(info)
             continue
-        prepared = prepare(path, encoding, progress, lines=reader == "text_lines", errors=errors)
+        prepared = prepare(
+            path, encoding, progress, lines=reader == "text_lines", errors=errors, breaks=breaks
+        )
         lf, rows = _scan_one(prepared, reader, name)
         parts.append((name, lf))
         files.append(_source_file(name, prepared, rows))
@@ -1539,6 +1688,9 @@ def _source_file(name: str, prepared: Prepared, rows: int) -> SourceFile:
         replaced=prepared.replaced,
         replaced_lines=prepared.replaced_lines,
         auto_picked=prepared.auto_picked,
+        endings=prepared.endings,
+        inner_breaks=prepared.inner_breaks,
+        inner_break_lines=prepared.inner_break_lines,
     )
 
 
@@ -1560,6 +1712,54 @@ def decode_warning(file: SourceFile) -> str | None:
     if file.auto_picked:
         text += t(f"（自動選了 {file.encoding}）", f" (auto-detected {file.encoding})")
     return text
+
+
+def _lines_text(lines: tuple[int, ...], total: int) -> str:
+    where = t("、", ", ").join(f"{n:,}" for n in lines)
+    if len(lines) >= REPLACED_LINES and total > len(lines):
+        where += "…"  # 只記前幾個：記滿了，後面可能還有
+    return where
+
+
+def line_break_warning(file: SourceFile) -> str | None:
+    """「只認 CRLF」時有換行留在行裡的檔的警告；沒有時是 None。"""
+    if not file.inner_breaks:
+        return None
+    where = _lines_text(file.inner_break_lines, file.inner_breaks)
+    many = len(file.inner_break_lines) != 1
+    return t(
+        f"有 {file.inner_breaks:,} 個換行在欄位裡，照原樣留在同一行（第 {where} 行）",
+        f"{file.inner_breaks:,} line break{'s' if file.inner_breaks != 1 else ''} inside fields "
+        f"kept in the same line ({'lines' if many else 'line'} {where})",
+    )
+
+
+HINT_SHARE = 0.95
+"""CRLF 佔換行的這麼多以上、又有幾個單獨的 LF 或 CR 時，提示可以改成「只認 CRLF」。"""
+
+
+def line_break_hint(file: SourceFile) -> str | None:
+    """「都算換行」時：檔案幾乎都是 CRLF、只有幾個單獨的 LF 或 CR（多半是欄位裡的換行，一筆被切成兩行），
+    提示可以改成「只認 CRLF」。不是這種檔時是 None。"""
+    crlf, lf, cr = file.endings
+    stray = lf + cr
+    if file.inner_breaks or not stray or crlf < (crlf + stray) * HINT_SHARE:
+        return None
+    kinds = t("、", ", ").join(
+        [k for k, n in (("LF", lf), ("CR", cr)) if n]  # i18n-ignore：換行的名稱
+    )
+    return t(
+        f"這個檔用 CRLF 換行，但有 {stray:,} 個單獨的 {kinds}：可能是欄位裡的換行，一筆被拆成兩行。"
+        '可以把「換行」改成「只認 CRLF」（Recipe：input 的 "line_breaks": "crlf"）',
+        f"This file uses CRLF line breaks but has {stray:,} lone {kinds}: probably line breaks inside "
+        'fields, splitting a record into two lines. You can set "Line breaks" to "CRLF only" '
+        '(Recipe: "line_breaks": "crlf" in input)',
+    )
+
+
+def file_warnings(file: SourceFile) -> list[str]:
+    """一個來源檔的警告（寬鬆解碼換了字、只認 CRLF 時留在行裡的換行）。"""
+    return [w for w in (decode_warning(file), line_break_warning(file)) if w]
 
 
 def parquet_names(columns: list[str]) -> dict[str, str]:

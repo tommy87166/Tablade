@@ -101,6 +101,9 @@
 | 解不開的字 | Undecodable characters |
 | 報錯 | Report an error |
 | 換成 � | Replace with � |
+| 換行 | Line breaks |
+| 都算換行 | Any line break |
+| 只認 CRLF | CRLF only |
 | 試跑 | Trial run |
 | 轉碼 | Transcoding |
 | 暫存資料夾 | Temp folder |

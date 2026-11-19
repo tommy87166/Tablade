@@ -377,6 +377,11 @@ tablade.spec          PyInstaller config (onefile / onedir via TABLADE_BUILD)
   warning plus the processing log say how many were replaced and on which lines. Different custom characters
   all become `��` and can't be told apart or restored. Not available for `csv`; read such files line by line
   and split by delimiter instead.
+- **Line breaks inside fields** split a record into two lines by default (`\r\n`, `\n` and a lone `\r` all
+  count as line breaks). If every record ends with CRLF, set “Line breaks” to “CRLF only” for `text_lines`
+  and `zip_lines`: lines break only at `\r\n`, and a lone LF or CR inside a field stays in the same line
+  (a warning and the processing log say how many). When a file is almost all CRLF with a few lone LF/CR,
+  Tablade shows a hint. Not for files that use only LF (that's an error).
 - **Zip support is for text files only (`zip_lines`, line by line)**: no need to extract first; `members`
   names the files inside the zip (for example `2026*/HEADER*.TXT`). Extract CSV and Excel files first;
   password-protected zips, zips inside zips, 7z and rar aren't supported. Deflate64 (which Windows Explorer

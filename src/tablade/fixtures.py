@@ -665,6 +665,70 @@ def write_eudc_zip(path: str | Path, seed: int = 0, entries: int = 30) -> Path:
     return target
 
 
+# ── 欄位裡的換行（只認 CRLF，docs/line-breaks-plan.md）─────────────────
+
+INNER_BREAK_COLUMNS = ("日期", "門市", "品號", "品名", "金額", "備註")
+
+
+def inner_breaks_report(
+    seed: int = 0, rows: int = 200, every: int = 25
+) -> tuple[list[str], list[int]]:
+    """「|」分隔、每一筆用 CRLF 結尾的明細，回傳（每一筆的內容, 備註欄裡有換行的筆是第幾筆）。
+
+    每 ``every`` 筆的備註用引號包著、內容有一個單獨的 ``\\n``（偶數次）或單獨的 ``\\r``（奇數次）：
+    「都算換行」時這一筆會被拆成兩行，「只認 CRLF」時留在同一行。其他筆的備註沒有引號。
+    """
+    rng = random.Random(seed)
+    records, marked = [], []
+    for i in range(1, rows + 1):
+        code, name, price = rng.choice(ITEMS)
+        store = rng.choice(STORES)
+        note = rng.choice(("一般銷售", "會員價", "門市自取"))
+        if i % every == 0:
+            k = len(marked)
+            note = f'"{note}{"\n" if k % 2 == 0 else "\r"}補登"'
+            marked.append(i)
+        records.append(
+            f"{_roc_date(rng, month=rng.randint(1, 12))}|{store}|{code}|{name}|{price * rng.randint(1, 9)}|{note}"
+        )
+    return records, marked
+
+
+def inner_breaks_bytes(seed: int = 0, rows: int = 200, encoding: str = "cp950") -> bytes:
+    """``inner_breaks_report`` 寫成檔案的位元組（每一筆後面接 CRLF）。"""
+    records, _ = inner_breaks_report(seed, rows)
+    return "".join(f"{r}\r\n" for r in records).encode(encoding)
+
+
+def write_inner_breaks(
+    path: str | Path, seed: int = 0, rows: int = 200, encoding: str = "cp950"
+) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(inner_breaks_bytes(seed, rows, encoding))
+    return path
+
+
+INNER_BREAKS_MEMBER = "202601/DETAIL_001.TXT"
+
+
+def write_inner_breaks_zip(
+    path: str | Path, seed: int = 0, rows: int = 200, encoding: str = "cp950"
+) -> Path:
+    """把 ``inner_breaks_report`` 放進 zip（``INNER_BREAKS_MEMBER``），讀取方式 ``zip_lines`` 用。"""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr(_zip_entry(INNER_BREAKS_MEMBER), inner_breaks_bytes(seed, rows, encoding))
+    return path
+
+
+def only_lf_lines(rows: int = 50, seed: int = 0, encoding: str = "cp950") -> bytes:
+    """整個檔只用 LF 換行的明細（「只認 CRLF」要報錯的那種檔）。"""
+    records, _ = inner_breaks_report(seed, rows, every=rows + 1)
+    return "".join(f"{r}\n" for r in records).encode(encoding)
+
+
 def write_all(directory: str | Path, seed: int = 0) -> list[Path]:
     """產生所有範例假資料到指定資料夾。
 

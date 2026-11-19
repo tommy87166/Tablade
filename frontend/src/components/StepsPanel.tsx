@@ -212,16 +212,16 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
             <span className="min-w-0 flex-1">
               <span className="flex items-center gap-1.5 font-medium">
                 {tr('讀取資料', 'Read data')}
-                {input.decode_warnings?.length ? (
+                {input.file_warnings?.length ? (
                   <Badge
                     variant="outline"
                     className="h-4 shrink-0 border-amber-500/50 px-1 text-[10px] text-amber-700 dark:text-amber-400"
                     title={tr(
-                      `${input.decode_warnings.length} 個檔有解不開的字（換成 �）`,
-                      `${plural(input.decode_warnings.length, 'file', 'files')} with undecodable characters (replaced with �)`,
+                      `讀取資料有 ${input.file_warnings.length} 則警告（解不開的字、欄位裡的換行）`,
+                      `${plural(input.file_warnings.length, 'warning', 'warnings')} while reading (undecodable characters, line breaks inside fields)`,
                     )}
                   >
-                    <AlertTriangle /> {input.decode_warnings.length.toLocaleString()}
+                    <AlertTriangle /> {input.file_warnings.length.toLocaleString()}
                   </Badge>
                 ) : null}
               </span>

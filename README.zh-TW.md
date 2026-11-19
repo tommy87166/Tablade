@@ -323,6 +323,7 @@ tablade.spec          PyInstaller 設定（以 TABLADE_BUILD 切換 onefile / on
 - **非 UTF-8 的檔案會先轉碼成暫存檔**（cp950 單核心約每秒 230 MB；64 MB 以上的檔用多個程序同時轉，最多 8 個，結果和單核心相同）。逐行讀取（`text_lines`）的暫存是壓縮過的 Parquet，大約只要原檔的 1/10 的暫存空間；`csv` 的暫存是一整份 UTF-8 文字，需要約原檔 1.5 倍（大檔請盡量用逐行讀取）。暫存在關閉視窗時刪除；當掉或被強制結束時留下的副本，下次啟動 Tablade 時清掉。
 - **`csv` 模式的行號假設沒有跨行欄位**；有跨行欄位的檔案請用 `text_lines`。
 - **解不開的字**（例如 Big5 的造字，Python 的 cp950 不認）預設會讓整個檔讀不了。逐行讀取（`text_lines`、`zip_lines`）可以把「解不開的字」改成「換成 �」：2 位元組的字換成兩個 `�`（固定位置的欄位不會偏），照樣讀完，警告與處理紀錄寫出換了幾個字、在第幾行。不同的造字都會變成 `��`，分不出來也換不回來。CSV 不能用；要的話改用逐行讀取再依分隔符號拆欄。
+- **欄位裡的換行**預設會把一筆拆成兩行（`\r\n`、`\n`、單獨的 `\r` 都算換行）。每一筆都用 CRLF 結尾的檔，逐行讀取（`text_lines`、`zip_lines`）可以把「換行」改成「只認 CRLF」：只在 `\r\n` 切行，欄位裡單獨的 LF、CR 照原樣留在同一行，警告與處理紀錄寫出有幾個。檔案幾乎都是 CRLF、只有幾個單獨的 LF 或 CR 時，Tablade 會提示可以改。整個檔只用 LF 換行的不能選（會報錯）。
 - **zip 只支援裡面的文字檔（`zip_lines`，逐行讀取）**：不用先解壓縮，`members` 寫 zip 裡要讀的檔（例如 `2026*/HEADER*.TXT`）。CSV、Excel 要先解壓縮；有密碼的 zip、zip 裡的 zip、7z、rar 不支援。Deflate64（Windows 檔案總管壓縮大檔時可能用）由內建的 Rust 模組解開。
 - **onefile 啟動較慢**：每次啟動都要先解壓縮；部分防毒軟體或 AppLocker 會擋暫存資料夾裡的程式。Windows 只發布 onefile，遇到這種情況請用 `uv run python scripts/build.py onedir` 另外打包 onedir 版。
 - **執行檔未簽章**：macOS 會出現 Gatekeeper、Windows 會出現 SmartScreen 提示。

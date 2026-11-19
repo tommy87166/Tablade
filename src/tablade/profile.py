@@ -180,6 +180,17 @@ def _scan_auto(path: Path, head: int, tail: int) -> _Scan:
     raise DecodeError("；".join(failures))  # 印出時前面是「無法判斷編碼：」
 
 
+def _line_break_hint(endings: Counter) -> list[str]:
+    """幾乎都是 CRLF、只有幾個單獨的 LF 或 CR：多半是欄位裡的換行，提示可以只認 CRLF。"""
+    crlf, stray = endings["CRLF"], endings["LF"] + endings["CR"]
+    if not stray or crlf < (crlf + stray) * 0.95:
+        return []
+    return [
+        f"- 提示：幾乎都是 CRLF 換行，只有 {stray:,} 個單獨的 LF／CR，多半是欄位裡的換行"
+        '（一筆被拆成兩行）：讀取方式是 text_lines／zip_lines 時可以加 `"line_breaks": "crlf"`'
+    ]
+
+
 def profile_file(path: Path, *, head: int = 30, tail: int = 5, mask: bool = False) -> str:
     if head < 0 or tail < 0:
         raise ValueError("head、tail 不能小於 0")
@@ -200,6 +211,7 @@ def profile_file(path: Path, *, head: int = 30, tail: int = 5, mask: bool = Fals
         f"- 推測分隔符號：{DELIMITER_NAMES.get(scan.delimiter, repr(scan.delimiter))}；"
         f"各行拆出的欄數（前 3 名）：{', '.join(f'{w} 欄 × {n:,} 行' for w, n in scan.widths.most_common(3))}",
         f"- 最長一行：{scan.longest:,} 字元",
+        *_line_break_hint(scan.endings),
         "",
         f"前 {len(scan.head)} 行（行號：內容{'，已遮罩' if mask else ''}）：",
         "```",

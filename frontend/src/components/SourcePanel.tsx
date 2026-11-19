@@ -1,5 +1,5 @@
 /** 右側設定：選取「讀取資料」時是檔案清單與讀法，選取「輸出資料」時是輸出設定。 */
-import { CircleAlert, CircleCheck, CircleX, FolderOpen, Plus, X } from 'lucide-react'
+import { CircleAlert, CircleCheck, CircleX, FolderOpen, Info, Plus, X } from 'lucide-react'
 import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -403,16 +403,50 @@ export function InputPanel({ state, onAddFiles, onAddEntry, onRemove, onInput }:
                     )}
                   </p>
                 ) : null}
+                <div className="pt-1.5 text-xs text-muted-foreground">{tr('換行', 'Line breaks')}</div>
+                <Select
+                  value={input.line_breaks ?? 'any'}
+                  onValueChange={(value) => onInput({ line_breaks: value as 'any' | 'crlf' })}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="any">{tr('都算換行', 'Any line break')}</SelectItem>
+                    <SelectItem value="crlf">{tr('只認 CRLF', 'CRLF only')}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  {input.line_breaks === 'crlf'
+                    ? tr(
+                        '只在 CRLF 切行：欄位裡單獨的 LF、CR 照原樣留在同一行；有的話每個檔會有警告，處理紀錄記下有幾個。',
+                        'Lines break only at CRLF: a lone LF or CR inside a field stays in the same line; files that have them get a warning and the processing log records how many.',
+                      )
+                    : tr(
+                        '每一筆都用 CRLF 結尾、某個欄位裡有換行（一筆被拆成兩行）時，改成「只認 CRLF」。',
+                        'If every record ends with CRLF and a field contains a line break (a record split into two lines), choose “CRLF only”.',
+                      )}
+                </p>
               </>
             ) : null}
           </div>
         )}
       </div>
       {input.reader === 'zip_lines' && input.zip_scan ? <ZipScanList scan={input.zip_scan} /> : null}
-      {input.decode_warnings?.length ? (
-        <ul className="space-y-1 text-xs text-amber-700 dark:text-amber-400">
-          {input.decode_warnings.map((w) => (
+      {input.line_break_hints?.length ? (
+        <ul className="space-y-1 text-xs text-sky-700 dark:text-sky-400">
+          {input.line_break_hints.map((w) => (
             <li key={w.file} className="flex gap-1.5">
+              <Info className="mt-0.5 size-3.5 shrink-0" />
+              <span className="min-w-0 break-all">{tr(`${w.file}：${w.text}`, `${w.file}: ${w.text}`)}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {input.file_warnings?.length ? (
+        <ul className="space-y-1 text-xs text-amber-700 dark:text-amber-400">
+          {input.file_warnings.map((w, i) => (
+            <li key={`${w.file}-${i}`} className="flex gap-1.5">
               <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
               <span className="min-w-0 break-all">{tr(`${w.file}：${w.text}`, `${w.file}: ${w.text}`)}</span>
             </li>

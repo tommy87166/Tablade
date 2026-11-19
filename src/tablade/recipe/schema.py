@@ -24,7 +24,7 @@ from tablade.steps.base import Step
 
 from .validator import check_version, link_issues
 
-RECIPE_VERSION = "1.1"
+RECIPE_VERSION = "1.2"
 """recipe 格式（也是 AI skill）的版本號：MAJOR.MINOR（DESIGN.md §17.6）。"""
 
 READERS: dict[str, dict[str, Any]] = {
@@ -57,6 +57,15 @@ def decode_errors_only_for_lines() -> str:
         "decode_errors 才能設成 replace（換成 �）",
         'decode_errors can be "replace" (replace with �) only when the reader is '
         "text_lines or zip_lines",
+    )
+
+
+def line_breaks_only_for_lines() -> str:
+    """「只認 CRLF」只有逐行讀取能用（訊息和驗證器的一致）。"""
+    return t(
+        "只有讀取方式是逐行讀取（text_lines）或 zip 裡的文字檔（zip_lines）時，"
+        "line_breaks 才能設成 crlf（只認 CRLF）",
+        'line_breaks can be "crlf" (CRLF only) only when the reader is text_lines or zip_lines',
     )
 
 
@@ -101,6 +110,17 @@ class Input(_Model):
         ),
         json_schema_extra={"ui_labels": {"error": "報錯", "replace": "換成 �"}},
     )
+    line_breaks: Literal["any", "crlf"] = Field(
+        default="any",
+        title="換行",
+        description=(
+            "只有讀取方式是逐行讀取（text_lines）或 zip 裡的文字檔（zip_lines）時能改："
+            "any（預設）\\r\\n、\\n、單獨的 \\r 都算換行；crlf 只在 \\r\\n 切行，欄位裡單獨的 \\n、\\r "
+            "照原樣留在那一行（每一筆都用 CRLF 結尾、某個文字欄位裡有換行時用：不然一筆會被拆成兩行）。"
+            "留在行裡的換行會產生警告，處理紀錄記下有幾個"
+        ),
+        json_schema_extra={"ui_labels": {"any": "都算換行", "crlf": "只認 CRLF"}},
+    )
     sheet: str = Field(
         default="",
         title="工作表",
@@ -139,6 +159,8 @@ class Input(_Model):
             )
         if self.decode_errors == "replace" and self.reader not in ("text_lines", "zip_lines"):
             raise ValueError(decode_errors_only_for_lines())
+        if self.line_breaks == "crlf" and self.reader not in ("text_lines", "zip_lines"):
+            raise ValueError(line_breaks_only_for_lines())
         return self
 
 

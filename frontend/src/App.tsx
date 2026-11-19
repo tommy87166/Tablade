@@ -776,12 +776,12 @@ function sampleNote(inputRows: number | null | undefined, sample: ViewState['inp
   const currentStage = state.stages[state.current]
   /** 這一步沒有結果（還沒載入或算不出來）：警告分頁不寫「沒有警告」 */
   const noResult = state.preview.rows === null
-  /** 來源檔的換字警告（寬鬆解碼）：不算在步驟的警告數裡，但分頁不能寫「沒有警告」 */
-  const decodeWarnings = state.input.decode_warnings ?? []
+  /** 來源檔的警告（寬鬆解碼換了字、只認 CRLF 時留在行裡的換行）：不算在步驟的警告數裡，但分頁不能寫「沒有警告」 */
+  const decodeWarnings = state.input.file_warnings ?? []
   const decodeNote = decodeWarnings.length
     ? tr(
-        `${decodeWarnings.length.toLocaleString()} 個檔有解不開的字`,
-        `${plural(decodeWarnings.length, 'file', 'files')} with undecodable characters`,
+        `讀取資料有 ${decodeWarnings.length.toLocaleString()} 則警告`,
+        `${plural(decodeWarnings.length, 'warning', 'warnings')} while reading`,
       )
     : ''
   const anyWarning = warnings.length > 0 || decodeWarnings.length > 0
@@ -1227,9 +1227,9 @@ function sampleNote(inputRows: number | null | undefined, sample: ViewState['inp
                     </div>
                   ) : (
                     <ul className="flex-1 overflow-auto text-sm">
-                      {decodeWarnings.map((w) => (
+                      {decodeWarnings.map((w, i) => (
                         <li
-                          key={`decode:${w.file}` /* i18n-ignore：React 的 key，不是畫面文字 */}
+                          key={`decode:${w.file}:${i}` /* i18n-ignore：React 的 key，不是畫面文字 */}
                           className="flex items-center gap-2 px-3 py-0.5 text-xs"
                         >
                           <TriangleAlert className="size-3.5 shrink-0 text-amber-600" />

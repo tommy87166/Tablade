@@ -56,14 +56,14 @@ def lenient(data: bytes, encoding: str = "cp950") -> tuple[str, tuple]:
     ],
 )
 def test_whole_character_is_replaced(raw, expected):
-    text, (count, lines, _) = lenient(raw)
+    text, (count, lines, *_) = lenient(raw)
     assert text == expected
     assert count == 1 and lines == (0,)
     assert raw.decode("cp950", LENIENT) == expected
 
 
 def test_two_byte_characters_count_once():
-    text, (count, lines, newlines) = lenient(b"\x8f\x46\x8f\x46\n\xa4\xa4\xfa\x40\n")
+    text, (count, lines, newlines, *_) = lenient(b"\x8f\x46\x8f\x46\n\xa4\xa4\xfa\x40\n")
     assert text == f"{R * 4}\n中{R * 2}\n"
     assert count == 3 and lines == (0, 1) and newlines == 2
 
@@ -76,12 +76,12 @@ def test_every_cut_gives_the_same_result(monkeypatch):
     for cut in range(1, len(data)):
         monkeypatch.setattr(transcode, "CHUNK", cut)
         assert lenient(data) == whole, cut
-    assert whole[1] == (4, (1, 2, 3), 3)  # 同一行只記一次
+    assert whole[1][:3] == (4, (1, 2, 3), 3)  # 同一行只記一次
 
 
 def test_utf8_is_replaced_like_the_builtin():
     raw = b"\xef\xbb\xbfa\nb\xffc\n\xe4\xb8"
-    text, (count, lines, _) = lenient(raw, "utf-8-sig")
+    text, (count, lines, *_) = lenient(raw, "utf-8-sig")
     assert text == f"a\nb{R}c\n{R}"
     assert count == 2 and lines == (1, 2)
     assert raw[3:].decode("utf-8", "replace") == text
@@ -400,11 +400,11 @@ def test_session(tmp_path):
     s.load_data()
     state = s.state()["input"]
     assert state["decode_errors"] == "replace"
-    assert [w["file"] for w in state["decode_warnings"]] == ["r.txt"]
-    assert state["decode_warnings"][0]["text"].startswith("有 15 個字解不開")
+    assert [w["file"] for w in state["file_warnings"]] == ["r.txt"]
+    assert state["file_warnings"][0]["text"].startswith("有 15 個字解不開")
     assert state["sources"][0]["replaced"] == 15
     s.set_input({"decode_errors": "error"})  # 改了就要重新載入
-    assert s.state()["input"]["stale"] and not s.state()["input"]["decode_warnings"]
+    assert s.state()["input"]["stale"] and not s.state()["input"]["file_warnings"]
     s.set_input({"decode_errors": "replace", "reader": "csv"})  # CSV 不寫進 Recipe
     assert "decode_errors" not in s.recipe_dict()["stages"][0]["input"]
 
@@ -460,7 +460,7 @@ def test_each_line_is_listed_once(tmp_path):
     f = scan_parts(["a.txt"], "text_lines", "cp950", tmp_path, decode_errors="replace")[1][0]
     assert f.replaced == 14 and f.replaced_lines == (2, 5, 7)
     assert "（第 2、5、7 行）" in decode_warning(f)
-    _, (count, lines, _) = lenient(b"\x8f\x46\x8f\x46\n\x8f\x46")
+    _, (count, lines, *_) = lenient(b"\x8f\x46\x8f\x46\n\x8f\x46")
     assert count == 3 and lines == (0, 1)
 
 

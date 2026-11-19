@@ -1348,6 +1348,21 @@ def link_issues(recipe: dict[str, Any], ref_fields: dict[str, list[str]]) -> lis
                     ),
                 )
             )
+        if source.get("line_breaks") == "crlf" and source.get("reader", "text_lines") not in (
+            "text_lines",
+            "zip_lines",
+        ):
+            issues.append(
+                _issue(
+                    ["stages", si, "input", "line_breaks"],
+                    t(
+                        "只有讀取方式是逐行讀取（text_lines）或 zip 裡的文字檔（zip_lines）時，"
+                        "line_breaks 才能設成 crlf（只認 CRLF）",
+                        'line_breaks can be "crlf" (CRLF only) only when the reader is '
+                        "text_lines or zip_lines",
+                    ),
+                )
+            )
         if source.get("reader") != "stages" and listed:
             issues.append(
                 _issue(

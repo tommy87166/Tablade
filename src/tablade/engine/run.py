@@ -175,8 +175,9 @@ class RunReport:
 
     @property
     def input_warnings(self) -> int:
-        """寬鬆解碼換了字的檔數（每個檔算 1 則；不併進步驟的 ``warning_count``，那個數字和警告清單是成對的）。"""
-        return sum(1 for f in self.inputs if f.replaced)
+        """有警告的來源檔數（寬鬆解碼換了字、只認 CRLF 時有換行留在行裡；每個檔算 1 則；不併進步驟的
+        ``warning_count``，那個數字和警告清單是成對的）。"""
+        return sum(1 for f in self.inputs if f.replaced or f.inner_breaks)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -626,6 +627,7 @@ def scan_stages(
             on_file=on_file,
             members=source.members,
             decode_errors=source.decode_errors,
+            line_breaks=source.line_breaks,
         )
         out[stage.name] = (parts, [replace(f, stage=stage.name) for f in files])
     if preparing:

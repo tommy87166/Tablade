@@ -211,6 +211,12 @@ export interface SourceFile {
   replaced_lines?: number[]
   /** auto＋寬鬆：UTF-8、cp950 都解不開，取樣後選了 encoding */
   auto_picked?: boolean
+  /** 逐行讀取：[CRLF, 單獨的 LF, 單獨的 CR] 各有幾個 */
+  endings?: [number, number, number]
+  /** 只認 CRLF：照原樣留在行裡的換行有幾個 */
+  inner_breaks?: number
+  /** 前 10 個留著換行的行（同一行只記一次） */
+  inner_break_lines?: number[]
 }
 
 /** zip 裡一個符合的檔 */
@@ -289,6 +295,8 @@ export interface ViewState {
     encoding: string
     /** 解不開的字：error 報錯（預設）；replace 換成 �（只有逐行讀取、zip 裡的文字檔能用） */
     decode_errors?: 'error' | 'replace'
+    /** 換行：any 都算換行（預設）；crlf 只認 CRLF，欄位裡的換行留在同一行（只有逐行讀取、zip 裡的文字檔能用） */
+    line_breaks?: 'any' | 'crlf'
     /** Excel 的工作表名稱；空白代表第一個工作表，* 代表全部工作表 */
     sheet: string
     /** 讀取方式是 Excel 時，第一個 Excel 檔有哪些工作表 */
@@ -309,8 +317,10 @@ export interface ViewState {
     members?: string
     /** 讀取方式是「zip 裡的文字檔」時的掃描結果（只讀 zip 的目錄）；其他讀取方式是 null */
     zip_scan?: ZipScan | null
-    /** 寬鬆解碼換了字的檔，一個檔一則（文字由 Python 產生） */
-    decode_warnings?: { file: string; text: string }[]
+    /** 來源檔的警告（寬鬆解碼換了字、只認 CRLF 時留在行裡的換行），一則一個（文字由 Python 產生） */
+    file_warnings?: { file: string; text: string }[]
+    /** 都算換行時：幾乎都是 CRLF、只有幾個單獨的 LF 或 CR 的檔，提示可以改成只認 CRLF */
+    line_break_hints?: { file: string; text: string }[]
   }
   output: { keep_system_columns: boolean; manifest: boolean }
   steps: StepState[]
