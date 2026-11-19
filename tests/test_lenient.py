@@ -65,7 +65,7 @@ def test_whole_character_is_replaced(raw, expected):
 def test_two_byte_characters_count_once():
     text, (count, lines, newlines) = lenient(b"\x8f\x46\x8f\x46\n\xa4\xa4\xfa\x40\n")
     assert text == f"{R * 4}\n中{R * 2}\n"
-    assert count == 3 and lines == (0, 0, 1) and newlines == 2
+    assert count == 3 and lines == (0, 1) and newlines == 2
 
 
 def test_every_cut_gives_the_same_result(monkeypatch):
@@ -76,7 +76,7 @@ def test_every_cut_gives_the_same_result(monkeypatch):
     for cut in range(1, len(data)):
         monkeypatch.setattr(transcode, "CHUNK", cut)
         assert lenient(data) == whole, cut
-    assert whole[1] == (4, (1, 2, 2, 3), 3)
+    assert whole[1] == (4, (1, 2, 3), 3)  # 同一行只記一次
 
 
 def test_utf8_is_replaced_like_the_builtin():
@@ -125,7 +125,9 @@ def test_strict_reports_error_with_hint(tmp_path):
     write_eudc_report(tmp_path / "r.txt")
     line = eudc_report()[2][0]
     with pytest.raises(
-        DecodeError, match=rf"cp950 在第 \d+ 個位元組（第 {line} 行，0x8F）.*換成 �"
+        DecodeError,
+        match=rf"cp950 在第 \d+ 個位元組（第 {line} 行，0x8F）.*換成 �」"
+        r'（Recipe：input 的 "decode_errors": "replace"）$',
     ):
         scan_parts(["r.txt"], "text_lines", "cp950", tmp_path)
     with pytest.raises(DecodeError, match="無法判斷編碼"):
@@ -263,13 +265,18 @@ def test_warning_text():
         0,
         "",
         "cp950",
-        100,
+        20,
         replaced=12,
         replaced_lines=tuple(range(1, 11)),
         auto_picked=True,
     )
     assert decode_warning(many).endswith("10… 行），可能選錯編碼（自動選了 cp950）")
     assert decode_warning(sources.SourceFile("a.txt", 0, "", "cp950", 10)) is None
+    # 「可能選錯編碼」：換掉的字數超過行數的一半才寫（編碼對、只是有造字的報表不會出現）
+    few = sources.SourceFile("a.txt", 0, "", "cp950", 100, replaced=12, replaced_lines=(1, 2, 3))
+    assert decode_warning(few) == "有 12 個字解不開，換成 �（第 1、2、3 行）"
+    raw, _, marked = eudc_report()
+    assert len(marked) / raw.count(b"\n") > 0.1  # 造字很密的假報表也不會被當成選錯
     set_lang("en")
     try:
         assert decode_warning(f) == "3 undecodable characters replaced with � (lines 12, 80, 81)"
@@ -400,3 +407,100 @@ def test_session(tmp_path):
     assert s.state()["input"]["stale"] and not s.state()["input"]["decode_warnings"]
     s.set_input({"decode_errors": "replace", "reader": "csv"})  # CSV 不寫進 Recipe
     assert "decode_errors" not in s.recipe_dict()["stages"][0]["input"]
+
+
+# ── 審查發現（docs/review-findings.md F-077～F-081）────────────
+
+
+def test_eudc_report_is_not_flagged_as_wrong_encoding(tmp_path):
+    write_eudc_report(tmp_path / "r.txt")
+    f = scan_parts(["r.txt"], "text_lines", "cp950", tmp_path, decode_errors="replace")[1][0]
+    assert "可能選錯編碼" not in decode_warning(f)
+    (tmp_path / "u.txt").write_bytes(eudc_report()[0])
+    wrong = scan_parts(["u.txt"], "text_lines", "utf-8", tmp_path, decode_errors="replace")[1][0]
+    assert "可能選錯編碼" in decode_warning(wrong)
+
+
+TIE = b"ID,NAME,AMOUNT\r\n" + b"001,LEE \x8f\x46,100\r\n" * 3
+"""只有英數字和造字：當 UTF-8 解與當 cp950 解，解不開的字一樣多（F-077）。"""
+
+
+def test_tie_picks_cp950_unless_bom(tmp_path):
+    (tmp_path / "a.txt").write_bytes(TIE)
+    (tmp_path / "b.txt").write_bytes(b"\xef\xbb\xbfID,NAME\r\n001,LEE \xff,100\r\n")
+    parts, files = scan_parts(["a.txt"], "text_lines", "auto", tmp_path, decode_errors="replace")
+    assert files[0].encoding == "cp950"
+    assert parts[0][1].collect()["line"][1] == f"001,LEE {R}{R},100"
+    parts, files = scan_parts(["b.txt"], "text_lines", "auto", tmp_path, decode_errors="replace")
+    assert files[0].encoding == "utf-8-sig"
+    assert parts[0][1].collect()["line"].to_list() == ["ID,NAME", f"001,LEE {R},100"]
+
+
+def test_tie_in_zip(tmp_path):
+    import zipfile
+
+    with zipfile.ZipFile(tmp_path / "m.zip", "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("a/TIE.TXT", TIE)
+        z.writestr("a/BOM.TXT", b"\xef\xbb\xbfID,NAME\r\n" + b"x" * 100 + b"\r\n001,LEE \xff\r\n")
+    parts, files = scan_parts(
+        ["m.zip"], "zip_lines", "auto", tmp_path, members="a/*.TXT", decode_errors="replace"
+    )
+    by = {f.path.rsplit("/", 1)[1]: (f, lf) for (_, lf), f in zip(parts, files, strict=True)}
+    tie, tie_lf = by["TIE.TXT"]
+    assert tie.encoding == "cp950" and tie_lf.collect()["line"][1] == f"001,LEE {R}{R},100"
+    assert by["BOM.TXT"][0].encoding == "utf-8-sig"
+
+
+def test_each_line_is_listed_once(tmp_path):
+    rows = [f"第{i}行,保溫瓶".encode("cp950") for i in range(1, 8)]
+    rows[1] = b"\x8f\x46" * 12 + rows[1]
+    rows[4] += b"\xfa\x40"
+    rows[6] += b"\xfa\x40"
+    (tmp_path / "a.txt").write_bytes(b"\r\n".join(rows) + b"\r\n")
+    f = scan_parts(["a.txt"], "text_lines", "cp950", tmp_path, decode_errors="replace")[1][0]
+    assert f.replaced == 14 and f.replaced_lines == (2, 5, 7)
+    assert "（第 2、5、7 行）" in decode_warning(f)
+    _, (count, lines, _) = lenient(b"\x8f\x46\x8f\x46\n\x8f\x46")
+    assert count == 3 and lines == (0, 1)
+
+
+def lone_cr_file() -> bytes:
+    """第 2 行中間有一個單獨的 \\r（逐行讀取把它當成換行），第 5 行（讀進來是第 6 行）有造字。"""
+    rows = [f"第{i}行,保溫瓶".encode("cp950") for i in range(1, 7)]
+    rows[1] = "第2行,保溫".encode("cp950") + b"\r" + "瓶".encode("cp950")
+    rows[4] += b"\x8f\x46"
+    return b"\r\n".join(rows) + b"\r\n"
+
+
+def test_line_numbers_count_lone_cr(tmp_path, monkeypatch):
+    (tmp_path / "a.txt").write_bytes(lone_cr_file())
+    parts, files = scan_parts(["a.txt"], "text_lines", "cp950", tmp_path, decode_errors="replace")
+    frame = parts[0][1].collect()
+    assert frame.filter(pl.col("line").str.contains(R))["__line_no"].to_list() == [6]
+    assert files[0].replaced_lines == (6,)
+    with pytest.raises(DecodeError, match="第 6 行"):  # 嚴格模式的錯誤訊息也一樣
+        scan_parts(["a.txt"], "text_lines", "cp950", tmp_path)
+    # \r 剛好在塊的結尾（下一塊才知道後面是不是 \n）
+    data = lone_cr_file()
+    for cut in range(1, len(data)):
+        monkeypatch.setattr(transcode, "CHUNK", cut)
+        assert lenient(data)[1][1] == (5,), cut
+
+
+def test_zip_line_numbers_count_lone_cr(tmp_path):
+    import zipfile
+
+    with zipfile.ZipFile(tmp_path / "m.zip", "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("a/R.TXT", lone_cr_file())
+    _, files = scan_parts(
+        ["m.zip"], "zip_lines", "cp950", tmp_path, members="a/*.TXT", decode_errors="replace"
+    )
+    assert files[0].replaced_lines == (6,)
+    with pytest.raises(DecodeError, match="第 6 行"):
+        scan_parts(["m.zip"], "zip_lines", "cp950", tmp_path, members="a/*.TXT")
+
+
+def test_utf8_error_line_counts_lone_cr(tmp_path):
+    (tmp_path / "a.txt").write_bytes(b"a\rb\r\nc\xff\n")
+    with pytest.raises(DecodeError, match=r"utf-8 在第 6 個位元組（第 3 行"):
+        scan_parts(["a.txt"], "text_lines", "utf-8", tmp_path)

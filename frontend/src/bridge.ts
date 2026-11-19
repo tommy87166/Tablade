@@ -207,7 +207,7 @@ export interface SourceFile {
   archive_sha256?: string | null
   /** 寬鬆解碼：解不開、換成 � 的字數（一個 2 位元組的字算 1 個） */
   replaced?: number
-  /** 前 10 個換字在第幾行 */
+  /** 前 10 個有換字的行（同一行只記一次） */
   replaced_lines?: number[]
   /** auto＋寬鬆：UTF-8、cp950 都解不開，取樣後選了 encoding */
   auto_picked?: boolean

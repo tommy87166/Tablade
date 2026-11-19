@@ -49,9 +49,11 @@ from .transcode import (
     CHUNK,
     LENIENT,
     REPLACED_LINES,
+    LineCounter,
     Stats,
     count_replaced,
     decode_range,
+    line_breaks,
     segment_bounds,
     transcode_bytes,
     transcode_segment,
@@ -115,7 +117,7 @@ class SourceFile:
     replaced: int = 0
     """寬鬆解碼（``decode_errors: "replace"``）換成 ``�`` 的字數（一個 2 位元組的字算 1 個）。"""
     replaced_lines: tuple[int, ...] = ()
-    """前 ``REPLACED_LINES`` 個換字在第幾行。"""
+    """前 ``REPLACED_LINES`` 個有換字的行（同一行只記一次）。"""
     auto_picked: bool = False
     """``auto``＋寬鬆時 UTF-8、cp950 都解不開，取樣比較後選了 ``encoding``（警告裡寫出來）。"""
 
@@ -149,7 +151,7 @@ class Replaced:
     count: int = 0
     """換成 ``�`` 的字數。"""
     lines: list[int] = field(default_factory=list)
-    """前 ``REPLACED_LINES`` 個換字在第幾行（從 1 算）。"""
+    """前 ``REPLACED_LINES`` 個有換字的行（從 1 算，同一行只記一次）。"""
     newlines: int = 0
     """已經收到的段共有幾個 ``\\n``。"""
 
@@ -157,8 +159,9 @@ class Replaced:
         count, lines, newlines = stats
         self.count += count
         for before in lines:
-            if len(self.lines) < REPLACED_LINES:
-                self.lines.append(self.newlines + before + 1)
+            line = self.newlines + before + 1
+            if len(self.lines) < REPLACED_LINES and (not self.lines or self.lines[-1] != line):
+                self.lines.append(line)
         self.newlines += newlines
 
     def clear(self) -> None:
@@ -344,7 +347,7 @@ def _check_utf8(path: Path, progress: Progress) -> tuple[str, bool, bool, str | 
     第一個不合 UTF-8 的位置；``auto``＋寬鬆從這裡取樣）。"""
     digest = hashlib.sha256()
     decoder = codecs.getincrementaldecoder("utf-8")()
-    total, done, newlines = path.stat().st_size, 0, 0
+    total, done, breaks = path.stat().st_size, 0, LineCounter()
     bom, lone_cr, error, carry, bad = False, False, None, b"", 0
     with path.open("rb") as f:
         while chunk := f.read(CHUNK):
@@ -362,10 +365,8 @@ def _check_utf8(path: Path, progress: Progress) -> tuple[str, bool, bool, str | 
                 except UnicodeDecodeError as err:
                     pos = min(max(err.start, 0), len(chunk) - 1)
                     bad = done + pos
-                    error = _failure(
-                        "utf-8", bad, newlines + chunk.count(b"\n", 0, pos), chunk[pos]
-                    )
-            newlines += chunk.count(b"\n")
+                    error = _failure("utf-8", bad, breaks.before(chunk, pos), chunk[pos])
+            breaks.feed(chunk)
             done += len(chunk)
             _report(progress, t("檢查編碼", "Checking encoding"), path.name, done, total)
             if error is not None:
@@ -377,9 +378,10 @@ def _check_utf8(path: Path, progress: Progress) -> tuple[str, bool, bool, str | 
             decoder.decode(b"", final=True)
         except UnicodeDecodeError:
             bad = max(total - 1, 0)
+            line = breaks.finish() + 1
             error = t(
-                f"utf-8 在檔案結尾（第 {newlines + 1} 行）有不完整的字元",
-                f"utf-8: incomplete character at the end of the file (line {newlines + 1})",
+                f"utf-8 在檔案結尾（第 {line} 行）有不完整的字元",
+                f"utf-8: incomplete character at the end of the file (line {line})",
             )
     return digest.hexdigest(), bom, lone_cr, error, bad
 
@@ -435,13 +437,13 @@ def release_workers() -> None:
 
 
 def _line_of(path: Path, offset: int) -> int:
-    """offset 之前有幾個換行（只在解碼失敗、要寫錯誤訊息時才算）。"""
-    count, done = 0, 0
+    """offset 之前有幾個換行（只在解碼失敗、要寫錯誤訊息時才算；和逐行讀取一樣，單獨的 ``\\r`` 也算）。"""
+    breaks, done = LineCounter(), 0
     with path.open("rb") as f:
         while done < offset and (chunk := f.read(min(CHUNK, offset - done))):
-            count += chunk.count(b"\n")
+            breaks.feed(chunk)
             done += len(chunk)
-    return count
+    return breaks.finish()  # offset 那個位元組解不開、不會是換行：最後的 \r 是單獨的
 
 
 def _decode_error(
@@ -860,14 +862,14 @@ def _stream_segments(
         before = state["newlines"]
         made.append(dst)
         state["start"] += len(data)
-        state["newlines"] += data.count(b"\n")
+        state["newlines"] += line_breaks(data)
         return work, before
 
     def finished(outcome: tuple[Any, Stats], work: Work, before: int) -> Path:
         failure, stats = outcome
         data, _, start, dst, _ = work
         if failure is not None:
-            count = lambda offset: before + data.count(b"\n", 0, offset - start)  # noqa: E731
+            count = lambda offset: before + line_breaks(data[: offset - start])  # noqa: E731
             err = _decode_error(Path(name), encoding, failure, count)
             at = min(max(failure[0] - start, 0), len(data))
             err.sample = _sample_lines(data, data.rfind(b"\n", 0, at) + 1)  # type: ignore[attr-defined]
@@ -975,7 +977,11 @@ def _stage_member(
                 errors,
                 replaced,
             )
-            files = _write_lines(segments, folder, ZIP_GROUP)
+            try:
+                files = _write_lines(segments, folder, ZIP_GROUP)
+            except DecodeError as err:  # auto＋寬鬆取樣時要知道檔案開頭有沒有 BOM（樣本看不到開頭）
+                err.bom = bool(first["bom"])  # type: ignore[attr-defined]
+                raise
         return digest.hexdigest(), files, bool(first["bom"])
 
     try:
@@ -1001,23 +1007,23 @@ def _lenient_hint(message: str) -> DecodeError:
     return DecodeError(
         message
         + t(
-            "。可以把「解不開的字」改成「換成 �」",
-            '. You can set "Undecodable characters" to "Replace with �"',
+            '。可以把「解不開的字」改成「換成 �」（Recipe：input 的 "decode_errors": "replace"）',
+            '. You can set "Undecodable characters" to "Replace with �" '
+            '(Recipe: "decode_errors": "replace" in input)',
         )
     )
 
 
-def _pick(sample: bytes) -> str:
-    """``auto``＋寬鬆、UTF-8 與 cp950 都解不開：樣本裡解不開的字比較少的那個（一樣多時照 ``auto`` 的順序選 UTF-8）。
+def _pick(sample: bytes, bom: bool) -> str:
+    """``auto``＋寬鬆、UTF-8 與 cp950 都解不開：樣本裡解不開的字比較少的那個。
 
-    兩者差很多：有造字的 cp950 檔當 UTF-8 解，幾乎每個中文字都解不開；只壞了幾個位元組的 UTF-8 檔當 cp950 解也是。
+    通常差很多：有造字的 cp950 檔當 UTF-8 解，幾乎每個中文字都解不開；只壞了幾個位元組的 UTF-8 檔當 cp950 解也是。
+    一樣多時（例如只有英數字和造字的檔：``8F 46`` 當 UTF-8 解也只換 1 個，但第 2 個位元組 ``F`` 會漏出來）選 cp950，
+    只有檔案開頭是 UTF-8 的 BOM 時選 UTF-8（用 cp950 讀的話 BOM 會變成亂字）。
     """
     fallback = AUTO_ORDER[1]
-    return (
-        "utf-8-sig"
-        if count_replaced(sample, "utf-8") <= count_replaced(sample, fallback)
-        else fallback
-    )
+    utf8, other = count_replaced(sample, "utf-8"), count_replaced(sample, fallback)
+    return "utf-8-sig" if utf8 < other or (utf8 == other and bom) else fallback
 
 
 def _file_sample(path: Path, bad: int) -> bytes:
@@ -1091,13 +1097,14 @@ def prepare_member(
         prepared = Prepared(folder, "utf-8", hashlib.sha256().hexdigest(), 0, False, 0)
         folder.mkdir(parents=True, exist_ok=True)
     elif encoding == "auto":
-        failures, sample = [], b""
+        failures, sample, bom = [], b"", False
         for candidate in AUTO_ORDER:
             try:
                 prepared = stage(candidate)
             except DecodeError as err:
                 failures.append(str(err))
-                sample = sample or getattr(err, "sample", b"")
+                if not sample:  # UTF-8 失敗的那一段，與檔案開頭有沒有 BOM
+                    sample, bom = getattr(err, "sample", b""), getattr(err, "bom", False)
                 continue
             break
         else:
@@ -1106,7 +1113,7 @@ def prepare_member(
                     t(f"「{name}」無法判斷編碼：", f'"{name}": couldn\'t detect the encoding: ')
                     + t("；", "; ").join(failures)
                 )
-            prepared = stage(_pick(sample), LENIENT, picked=True)
+            prepared = stage(_pick(sample, bom), LENIENT, picked=True)
     else:
         try:
             prepared = stage("utf-8-sig" if encoding == "utf-8" else encoding, errors)
@@ -1359,7 +1366,7 @@ def prepare(
                         t("無法判斷編碼：", "Couldn't detect the encoding: ")
                         + t("；", "; ").join(failures)
                     )
-                picked = _pick(_file_sample(path, bad))
+                picked = _pick(_file_sample(path, bad), bom)
                 prepared = convert(picked, LENIENT, picked=True)
                 if picked == "utf-8-sig":
                     prepared = replace(prepared, encoding=utf8)
@@ -1540,14 +1547,15 @@ def decode_warning(file: SourceFile) -> str | None:
     if not file.replaced:
         return None
     where = t("、", ", ").join(str(n) for n in file.replaced_lines)
-    if file.replaced > len(file.replaced_lines):
-        where += "…"
+    if len(file.replaced_lines) >= REPLACED_LINES and file.replaced > len(file.replaced_lines):
+        where += "…"  # 只記前幾個有換字的行：記滿了，後面可能還有
     text = t(
         f"有 {file.replaced:,} 個字解不開，換成 �（第 {where} 行）",
         f"{file.replaced:,} undecodable character{'s' if file.replaced != 1 else ''} "
         f"replaced with � ({'line' if len(file.replaced_lines) == 1 else 'lines'} {where})",
     )
-    if file.rows and file.replaced > file.rows / 100:
+    # 編碼對、只是有造字時遠低於行數的一半；選錯編碼時通常是行數的好幾倍
+    if file.rows and file.replaced > file.rows / 2:
         text += t("，可能選錯編碼", "; the encoding may be wrong")
     if file.auto_picked:
         text += t(f"（自動選了 {file.encoding}）", f" (auto-detected {file.encoding})")

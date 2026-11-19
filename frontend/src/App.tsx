@@ -760,6 +760,15 @@ export default function App() {
   const currentStage = state.stages[state.current]
   /** 這一步沒有結果（還沒載入或算不出來）：警告分頁不寫「沒有警告」 */
   const noResult = state.preview.rows === null
+  /** 來源檔的換字警告（寬鬆解碼）：不算在步驟的警告數裡，但分頁不能寫「沒有警告」 */
+  const decodeWarnings = state.input.decode_warnings ?? []
+  const decodeNote = decodeWarnings.length
+    ? tr(
+        `${decodeWarnings.length.toLocaleString()} 個檔有解不開的字`,
+        `${plural(decodeWarnings.length, 'file', 'files')} with undecodable characters`,
+      )
+    : ''
+  const anyWarning = warnings.length > 0 || decodeWarnings.length > 0
   /** 這個階段還沒有資料，是因為讀的（或結合的）前面階段有錯：要先修正那個階段，不是重新載入 */
   const brokenRef =
     !input.loaded && currentStage?.status === 'waiting'
@@ -1158,29 +1167,28 @@ export default function App() {
               <ResizablePanel defaultSize="22" minSize={90} collapsible collapsedSize={HEADER_HEIGHT} panelRef={warnPanel}>
                 {/* 收合到只剩標題列時，右邊的按鈕改成「展開」（index.css 的 .warn-pane） */}
                 <div className="warn-pane flex h-full flex-col">
-                  <PaneHeader className={warnings.length ? 'bg-amber-500/10' : ''}>
+                  <PaneHeader className={anyWarning ? 'bg-amber-500/10' : ''}>
                     <div role="tablist" aria-label={tr('下方面板', 'Bottom panel')} className="flex items-center gap-1">
                       <BottomTab active={bottomTab === 'warnings'} onClick={() => openBottomTab('warnings')}>
-                        {warnings.length ? (
+                        {anyWarning ? (
                           <TriangleAlert className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
                         ) : noResult ? (
                           <TriangleAlert className="size-4 shrink-0 text-muted-foreground" />
                         ) : (
                           <CircleCheck className="size-4 shrink-0 text-green-600" />
                         )}
-                        <span className={warnings.length ? 'text-amber-700 dark:text-amber-400' : noResult ? 'text-muted-foreground' : ''}>
+                        <span className={anyWarning ? 'text-amber-700 dark:text-amber-400' : noResult ? 'text-muted-foreground' : ''}>
                           {state.preview.full
                             ? state.preview.full.warning_count
                               ? tr(
                                   `匯出時共 ${state.preview.full.warning_count.toLocaleString()} 則警告`,
                                   `${plural(state.preview.full.warning_count, 'warning', 'warnings')} at export`,
                                 )
-                              : tr('匯出時沒有警告', 'No warnings at export')
+                              : decodeNote || tr('匯出時沒有警告', 'No warnings at export')
                             : warningCount
                               ? tr(`警告（${warningCount.toLocaleString()}）`, `Warnings (${warningCount.toLocaleString()})`)
-                              : noResult
-                                ? tr('警告', 'Warnings')
-                                : tr('沒有警告', 'No warnings')}
+                              : decodeNote || (noResult ? tr('警告', 'Warnings') : tr('沒有警告', 'No warnings'))}
+                          {decodeNote && (warningCount || state.preview.full?.warning_count) ? tr(`；${decodeNote}`, `; ${decodeNote}`) : ''}
                         </span>
                       </BottomTab>
                       <BottomTab active={bottomTab === 'types'} onClick={() => openBottomTab('types')}>
@@ -1206,6 +1214,20 @@ export default function App() {
                     </div>
                   ) : (
                     <ul className="flex-1 overflow-auto text-sm">
+                      {decodeWarnings.map((w) => (
+                        <li
+                          key={`decode:${w.file}` /* i18n-ignore：React 的 key，不是畫面文字 */}
+                          className="flex items-center gap-2 px-3 py-0.5 text-xs"
+                        >
+                          <TriangleAlert className="size-3.5 shrink-0 text-amber-600" />
+                          <span className="max-w-[50%] min-w-0 shrink-0 truncate font-mono text-muted-foreground" title={w.file}>
+                            {w.file}
+                          </span>
+                          <span className="min-w-0 flex-1 truncate" title={w.text}>
+                            {w.text}
+                          </span>
+                        </li>
+                      ))}
                       {warnings.map((w, i) => (
                         <li key={i}>
                           <button

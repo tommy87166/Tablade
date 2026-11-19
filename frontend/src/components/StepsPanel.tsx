@@ -210,7 +210,21 @@ export function StepsPanel({ state, catalog, busy, onSelect, onAdd, onMove, onTo
           >
             <FileInput className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
             <span className="min-w-0 flex-1">
-              <span className="block font-medium">{tr('讀取資料', 'Read data')}</span>
+              <span className="flex items-center gap-1.5 font-medium">
+                {tr('讀取資料', 'Read data')}
+                {input.decode_warnings?.length ? (
+                  <Badge
+                    variant="outline"
+                    className="h-4 shrink-0 border-amber-500/50 px-1 text-[10px] text-amber-700 dark:text-amber-400"
+                    title={tr(
+                      `${input.decode_warnings.length} 個檔有解不開的字（換成 �）`,
+                      `${plural(input.decode_warnings.length, 'file', 'files')} with undecodable characters (replaced with �)`,
+                    )}
+                  >
+                    <AlertTriangle /> {input.decode_warnings.length.toLocaleString()}
+                  </Badge>
+                ) : null}
+              </span>
               {/* 精簡時只在有問題（找不到檔、要重新載入、讀取錯誤）時顯示 */}
               {detailed || sourceTone !== 'text-muted-foreground' ? (
                 <span className={`block truncate text-xs ${sourceTone}`}>{sourceText}</span>

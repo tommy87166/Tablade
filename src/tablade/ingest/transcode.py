@@ -34,8 +34,51 @@ Failure = tuple[int, int] | None
 """None：成功；否則是（解碼失敗的檔案位置, 那個 byte 的值；檔尾字元不完整時是 -1）。"""
 
 Stats = tuple[int, tuple[int, ...], int]
-"""寬鬆解碼的統計：（換掉的字數, 前 ``REPLACED_LINES`` 個換字之前各有幾個 ``\\n``, 這一段共有幾個 ``\\n``）。
-行號從段的開頭算（第 1 行是 0）；呼叫的人加上之前的段的換行數。都是基本型別，可以跨程序傳。"""
+"""寬鬆解碼的統計：（換掉的字數, 前 ``REPLACED_LINES`` 個有換字的行之前各有幾個換行, 這一段共有幾個換行）。
+換行和逐行讀取一樣算：``\\n`` 與單獨的 ``\\r``（``LineCounter``）。行號從段的開頭算（第 1 行是 0），
+同一行只記一次；呼叫的人加上之前的段的換行數。都是基本型別，可以跨程序傳。"""
+
+_BREAK = re.compile(rb"\n|\r(?!\n)")
+
+
+class LineCounter:
+    """數換行，和逐行讀取一樣：``\\n`` 與單獨的 ``\\r`` 都算（轉碼時單獨的 ``\\r`` 會改成 ``\\n``，
+    ``__line_no`` 也是這樣編的）。一塊一塊餵進來；塊結尾的 ``\\r`` 要看下一塊開頭是不是 ``\\n`` 才知道。"""
+
+    def __init__(self) -> None:
+        self.count = 0
+        """已經確定的換行數（不含塊結尾還沒確定的 ``\\r``）。"""
+        self._cr = False
+
+    def _pending(self, chunk: bytes) -> int:
+        """上一塊結尾的 ``\\r``：這一塊不是 ``\\n`` 開頭時，它是單獨的 ``\\r``，算一個換行。"""
+        return 1 if self._cr and chunk[:1] != b"\n" else 0
+
+    def before(self, chunk: bytes, pos: int) -> int:
+        """``chunk[pos]``（解不開的位元組，不會是 ``\\n``）之前共有幾個換行；``chunk`` 是還沒 ``feed`` 的這一塊。"""
+        return self.count + self._pending(chunk) + len(_BREAK.findall(chunk, 0, max(pos, 0)))
+
+    def feed(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        found = self._pending(chunk) + len(_BREAK.findall(chunk))
+        self._cr = chunk.endswith(b"\r")
+        self.count += found - (1 if self._cr else 0)
+
+    def finish(self) -> int:
+        """到結尾了：最後留著的 ``\\r`` 是單獨的 ``\\r``。回傳全部的換行數。"""
+        if self._cr:
+            self.count += 1
+            self._cr = False
+        return self.count
+
+
+def line_breaks(data: bytes) -> int:
+    """這段位元組有幾個換行（和逐行讀取一樣算；最後一個位元組是 ``\\r`` 時算單獨的 ``\\r``）。"""
+    counter = LineCounter()
+    counter.feed(data)
+    return counter.finish()
+
 
 LENIENT = "tablade-lenient"
 """寬鬆解碼的錯誤處理器名稱（``bytes.decode(encoding, LENIENT)``）。"""
@@ -103,7 +146,7 @@ def decode_range(
     decoder = codecs.getincrementaldecoder(encoding)(errors)
     lenient = errors == LENIENT
     pos, carry = start, ""
-    replaced, lines, newlines = 0, [], 0
+    replaced, lines, breaks = 0, [], LineCounter()
 
     def decode(chunk: bytes, final: bool = False) -> str:
         nonlocal replaced
@@ -120,7 +163,9 @@ def decode_range(
         for hit in found:
             if len(lines) >= REPLACED_LINES:
                 break
-            lines.append(newlines + chunk.count(b"\n", 0, max(hit - pending, 0)))
+            line = breaks.before(chunk, hit - pending)
+            if not lines or lines[-1] != line:  # 同一行有好幾個字解不開：只記一次
+                lines.append(line)
         return text
 
     while True:
@@ -134,8 +179,8 @@ def decode_range(
             text = carry + decode(chunk)
         except UnicodeDecodeError as err:
             i = min(max(err.start, 0), len(chunk) - 1)
-            return (pos + i, chunk[i]), (replaced, tuple(lines), newlines)
-        newlines += chunk.count(b"\n")
+            return (pos + i, chunk[i]), (replaced, tuple(lines), breaks.count)
+        breaks.feed(chunk)
         carry = ""
         if text.endswith("\r"):  # 可能是跨兩塊的 \r\n，留到下一塊再處理
             text, carry = text[:-1], "\r"
@@ -146,9 +191,9 @@ def decode_range(
     try:
         tail = carry + decode(b"", final=True)
     except UnicodeDecodeError:
-        return (pos, -1), (replaced, tuple(lines), newlines)
+        return (pos, -1), (replaced, tuple(lines), breaks.finish())
     out.write(LONE_CR.sub("\n", tail).encode("utf-8"))
-    return None, (replaced, tuple(lines), newlines)
+    return None, (replaced, tuple(lines), breaks.finish())
 
 
 def _after_newline(f: BinaryIO, pos: int) -> int | None:

@@ -35,7 +35,10 @@ def test_decode_errors_are_in_english():
 
 def test_scan_decode_errors_are_in_english(tmp_path):
     (tmp_path / "bad.txt").write_bytes("好".encode("cp950") + b"\n\xff\xff\n")
-    hint = r'\. You can set "Undecodable characters" to "Replace with �"$'
+    hint = (
+        r'\. You can set "Undecodable characters" to "Replace with �" '
+        r'\(Recipe: "decode_errors": "replace" in input\)$'
+    )
     with pytest.raises(
         DecodeError, match=r"^utf-8 can't decode byte 0x\w\w at offset 0 \(line 1\)" + hint
     ):
