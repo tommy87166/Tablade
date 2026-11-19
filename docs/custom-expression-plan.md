@@ -2,7 +2,7 @@
 
 - 狀態：**計畫，尚未實作**（2026-11-20）。要決定的事都和維護者確認過了（「已決定」）。
 - 範圍：新步驟 `custom_expression`（「欄」分類，畫面上叫「自訂」）、驗證器、參數表單的一種新欄位、AI skill 的說明。
-- Recipe 1.2 還沒發布（`v1.0.1` 是 1.1），所以放進 1.2，不再升版號；`recipe-schema.lock.json` 要重新產生。
+- Recipe 1.2 已經隨 `v1.1.0` 發布，所以這一步要把 `RECIPE_VERSION` 升到 1.3（新增步驟，相容，升 minor），再執行 `scripts/update_schema_lock.py`。
 - 下面寫「實測」的地方都是用 Polars 2.1.0、Python 3.13 在 macOS 上試作量到的（試作沒有進 repo）。
 
 ## 問題
