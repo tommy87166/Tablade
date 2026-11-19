@@ -86,7 +86,7 @@
 | 2-1 | `apply_step` 加 `warnings=False` | `engine/run.py` |
 | 2-2 | `_Computed` 存數字，`state()` 改用數字（表還是全部留著，行為不變） | `session.py` |
 | 2-3 | 算完就放掉表；`_rebuild`；先放掉、再重算 | `session.py` |
-| 2-4 | 在 Windows 再量一次；更新 DESIGN.md | `docs/memory-improve-measure.py`、DESIGN.md |
+| 2-4 | 在 Windows 再量一次；更新 DESIGN.md §8 的「快取」 | `docs/memory-improve-measure.py`、DESIGN.md |
 
 - 1-5 做完就可以發布：第 1 部分單獨就解決當掉。
 - 2-2 是不改行為的整理（原本的測試不用改就要全過），2-3 才真的放掉表；分開做，出問題時比較好找。
@@ -136,7 +136,9 @@
   2. 額度平均分給每個檔，算出每個檔可以取幾行，夾在上下限之間。
   3. 行數比分到的少的檔整份取，剩下的額度平均再分給其他檔（water-filling）。
   4. 每檔取到的行數裡，結尾占 1/10，但不超過 `SAMPLE_TAIL`、不少於下限。
-- 新函式 `sample_plan(parts, files, reader, budget) -> SamplePlan`，放在 `ingest/sources.py` 的 `sample()` 旁邊：每個來源檔的 head、tail，樣本共幾行，以及「有沒有任何一個檔被截掉」。`sample()` 改成吃這份計畫，不再吃單一的 head、tail。
+- 新函式 `sample_plan(parts, files, reader, budget, head, tail) -> SamplePlan`，放在 `ingest/sources.py` 的 `sample()` 旁邊：每個來源檔的 head、tail，樣本共幾行，以及「有沒有任何一個檔被截掉」。`sample()` 改成吃這份計畫，不再吃單一的 head、tail。
+  - **每檔的上限（`head`、`tail`）由呼叫的地方傳進來**（`session.py` 傳它自己的 `SAMPLE_HEAD`、`SAMPLE_TAIL`，`engine/run.py` 傳它的），下限不超過上限。現有的測試是把這兩個常數調小（例如 20＋3 行）來做小樣本，資料很小、額度碰不到，這樣寫它們就不用改。
+  - 固定行數的樣本（`execute(..., head=, tail=)`、直接呼叫 `sample()` 的測試）用 `SamplePlan.fixed(files, head, tail)`。
 
 ### 接到預覽與試跑
 
@@ -145,6 +147,8 @@
 - 預覽（`session.py` 的 `_load_stage`）：額度在載入時算一次，計畫跟樣本一起存在 `self._sources`。`_stage_input` 的 `sampled`、`state.input.sample` 都讀存下來的，不要每次重算（可用記憶體隨時在變）。重新按「載入資料及預覽」、而且檔案或設定有變時才會重算。
 - 一個 Recipe 有好幾個讀檔的階段時：額度平分給這次要取樣的階段。
 - 試跑（`execute(mode="sample")`，「檢查並複製錯誤報告」與 `tablade validate --run`）：同一份規則。`execute` 多一個 `budget` 參數給測試；原本的 `head`、`tail` 參數保留（有給就照給的，不算計畫）。
+  - `execute` 是看全部階段的檔加起來的行數決定要不要取樣（`choose_mode`，`engine/run.py:629`），預覽是每個階段各自看；這個差別照舊。額度同樣平分給讀檔的階段。
+  - 每個檔都整份取到時，`RunReport.mode` 回報 `eager`、`sample_rows` 是 None，錯誤報告就不會寫「試跑只用…」。
 - 匯出前的試跑（`_trial`，每檔前 `TRIAL_HEAD` 2,000 行、結尾 0 行）：同一個 `sample_plan`，額度固定 32 MB（`TRIAL_BYTES`），不看記憶體。
 
 ### 同一份 Recipe，在不同電腦上預覽的樣本會不一樣
@@ -187,7 +191,8 @@
 ### 放掉表與重算（2-3）
 
 - 計算的順序照舊：載入或修改後，從第一個要重算的步驟一步一步往後算到最後一步（每一步要有列數與警告），只是算完下一步就把不在「留著的表」裡的上一步設成 `None`。
-- 需要表的地方：`frame_at()`（翻頁 `rows()`、欄位資訊 `column_info()`）、`_frame_before()`（新增步驟時的建議參數 `suggest()`、`_read_values` 的值清單）；`_compute` 裡第一個要重算的步驟也要它前一步的表。`_view_key()` 只用 key 不用表。
+- 需要表的地方：`frame_at()`（翻頁 `rows()`、欄位資訊 `column_info()`、點警告跳到那一列的 `find_row()`）、`_frame_before()`（新增步驟時的建議參數 `suggest()`、`_read_values` 的值清單）；`_compute` 裡第一個要重算的步驟也要它前一步的表。
+- `_view_key()` 不用表的內容，但它現在用 `frame is None` 判斷「有沒有資料」（`session.py:1735-1738`），要改用 `done`。
 - 新的 `_rebuild(si, index)`：從 index 之前最近一張留著的表開始，一步一步呼叫 `apply_step(..., warnings=False)`（2-1 加的參數：不算警告，已經存了），算完下一步就放掉上一步，得到第 index 步的表。
   - 不另外寫「排成一條 lazy 查詢」的重算：實測只快一成左右、峰值比較高（附錄 B 的表 B），而且會變成第三條執行路徑。直接用 `apply_step`，結果一定和原本算的一樣。
   - 結合的右表從 `_stage_result` 拿（本來就留著）。
@@ -239,6 +244,99 @@
 | 改畫面上那一步的參數 | 跟現在一樣 | 跟現在一樣 |
 
 差很多的話，先回來改這份計畫的數字，再繼續。
+
+## 對照 repo：要改的地方與測試（2026-11-19 確認）
+
+把計畫對著現在的程式（`e0d5d81`）逐項找過一次。行號是現在的。
+
+### 第 1 部分要改的地方
+
+| commit | 檔 | 位置 | 改什麼 |
+|---|---|---|---|
+| 1-1 | `src/tablade/usage.py` | 檔尾 | 新增 `system_memory()` 與三個平台的讀法（原型在 `docs/memory-improve-measure.py:107-187`） |
+| 1-2 | `src/tablade/engine/run.py` | 69-72 | 新常數（`SAMPLE_SHARE_*`、`SAMPLE_BYTES_*`、`SAMPLE_MIN_HEAD`、`SAMPLE_MIN_TAIL`、`TRIAL_BYTES`）與 `sample_budget()`（讀 `TABLADE_SAMPLE_MB`） |
+| 1-2 | `src/tablade/engine/run.py` | 5 | 模組說明的 `sample` 那一行 |
+| 1-3 | `src/tablade/ingest/sources.py` | 1683-1695 | `SamplePlan`、`sample_plan()`；`sample()` 改吃計畫 |
+| 1-3 | `tests/test_large.py:105`、`tests/test_parts.py:184`、`docs/memory-improve-measure.py` | | 直接呼叫 `sample(parts, files, reader, head, tail)` 的三個地方改成傳 `SamplePlan.fixed(...)` |
+| 1-4 | `src/tablade/session.py` | 1170-1174（`_load_stage`） | 算額度與計畫、取樣；計畫存進 `self._sources`（現在是三個值的 tuple：指紋、資料、來源檔，`session.py:386`） |
+| 1-4 | `src/tablade/session.py` | 1222（`_stage_input`） | `sampled` 改讀存下來的計畫（有沒有截掉） |
+| 1-4 | `src/tablade/session.py` | 1626（`state()`） | `input.sample` 改成 `{rows, files, head, tail}` |
+| 1-4 | `src/tablade/session.py` | 2185-2196（`_trial`） | 加固定 32 MB 的額度 |
+| 1-4 | `src/tablade/session.py` | 3、2099 | 兩處說明文字 |
+| 1-4 | `src/tablade/engine/run.py` | 741（`execute`）、818-829（內部函式的參數）、851-862、915 | `execute` 加 `budget` 參數；取樣改用計畫；沒有截掉時回報 `eager` |
+| 1-4 | `src/tablade/engine/check.py` | 20、207-217 | 錯誤報告的句子（已經有「共 N 行」，改掉「前 10 萬行與最後 1,000 行」）；不再匯入 `SAMPLE_HEAD`、`SAMPLE_TAIL` |
+| 1-5 | `frontend/src/bridge.ts` | 303 | `sample` 的型別 |
+| 1-5 | `frontend/src/App.tsx` | 1021-1022 | 抽樣模式的說明（中、英） |
+| 1-5 | DESIGN.md | 224、392、718 | 預覽的樣本規則；§8 加 `TABLADE_SAMPLE_MB` |
+| 1-5 | README.md | 89、147 附近、357 | 引擎那一列、環境變數、限制 |
+| 1-5 | README.zh-TW.md | 78、126 附近、321 | 同上 |
+| 1-6 | `docs/memory-improve-measure.py` | | 改成用 `Session` 實際操作 |
+
+確認過不用改的：
+
+- `choose_mode`（`engine/run.py:626-631`）：只用門檻，不變。
+- `src/tablade/cli.py`、`src/tablade/api.py`、`src/tablade/selftest.py`：沒有直接用到樣本的常數或 `sample()`。
+- 前端其他地方（`StepsPanel.tsx:178`、`TypesPane.tsx:114`、`form/fields.tsx`、`App.tsx` 的其他說明）只用 `sampled`、`mode`，沒有寫死行數。`frontend/src/dev/` 的假資料由 `scripts/gen_frontend_dev_data.py` 從 `Session.state()` 產生，重跑就是新的形狀，腳本不用改。
+- README.zh-TW.md:202 的效能數字（單一個 5 GB 的檔取樣 101,000 行）仍然正確。
+- `improve.md`、`docs/improve-plan.md`、`docs/join-plan.md` 裡的「前 10 萬行＋最後 1,000 行」是當時的計畫紀錄，不改。
+- AI skill 的文字（`src/tablade/skill.py`）沒有提到樣本的行數。
+
+### 第 2 部分要改的地方
+
+| commit | 檔 | 位置 | 改什麼 |
+|---|---|---|---|
+| 2-1 | `src/tablade/engine/run.py` | 501-529（`apply_step`） | 加 `warnings=True` 參數；False 時跳過 522、527 兩次 `_warnings` |
+| 2-2 | `src/tablade/session.py` | 138-147（`_Computed`） | 加 `done`、`rows`、`columns`、`files` |
+| 2-2 | `src/tablade/session.py` | 1253-1300（`_compute`） | 算完填數字；1279-1280 沿用快取時用 `done` 判斷 |
+| 2-2 | `src/tablade/session.py` | 1452-1512（`state()` 的步驟清單） | `status`、`blocked_here`、`rows`、`delta`、`input_columns`、`files`、`input_files` 改用數字 |
+| 2-2 | `src/tablade/session.py` | 1518（顯示哪一步）、1735-1738（`_view_key`） | `frame is None` 改成 `done` |
+| 2-3 | `src/tablade/session.py` | `_compute` | 算完下一步就放掉不在「留著的表」裡的上一步；第一個要重算的步驟沒有前一步的表時先 `_rebuild` |
+| 2-3 | `src/tablade/session.py` | 1329-1342（`_frame_before`、`frame_at`） | 表是 None 而且 `done` 時 `_rebuild` |
+| 2-3 | `src/tablade/session.py` | 1040-1043（`select`）、746-749（`select_stage`） | 換了選的步驟或階段時，先放掉不再需要的表 |
+| 2-3 | `src/tablade/session.py` | 新的 `_rebuild`、`_kept`（哪幾步要留） | |
+| 2-4 | DESIGN.md | 393（§8 的「快取」） | 改成新的做法：每一步只存數字，表只留幾張 |
+
+確認過不用改的：
+
+- `rows()`、`column_info()`、`find_row()`（`session.py:1745-1830`）都經過 `frame_at()`，改 `frame_at()` 就好。
+- `_stage_result`、`_stages_state`、`_finish_stage`、`_earlier_columns`、`_previewed`、`full_run` 只用每個階段最後一步的表，那張一直留著。
+- `add_step`（894）用 `_frame_before(選的那一步 + 1)`，就是選的那一步的結果，留著；`_read_values`（927）用選的那一步的輸入，也留著。
+- 新增、刪除、停用畫面上那一步之後，第一個要重算的步驟的前一步都在留著的表裡，不用 `_rebuild`；移動步驟、復原與重做可能要。
+- `src/tablade/api.py` 沒有直接碰表或 `_computed`。
+- 測試裡直接用 `frame_at()` 的（`tests/test_session.py:41、616、755`，`tests/test_excel.py:243`）會自動走重算，不用改。
+
+### 現有的測試：哪些會受影響
+
+| 測試 | 現在怎麼做 | 預期 |
+|---|---|---|
+| `tests/test_large.py:105`、`tests/test_parts.py:184` | 直接呼叫 `sample(..., head=2, tail=1)` | 1-3 改成 `SamplePlan.fixed`，斷言不變 |
+| `tests/test_large.py:422-447` | 把 `SAMPLE_THRESHOLD`、`SAMPLE_HEAD`、`SAMPLE_TAIL` 調成 10、20、3，斷言樣本是 2 ×（20＋3）行、46 行 | 不用改（上限由呼叫端傳入） |
+| `tests/test_session.py:596-598、846-848、872-874、891-893` | 同樣調小常數 | 不用改；1-4 做完要跑過確認 |
+| `tests/test_review_session.py:40-47`（`small_samples`） | 兩個模組都調小 | 不用改 |
+| `tests/test_csv_output.py:133-135` | 調小常數 | 不用改 |
+| `tests/test_i18n_session.py:170-175` | 只調門檻，沒調上限：檔整份取到 | 只斷言進度文字「Reading preview sample」，照舊會出現。但這個檔之後不標抽樣模式，同一個檔裡如果有靠這個設定斷言 `sampled` 的要一起看 |
+| `tests/test_session.py:559` | 斷言試跑的模式是 `sample` | 不用改 |
+
+- 沒有測試斷言 `state["input"]["sample"]` 的內容，也沒有測試斷言錯誤報告裡「試跑只用…」那一句：形狀與文字改了不會有測試壞掉，所以要補（下面）。
+- 第 2 部分：2-2 做完，全部測試不改就要過。2-3 做完也應該全過（沒有測試直接讀 `_computed[...].frame`；`tests/test_review_session.py:227` 只看 `_computed` 有幾個階段）。
+
+### 要新增的測試
+
+| commit | 放在 | 測什麼 |
+|---|---|---|
+| 1-1 | `tests/test_usage.py` | `system_memory()` 回傳兩個正數、可用不超過總量；內部呼叫失敗時回傳 None |
+| 1-2 | 新的 `tests/test_sample_plan.py` | `sample_budget`：三種情況各由哪一項決定；執行緒 1、4、8、16 的流暢上限；讀不到記憶體；`TABLADE_SAMPLE_MB` 的正整數、空的、文字、0、負數；「預期的效果」表裡的三種電腦 |
+| 1-3 | `tests/test_sample_plan.py` | `sample_plan`：一兩個大檔和現在一樣；很多檔時實際大小不超過額度的 1.3 倍、每檔都有頭尾；有小檔時整份取、額度分給別人；下限縮小到 20＋5 行；下限不超過上限；全部整份取到時回報沒有截掉；Parquet、CSV、文字檔量出來的一行大小差不到 3 成；讀 CSV 時行號從 2 開始（`sample()` 的 `first`）也對 |
+| 1-4 | `tests/test_session.py` | 很多檔（`write_many_zips`）＋很小的額度：樣本行數在額度內、每檔都有頭尾；`state["input"]["sample"]` 的四個數字；每個檔都整份取到時 `sampled` 是 False、畫面是完整模式；兩個讀檔的階段平分額度；重新載入而檔案沒變時樣本不變（不重算額度）；「移除後 N 列」在樣本裡正確 |
+| 1-4 | `tests/test_session.py` | 匯出前的試跑有上限（很多檔時試跑的行數不超過 32 MB 換算的行數） |
+| 1-4 | `tests/test_large.py` | `execute(mode="sample", budget=…)`：`sample_rows` 在額度內；沒有截掉時 `mode` 是 `eager` |
+| 1-4 | `tests/test_export_and_cli.py` 或 `tests/test_i18n_session.py` | 錯誤報告的句子（中、英）寫出樣本共幾行，不再寫死 10 萬與 1,000 |
+| 1-5 | `tests/test_i18n.py`（現有的檢查） | 新的畫面文字有中英兩份；前端 `npm run lint`、`npm run build`（型別） |
+| 2-1 | `tests/test_steps.py` 或 `tests/test_parts.py` | `apply_step(warnings=False)`：表一樣、警告是 0 與空清單；有「對輸入檢查」的步驟（結合）也一樣 |
+| 2-3 | 新的 `tests/test_session_frames.py` | 每個範例 Recipe：先記下每一步 `frame_at(i)`（重算出來的），和不放掉時一步一步 `apply_step` 的結果 `assert_frame_equal` |
+| 2-3 | `tests/test_session_frames.py` | 留著的只有規定的那幾張（其他步驟 `frame` 是 None）；`state()` 的列數、欄位、來源檔、警告和 2-2 時一樣 |
+| 2-3 | `tests/test_session_frames.py` | 點到沒有表的步驟後 `rows()`、`column_info()`、`find_row()` 正常；在它後面新增步驟有建議參數；改參數、停用與啟用、刪除、移動、復原與重做、切換階段後結果正確；出錯的步驟後面仍然是「被擋住」 |
+| 2-3 | `tests/test_session_frames.py` | 多階段：結合的右表、讀前面階段的階段，放掉表之後結果不變；「完整跑一次」照常 |
 
 ## 不做的事
 
