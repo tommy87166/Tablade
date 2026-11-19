@@ -64,7 +64,9 @@ def test_form_text_is_english():
     assert split["on_extra"]["ui_labels"] == {
         "warn": "Warn and drop the extra parts",
         "merge": "Merge extra parts into the last column",
+        "merge_into": "Merge extra parts into a chosen column",
     }
+    assert split["merge_column"]["title"] == "Merge into column"
     rule = items["classify_rows"]["schema"]["$defs"]["Rule"]
     assert rule["title"] == "Classification rule"
     assert rule["properties"]["match"]["ui_labels"] == {

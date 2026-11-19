@@ -366,6 +366,26 @@ F024_REJECT = {
         },
         "stages[0].steps[0].replacements[0].find",
     ),
+    "split_delimited：merge_into 沒填 merge_column": (
+        {"id": "s1", "type": "split_delimited", "columns": ["a", "b"], "on_extra": "merge_into"},
+        "stages[0].steps[0].merge_column",
+    ),
+    "split_column：merge_column 不是拆出來的欄名": (
+        {
+            "id": "s1",
+            "type": "split_column",
+            "column": "line",
+            "delimiter": "|",
+            "names": ["a", "b"],
+            "on_extra": "merge_into",
+            "merge_column": "x",
+        },
+        "stages[0].steps[0].merge_column",
+    ),
+    "split_delimited：沒選 merge_into 卻填了 merge_column": (
+        {"id": "s1", "type": "split_delimited", "columns": ["a", "b"], "merge_column": "a"},
+        "stages[0].steps[0].merge_column",
+    ),
     "步驟 id 結尾有換行": (
         {"id": "s1\n", "type": "remove_top_rows", "n": 1},
         "stages[0].steps[0].id",
@@ -388,6 +408,9 @@ def test_f024_messages_match_pydantic():
         "split_fixed_width：位置沒有由小到大",
         "split_fixed_width：位置和欄名數量不同",
         "parse_date：自訂正規表示式只有 2 個群組",
+        "split_delimited：merge_into 沒填 merge_column",
+        "split_column：merge_column 不是拆出來的欄名",
+        "split_delimited：沒選 merge_into 卻填了 merge_column",
     ):
         data = recipe(F024_REJECT[title][0])
         assert errors(data)[0]["error"] == strict_error(data), title
@@ -506,6 +529,8 @@ def test_f024_every_pydantic_rule_has_a_validator_check():
         ("parse_date", "regex"),
         ("replace_values", "replacements"),  # RegexScan：環顧、反向參照、括號
         ("condition:RegexCondition", "pattern"),
+        ("split_delimited", "merge_column"),  # step_rules：_merge_column_rules
+        ("split_column", "merge_column"),
     }
     assert _field_validators() <= covered
 

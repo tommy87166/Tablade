@@ -934,7 +934,48 @@ def step_rules(
                     ),
                 )
             )
+    if kind in ("split_delimited", "split_column"):
+        issues += _merge_column_rules(
+            step, path, "columns" if kind == "split_delimited" else "names"
+        )
     return issues
+
+
+def _merge_column_rules(step: dict[str, Any], path: list[str | int], names_key: str) -> list[Issue]:
+    """拆欄的 ``merge_column``（和 ``steps/split.py`` 的 ``check_merge_column`` 一樣）。"""
+    value, names = step.get("merge_column", ""), step.get(names_key)
+    where = path + ["merge_column"]
+    if not isinstance(value, str):
+        return []
+    if step.get("on_extra") == "merge_into":
+        if not value:
+            return [
+                _issue(
+                    where,
+                    t("要選多的段併回哪一欄", "Choose the column to merge the extra parts into"),
+                )
+            ]
+        if isinstance(names, list) and value not in names:
+            return [
+                _issue(
+                    where,
+                    t(
+                        f"「{value}」不是拆出來的欄名",
+                        f'"{value}" is not one of the new column names',
+                    ),
+                )
+            ]
+    elif value:
+        return [
+            _issue(
+                where,
+                t(
+                    "只有「段數比欄名多時」選「多的段併回指定的欄」才能填 merge_column",
+                    "merge_column can be set only when extra parts are merged into a chosen column",
+                ),
+            )
+        ]
+    return []
 
 
 # ── 驗證 ─────────────────────────────────────────────────────────

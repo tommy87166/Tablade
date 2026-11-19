@@ -207,6 +207,13 @@ function OptionCards({ value, onChange, schema }: { value: unknown; onChange: (v
   )
 }
 
+/** ui 是 own_name：選項是這一步自己的另一個參數（ui_from，例如拆出來的欄名）目前的值。 */
+function ownNames({ schema, root, context }: FieldProps): string[] {
+  const from = resolve(schema, root).ui_from
+  const values = from ? context?.params[from] : undefined
+  return Array.isArray(values) ? values.filter((v): v is string => typeof v === 'string' && v !== '') : []
+}
+
 function ColumnSelect({ value, onChange, columns }: { value: unknown; onChange: (v: unknown) => void; columns: string[] | null }) {
   const current = asString(value)
   if (!columns) return <Input value={current} placeholder={tr('欄位名稱', 'Column name')} onChange={(e) => onChange(e.target.value)} />
@@ -847,6 +854,8 @@ function control(kind: FieldKind, props: FieldProps) {
       return <DataValues {...props} />
     case 'option_cards':
       return <OptionCards value={value} onChange={onChange} schema={schema} />
+    case 'own_name':
+      return <ColumnSelect value={value} onChange={onChange} columns={ownNames(props)} />
     case 'right_columns':
       return <ColumnChecklist value={value} onChange={onChange} columns={rightStage(props.root, props.context)?.columns ?? null} />
     case 'column_order':

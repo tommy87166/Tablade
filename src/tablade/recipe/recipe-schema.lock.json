@@ -1310,6 +1310,15 @@
               "default": false,
               "type": "boolean"
             },
+            "merge_column": {
+              "default": "",
+              "type": "string",
+              "ui": "own_name",
+              "ui_from": "names",
+              "ui_show_if": {
+                "on_extra": "merge_into"
+              }
+            },
             "names": {
               "items": {
                 "minLength": 1,
@@ -1323,7 +1332,8 @@
               "default": "warn",
               "enum": [
                 "warn",
-                "merge"
+                "merge",
+                "merge_into"
               ],
               "type": "string"
             },
@@ -1383,11 +1393,21 @@
               "default": false,
               "type": "boolean"
             },
+            "merge_column": {
+              "default": "",
+              "type": "string",
+              "ui": "own_name",
+              "ui_from": "columns",
+              "ui_show_if": {
+                "on_extra": "merge_into"
+              }
+            },
             "on_extra": {
               "default": "warn",
               "enum": [
                 "warn",
-                "merge"
+                "merge",
+                "merge_into"
               ],
               "type": "string"
             },

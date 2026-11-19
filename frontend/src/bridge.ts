@@ -41,7 +41,8 @@ export type JsonSchema = {
     | 'right_columns'
     | 'data_values'
     | 'option_cards'
-  /** ui 是 data_values 時：從哪個參數指定的欄讀出值 */
+    | 'own_name'
+  /** ui 是 data_values 時：從哪個參數指定的欄讀出值；own_name 時：選項是哪個參數（這一步自己的欄名清單） */
   ui_from?: string
   ui_labels?: Record<string, string>
   /** 選到某個選項時，顯示在選單下面的說明（例如日期樣式的正規表示式）；選項卡片時是每張卡片的說明 */

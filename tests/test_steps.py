@@ -224,6 +224,131 @@ def test_split_column_warn_merge_trim_and_nulls():
     assert merged["y"].to_list() == [" b | c", "b", None] and total == 0
 
 
+# ── 多的段併回指定的欄（docs/split-merge-plan.md）────────────────────
+
+
+def _merged(line: str, names: list[str], into: int) -> list[str | None]:
+    """照計畫的規則算出來的值：左邊照順序、右邊從右邊往回數、中間接回去。"""
+    parts = line.split("|")
+    extra = len(parts) - len(names)
+    if extra <= 0:
+        return parts + [None] * (len(names) - len(parts))
+    return [*parts[:into], "|".join(parts[into : into + extra + 1]), *parts[into + extra + 1 :]]
+
+
+@pytest.mark.parametrize("into", ["c1", "c2", "c4"])
+def test_split_delimited_merge_into(into):
+    lines = ["a|b|c|d", "a|b|c|d|x|e", "a|b|c|d|x|y|e"]
+    names = ["c1", "c2", "c3", "c4"]
+    step = make(
+        "split_delimited", delimiter="|", columns=names, on_extra="merge_into", merge_column=into
+    )
+    out, total, warnings = run(step, frame({"line": lines}))
+    k = names.index(into)
+    assert [list(r) for r in out.select(names).rows()] == [_merged(x, names, k) for x in lines]
+    assert total == 2 and [w.line_no for w in warnings] == [2, 3]
+    assert warnings[0].message == f"「line」拆出 6 段，比 4 個欄名多，多的段已併回「{into}」"
+    assert f"多的段併回「{into}」" in step.describe()
+
+
+def test_split_delimited_merge_into_values():
+    df = frame({"line": ["a|b|c|d", "a|b|X|Y|d", "a|b", ""]})
+    names = ["c1", "c2", "c3", "c4"]
+    step = make(
+        "split_delimited", delimiter="|", columns=names, on_extra="merge_into", merge_column="c3"
+    )
+    out, total, _ = run(step, df)
+    assert [list(r) for r in out.select(names).rows()] == [
+        ["a", "b", "c", "d"],
+        ["a", "b", "X|Y", "d"],
+        ["a", "b", None, None],  # 段數比較少：和照順序拆一樣
+        [None, None, None, None],
+    ]
+    assert total == 1
+
+
+def test_split_delimited_merge_into_last_is_merge():
+    df = frame({"line": ["a;b;c;d", "a;b", '"x;y";z;w']})
+    names = ["c1", "c2"]
+    merged = run(make("split_delimited", delimiter=";", columns=names, on_extra="merge"), df)[0]
+    into = run(
+        make(
+            "split_delimited",
+            delimiter=";",
+            columns=names,
+            on_extra="merge_into",
+            merge_column="c2",
+        ),
+        df,
+    )[0]
+    assert merged.select(names).equals(into.select(names))
+
+
+def test_split_delimited_merge_into_respects_quotes():
+    df = frame({"line": ['a|"b|c"|d', 'a|"b|c"|x|d']})
+    step = make(
+        "split_delimited",
+        delimiter="|",
+        columns=["c1", "c2", "c3"],
+        on_extra="merge_into",
+        merge_column="c2",
+    )
+    out, total, _ = run(step, df)
+    assert out["c2"].to_list() == ["b|c", "b|c|x"] and out["c3"].to_list() == ["d", "d"]
+    assert total == 1
+
+
+def test_split_column_merge_into_trims_and_keeps_nulls():
+    df = frame({"m": ["1 | a | b | 2", "1|x|2", None]})
+    step = make(
+        "split_column",
+        column="m",
+        delimiter="|",
+        names=["x", "y", "z"],
+        on_extra="merge_into",
+        merge_column="y",
+    )
+    out, total, warnings = run(step, df)
+    assert data_of(out) == {"x": ["1", "1", None], "y": ["a | b", "x", None], "z": ["2", "2", None]}
+    assert total == 1 and warnings[0].line_no == 1
+
+
+@pytest.mark.parametrize(
+    ("params", "message"),
+    [
+        ({"on_extra": "merge_into"}, "要選多的段併回哪一欄"),
+        ({"on_extra": "merge_into", "merge_column": "nope"}, "「nope」不是拆出來的欄名"),
+        ({"merge_column": "c1"}, "才能填 merge_column"),
+    ],
+)
+@pytest.mark.parametrize("kind", ["split_delimited", "split_column"])
+def test_merge_column_rules(kind, params, message):
+    from pydantic import ValidationError
+
+    base = (
+        {"columns": ["c1", "c2"]}
+        if kind == "split_delimited"
+        else {"column": "m", "delimiter": "|", "names": ["c1", "c2"]}
+    )
+    with pytest.raises(ValidationError, match=message):
+        make(kind, **base, **params)
+
+
+def test_extra_delimiter_fixture_splits_back_exactly():
+    from tablade.fixtures import EXTRA_DELIMITER_COLUMNS, extra_delimiter_rows
+
+    lines, values = extra_delimiter_rows()
+    names = list(EXTRA_DELIMITER_COLUMNS)
+    step = make(
+        "split_delimited", delimiter="|", columns=names, on_extra="merge_into", merge_column="備註"
+    )
+    out, total, _ = run(step, frame({"line": lines}))
+    assert [list(r) for r in out.select(names).rows()] == values
+    assert total == sum(1 for v in values if "|" in v[4]) == 10
+    wrong = run(make("split_delimited", delimiter="|", columns=names), frame({"line": lines}))[0]
+    assert [list(r) for r in wrong.select(names).rows()] != values  # 照順序拆會錯位
+
+
 def test_split_column_missing_column_is_a_step_error():
     with pytest.raises(RunError, match="欄位「nope」不存在"):
         run(make("split_column", column="nope", delimiter="|", names=["x"]), frame({"m": ["a"]}))
@@ -1159,3 +1284,42 @@ def test_step_errors_are_in_chinese():
         )
     issues = {i["path"]: i["error"] for i in pydantic_issues(err.value)}
     assert issues == {"conditions": "至少要有 1 項", "column": "不能是空白", "name": "必填，請填寫"}
+
+
+def test_split_merge_into_stream_matches_eager(tmp_path):
+    from tablade.engine.run import execute
+    from tablade.fixtures import EXTRA_DELIMITER_COLUMNS, extra_delimiter_rows
+    from tablade.recipe.schema import parse_recipe
+
+    lines, values = extra_delimiter_rows(rows=400)
+    (tmp_path / "d.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    recipe = parse_recipe(
+        {
+            "tablade_recipe": "1.2",
+            "name": "m",
+            "stages": [
+                {
+                    "name": "a",
+                    "output_format": "parquet",
+                    "input": {"files": ["d.txt"], "reader": "text_lines", "encoding": "utf-8"},
+                    "steps": [
+                        {
+                            "id": "s1",
+                            "type": "split_delimited",
+                            "delimiter": "|",
+                            "columns": list(EXTRA_DELIMITER_COLUMNS),
+                            "on_extra": "merge_into",
+                            "merge_column": "備註",
+                        }
+                    ],
+                }
+            ],
+            "output": {},
+        }
+    )
+    _, eager = execute(recipe, tmp_path, output=tmp_path / "e.parquet", mode="eager")
+    execute(recipe, tmp_path, output=tmp_path / "s.parquet", mode="stream")
+    a, b = pl.read_parquet(tmp_path / "e.parquet"), pl.read_parquet(tmp_path / "s.parquet")
+    assert a.equals(b)
+    assert [list(r) for r in a.select(list(EXTRA_DELIMITER_COLUMNS)).rows()] == values
+    assert eager.warning_count == 20

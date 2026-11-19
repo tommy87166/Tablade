@@ -29,6 +29,7 @@ export type FieldKind =
   | 'right_columns'
   | 'data_values'
   | 'option_cards'
+  | 'own_name'
   | 'unknown'
 
 export function resolve(schema: JsonSchema, root: JsonSchema): JsonSchema {
@@ -56,7 +57,8 @@ export function fieldKind(prop: JsonSchema, root: JsonSchema): FieldKind {
     schema.ui === 'right_column' ||
     schema.ui === 'right_columns' ||
     schema.ui === 'data_values' ||
-    schema.ui === 'option_cards'
+    schema.ui === 'option_cards' ||
+    schema.ui === 'own_name'
   ) {
     return schema.ui
   }

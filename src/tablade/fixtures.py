@@ -729,6 +729,39 @@ def only_lf_lines(rows: int = 50, seed: int = 0, encoding: str = "cp950") -> byt
     return "".join(f"{r}\n" for r in records).encode(encoding)
 
 
+# ── 文字欄裡有沒加引號的分隔符號（拆欄併回指定的欄，docs/split-merge-plan.md）────
+
+EXTRA_DELIMITER_COLUMNS = ("日期", "門市", "品號", "品名", "備註", "金額")
+
+
+def extra_delimiter_rows(
+    seed: int = 0, rows: int = 200, every: int = 20
+) -> tuple[list[str], list[list[str]]]:
+    """「|」分隔、6 欄（``EXTRA_DELIMITER_COLUMNS``）的明細，回傳（每一行, 每一行正確拆開的 6 個值）。
+
+    每 ``every`` 筆的備註裡有 1～2 個沒加引號的 ``|``：照順序拆會多出幾段、金額錯位，
+    「多的段併回備註」才拆得對。其他欄都沒有分隔符號。
+    """
+    rng = random.Random(seed)
+    lines, values = [], []
+    for i in range(1, rows + 1):
+        code, name, price = rng.choice(ITEMS)
+        note = rng.choice(("一般銷售", "會員價", "門市自取"))
+        if i % every == 0:
+            note = "|".join([note, "改價", "主管核准"][: 2 + (i // every) % 2])
+        row = [
+            _roc_date(rng, month=rng.randint(1, 12)),
+            rng.choice(STORES),
+            code,
+            name,
+            note,
+            str(price * rng.randint(1, 9)),
+        ]
+        lines.append("|".join(row))
+        values.append(row)
+    return lines, values
+
+
 def write_all(directory: str | Path, seed: int = 0) -> list[Path]:
     """產生所有範例假資料到指定資料夾。
 

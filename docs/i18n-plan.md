@@ -104,6 +104,8 @@
 | 換行 | Line breaks |
 | 都算換行 | Any line break |
 | 只認 CRLF | CRLF only |
+| 併回哪一欄 | Merge into column |
+| 多的段併回指定的欄 | Merge extra parts into a chosen column |
 | 試跑 | Trial run |
 | 轉碼 | Transcoding |
 | 暫存資料夾 | Temp folder |
