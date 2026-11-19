@@ -2,7 +2,8 @@
 
 依資料量選擇做法：
 - ``eager``：資料不大時整份讀進記憶體，每一步 ``collect()`` 一次，每步的列數、警告、行號都很便宜。
-- ``sample``：資料很大時的試跑與預覽，只用每個來源檔的前幾行與最後幾行（``SAMPLE_HEAD`` / ``SAMPLE_TAIL``）。
+- ``sample``：資料很大時的試跑與預覽，只用每個來源檔的開頭與結尾：每檔最多前 ``SAMPLE_HEAD`` 行與最後
+  ``SAMPLE_TAIL`` 行，所有檔加起來不超過額度（``sample_budget``，依這台電腦的記憶體與執行緒數）。
 - ``stream``：資料很大時的完整執行。整條 lazy 查詢用串流引擎寫成暫存 Parquet（記憶體用量固定），
   再從暫存檔取出警告、寫出最後的結果。每一步的列數只在 eager / sample 模式提供。
   暫存結果分成很多個檔寫，另一條執行緒看寫完了幾個來回報進度（``engine/progress.py``）。
@@ -37,10 +38,12 @@ from tablade.ingest.sources import (
     Part,
     PartsMismatch,
     Progress,
+    SamplePlan,
     SourceFile,
     align,
     concat,
     sample,
+    sample_plan,
     scan_parts,
     scan_zips,
     source_count,
@@ -64,12 +67,30 @@ from tablade.steps.base import (
     StepError,
     source_name,
 )
+from tablade.usage import system_memory
 
 MAX_WARNINGS_PER_CHECK = 100
 SAMPLE_THRESHOLD = 200_000
 """輸入超過這麼多行時，預覽與試跑改用樣本，完整執行改用串流。"""
 SAMPLE_HEAD = 100_000
 SAMPLE_TAIL = 1_000
+"""每個檔最多取前這麼多行與最後這麼多行（一兩個大檔時就是這麼多）。"""
+SAMPLE_SHARE_AVAILABLE = 0.05
+SAMPLE_SHARE_TOTAL = 0.01
+SAMPLE_BYTES_PER_THREAD = 32 << 20
+SAMPLE_BYTES_MAX = 256 << 20
+SAMPLE_BYTES_UNKNOWN = 128 << 20
+"""樣本的額度（所有檔加起來，樣本在記憶體裡最多佔多少；docs/memory-improve.md）：
+
+    min( 流暢上限 , max( 可用記憶體 × 5% , 實體記憶體 × 1% ) )，流暢上限 ＝ min( 256 MB , 32 MB × 執行緒數 )
+
+可用記憶體的 5% 讓預覽跟著樣本變大的部分不會佔掉太多；實體記憶體的 1% 是可用記憶體很少時的下限；
+流暢上限讓點另一步、改參數時的重算維持在 1 秒左右。讀不到系統記憶體時用流暢上限與 128 MB 取小的。"""
+TRIAL_BYTES = 32 << 20
+"""匯出前的試跑（每檔只取開頭幾行）的額度：固定，不看記憶體。"""
+SAMPLE_MB_ENV = "TABLADE_SAMPLE_MB"  # i18n-ignore
+"""環境變數：設成正整數時，預覽與試跑的額度直接用這麼多 MB。"""
+_SYSTEM: Any = object()
 PART = f"{TEMP_PREFIX}part"
 """串流執行時，中間階段的暫存結果裡每一列屬於第幾個 part（下一個階段讀回來時依它分開）。"""
 STAGED_ROW_GROUP = 8_192
@@ -503,11 +524,13 @@ def apply_step(
     frame: pl.DataFrame,
     limit: int = MAX_WARNINGS_PER_CHECK,
     tables: Tables | None = None,
+    warnings: bool = True,
 ) -> tuple[pl.DataFrame, int, list[RowWarning]]:
     """套用一個步驟（eager），回傳（移除暫存欄位後的結果、警告總數、前幾則警告）。
 
     分檔與合併型步驟依來源檔切開再套用；一列一列的步驟直接套在整張表上（結果一樣，比較快）。
-    ``tables`` 是前面階段的結果（結合的右表）。
+    ``tables`` 是前面階段的結果（結合的右表）。``warnings=False`` 時不算警告（回傳 0 與空清單）：
+    預覽重算已經算過的步驟時用（警告已經存了）。
     """
     step = step.bind(tables)
     # 先排好這一步（還不處理資料）：參數對不上（例如欄位不存在）時報步驟自己的錯誤，
@@ -519,14 +542,14 @@ def apply_step(
             lf = _apply(step, frame.lazy())
     except pl.exceptions.PolarsError as err:
         raise RunError(step, f"{type(err).__name__}: {err}") from None
-    before = _warnings(step, frame, limit, on_input=True)
+    before = _warnings(step, frame, limit, on_input=True) if warnings else (0, [])
     try:
         out = lf.collect(engine="streaming")
     except pl.exceptions.PolarsError as err:
         raise RunError(step, f"{type(err).__name__}: {err}") from None
-    total, warnings = _warnings(step, out, limit)
+    total, found = _warnings(step, out, limit) if warnings else (0, [])
     temp = [c for c in out.columns if c.startswith(TEMP_PREFIX)]
-    return out.drop(temp), before[0] + total, before[1] + warnings
+    return out.drop(temp), before[0] + total, before[1] + found
 
 
 def stage_parts(names: list[str], results: dict[str, list[Part]]) -> list[Part]:
@@ -621,6 +644,22 @@ def skipped_archives(recipe: Recipe, base_dir: Path) -> list[dict[str, str]]:
         if stage.input.reader == "zip_lines"
         for path in scan_zips(stage.input.files, stage.input.members, base_dir).empty
     ]
+
+
+def sample_budget(memory: tuple[int, int] | None = _SYSTEM, threads: int | None = None) -> int:
+    """預覽與試跑的樣本額度（bytes）。``memory``（總量, 可用）與 ``threads`` 給測試用；沒給就讀這台電腦的。"""
+    env = os.environ.get(SAMPLE_MB_ENV, "").strip()
+    if env.isascii() and env.isdigit() and int(env) > 0:
+        return int(env) << 20
+    threads = threads if threads is not None else pl.thread_pool_size()
+    smooth = min(SAMPLE_BYTES_MAX, SAMPLE_BYTES_PER_THREAD * max(threads, 1))
+    memory = system_memory() if memory is _SYSTEM else memory
+    if memory is None:
+        return min(smooth, SAMPLE_BYTES_UNKNOWN)
+    total, available = memory
+    return min(
+        smooth, max(int(available * SAMPLE_SHARE_AVAILABLE), int(total * SAMPLE_SHARE_TOTAL))
+    )
 
 
 def choose_mode(files: list[SourceFile], write_output: bool, mode: Mode) -> Mode:
@@ -752,15 +791,18 @@ def execute(
     phase: str | None = None,
     head: int | None = None,
     tail: int | None = None,
+    budget: int | None = None,
 ) -> tuple[pl.DataFrame | None, RunReport]:
     """依序執行每個階段。``stream`` 模式不回傳 DataFrame（結果直接寫到檔案）。
 
-    ``outputs`` 是要寫檔的階段 → 位置（``export/outputs.py`` 的 ``resolve_outputs``）；``output`` 是
-    只寫最後一個階段的簡寫（測試、完整跑一次用）。兩個都沒有時只試跑，不寫檔。
-    處理紀錄寫到 ``log_dir``（沒指定時是輸出檔所在資料夾底下的 log/）。
+        ``outputs`` 是要寫檔的階段 → 位置（``export/outputs.py`` 的 ``resolve_outputs``）；``output`` 是
+        只寫最後一個階段的簡寫（測試、完整跑一次用）。兩個都沒有時只試跑，不寫檔。
+        處理紀錄寫到 ``log_dir``（沒指定時是輸出檔所在資料夾底下的 log/）。
 
-    ``tracker`` 是呼叫的地方建好的進度（有「準備檔案」「試跑」那幾列時）；``phase`` 是這次執行在進度視窗上
-    算哪一列（例如試跑：讀完檔才開始，各階段的進度寫在那一列）。``head`` / ``tail`` 是 sample 模式每個檔取幾行。
+        ``tracker`` 是呼叫的地方建好的進度（有「準備檔案」「試跑」那幾列時）；``phase`` 是這次執行在進度視窗上
+        算哪一列（例如試跑：讀完檔才開始，各階段的進度寫在那一列）。sample 模式的樣本：``head`` / ``tail`` 是每個檔
+    最多取前幾行、最後幾行，``budget`` 是額度（bytes，平分給讀檔的階段；沒給時用 ``sample_budget()``）。
+    只給 ``head`` / ``tail``、沒給 ``budget`` 時每個檔固定取那麼多行。每個檔都整份取到時回報 ``eager``。
     """
     targets = dict(outputs or {})
     if output is not None:
@@ -775,7 +817,18 @@ def execute(
     writes = _Writes()
     try:
         frame, report = _execute(
-            recipe, base_dir, targets, mode, limit, progress, tracker, writes, phase, head, tail
+            recipe,
+            base_dir,
+            targets,
+            mode,
+            limit,
+            progress,
+            tracker,
+            writes,
+            phase,
+            head,
+            tail,
+            budget,
         )
         if phase is not None:
             tracker.end(phase, t("沒有錯誤", "No errors"))
@@ -825,6 +878,7 @@ def _execute(
     phase: str | None = None,
     head: int | None = None,
     tail: int | None = None,
+    budget: int | None = None,
 ) -> tuple[pl.DataFrame | None, RunReport]:
     scanned = scan_stages(recipe, base_dir, progress, tracker)
     if phase is not None:
@@ -843,22 +897,17 @@ def _execute(
         return None, report
 
     results: dict[str, pl.DataFrame] = {}
-    reports, stages, sample_rows = [], [], 0
+    reports, stages, sample_rows, truncated = [], [], 0, False
     for k, stage in enumerate(recipe.stages):
         tracker.start(k)
         if stage.name in scanned:
             parts, found = scanned[stage.name]
-            frame = (
-                concat(parts).collect(engine="streaming")
-                if mode == "eager"
-                else sample(
-                    parts,
-                    found,
-                    stage.input.reader,
-                    SAMPLE_HEAD if head is None else head,
-                    SAMPLE_TAIL if tail is None else tail,
-                )
-            )
+            if mode == "eager":
+                frame = concat(parts).collect(engine="streaming")
+            else:
+                plan = _plan(parts, found, budget, head, tail, len(scanned))
+                truncated = truncated or plan.truncated
+                frame = sample(parts, found, stage.input.reader, plan)
             sample_rows += frame.height
         else:
             frame = stage_frame(stage.input.stages, results)
@@ -911,11 +960,34 @@ def _execute(
         frame.height,
         _data_columns(frame.columns),
         None,
-        mode,
-        sample_rows if mode == "sample" else None,
+        mode if mode != "sample" or truncated else "eager",  # 每個檔都整份取到：不是樣本
+        sample_rows if mode == "sample" and truncated else None,
         stages=stages,
     )
     return frame, report
+
+
+def _plan(
+    parts: list[Part],
+    files: list[SourceFile],
+    budget: int | None,
+    head: int | None,
+    tail: int | None,
+    stages: int,
+) -> SamplePlan:
+    """試跑時一個階段的樣本計畫：只給 head／tail 時固定行數；否則依額度（平分給讀檔的階段）。"""
+    if budget is None and (head is not None or tail is not None):
+        return SamplePlan.fixed(
+            files, SAMPLE_HEAD if head is None else head, SAMPLE_TAIL if tail is None else tail
+        )
+    share = (sample_budget() if budget is None else budget) // max(stages, 1)
+    return sample_plan(
+        parts,
+        files,
+        share,
+        SAMPLE_HEAD if head is None else head,
+        SAMPLE_TAIL if tail is None else tail,
+    )
 
 
 def _stage_manifests(

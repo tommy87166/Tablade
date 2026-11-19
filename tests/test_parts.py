@@ -10,6 +10,7 @@ import pytest
 from tablade.engine.run import RunError, apply_parts, apply_step, execute
 from tablade.fixtures import write_all, write_many
 from tablade.ingest.sources import (
+    SamplePlan,
     _scan_one,
     display_name,
     prepare,
@@ -181,7 +182,7 @@ def test_duplicate_paths_are_read_once(tmp_path):
 def test_sample_takes_head_and_tail_of_many_files(tmp_path):
     write_lines(tmp_path, {f"f{i}.txt": [f"{i}-{n}" for n in range(1, 11)] for i in range(5)})
     parts, files = scan_parts("*.txt", "text_lines", "auto", tmp_path)
-    got = sample(parts, files, "text_lines", head=2, tail=1)
+    got = sample(parts, files, "text_lines", SamplePlan.fixed(files, 2, 1))
     assert got["line"].to_list() == [x for i in range(5) for x in (f"{i}-1", f"{i}-2", f"{i}-10")]
 
 

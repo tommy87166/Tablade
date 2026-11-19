@@ -724,7 +724,23 @@ export default function App() {
 
   const outputSelected = state.selected === state.steps.length
   const warnings = state.preview.warnings
-  /** 抽樣模式下結果可能不準的步驟：要看整個來源檔的（移除重複、群組彙總、樞紐），和結合的另一張表是樣本的 */
+  /** 抽樣模式的說明：這個階段讀的檔是樣本時寫出樣本共幾行；樣本來自前面的階段或結合的另一張表時只寫一句 */
+function sampleNote(inputRows: number | null | undefined, sample: ViewState['input']['sample']) {
+  if (!sample) {
+    return tr(
+      '預覽用到的資料是樣本，列數、加總、彙總結果可能不正確。',
+      'The preview uses sampled data, so row counts, totals and summaries may be inaccurate. ',
+    )
+  }
+  const rows = sample.rows.toLocaleString()
+  const head = sample.head.toLocaleString()
+  return tr(
+    `資料共 ${(inputRows ?? 0).toLocaleString()} 行，預覽只用每個檔的開頭與結尾（共 ${rows} 行，每檔最多前 ${head} 行＋最後 ${sample.tail.toLocaleString()} 行；樣本大小依這台電腦的記憶體決定），列數、加總、彙總結果可能不正確。`,
+    `The data has ${plural(inputRows ?? 0, 'line', 'lines')}. The preview uses only the beginning and end of each file (${plural(sample.rows, 'line', 'lines')} in total, at most the first ${head} and last ${plural(sample.tail, 'line', 'lines')} of each file; the sample size depends on this computer's memory), so row counts, totals and summaries may be inaccurate. `,
+  )
+}
+
+/** 抽樣模式下結果可能不準的步驟：要看整個來源檔的（移除重複、群組彙總、樞紐），和結合的另一張表是樣本的 */
   const sampledNotes = [
     ...state.preview.sampled_steps.map((s) => ({
       key: `whole:${s.stage}:${s.number}`,
@@ -1017,10 +1033,7 @@ export default function App() {
                           </Badge>
                         </TooltipTrigger>
                         <TooltipContent className="max-w-80">
-                          {tr(
-                            `資料共 ${state.preview.input_rows?.toLocaleString()} 行，預覽只用每個檔的前 ${state.input.sample.head.toLocaleString()} 行＋最後 ${state.input.sample.tail.toLocaleString()} 行，列數、加總、彙總結果可能不正確。`,
-                            `The data has ${plural(state.preview.input_rows ?? 0, 'line', 'lines')}. The preview uses only the first ${state.input.sample.head.toLocaleString()} and last ${plural(state.input.sample.tail, 'line', 'lines')} of each file, so row counts, totals and summaries may be inaccurate. `,
-                          )}
+                          {sampleNote(state.preview.input_rows, state.input.sample)}
                           {/* CSV 輸出匯出後不提供完整模式：不說「輸出資料會改成讀匯出檔」 */}
                           {currentStage?.output?.format === 'csv'
                             ? tr(

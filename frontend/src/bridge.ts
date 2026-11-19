@@ -298,9 +298,10 @@ export interface ViewState {
     rows: number | null
     /** 所有來源檔的總行數 */
     total_rows: number | null
-    /** 資料太大，預覽只用每個檔案的前 head 行與最後 tail 行 */
+    /** 資料太大，預覽只用每個檔案的開頭與結尾（每個檔都整份取到時不算） */
     sampled: boolean
-    sample: { head: number; tail: number }
+    /** 這個階段載入的樣本：共幾行、幾個檔、每檔最多前 head 行與最後 tail 行（不是樣本時是 null） */
+    sample: { rows: number; files: number; head: number; tail: number } | null
     columns: string[] | null
     /** 載入後實際讀到的每個檔 */
     sources: SourceFile[]

@@ -111,3 +111,22 @@ def test_usage_is_pushed_to_the_window(monkeypatch):
 
     api._window = SimpleNamespace(state=Closing())
     api._push_usage()
+
+
+def test_system_memory_reads_total_and_available():
+    memory = usage.system_memory()
+    if sys.platform not in ("win32", "darwin") and not sys.platform.startswith("linux"):
+        assert memory is None
+        return
+    assert memory is not None
+    total, available = memory
+    assert total > 0 and 0 < available <= total
+
+
+def test_system_memory_returns_none_when_the_call_fails(monkeypatch):
+    def broken() -> tuple[int, int]:
+        raise OSError("boom")
+
+    for name in ("_windows_system", "_macos_system", "_linux_system"):
+        monkeypatch.setattr(usage, name, broken)
+    assert usage.system_memory() is None

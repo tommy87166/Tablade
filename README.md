@@ -86,7 +86,7 @@ Five needs drove this tool:
 
 | Layer | Technology | Role |
 |---|---|---|
-| Engine | [Polars](https://pola.rs/) 2.x (Python API) | Each step compiles to a LazyFrame operation; the preview reads inputs of up to 200,000 lines in full and samples the first 100,000 + last 1,000 lines of each file beyond that; export streams to Parquet or CSV. |
+| Engine | [Polars](https://pola.rs/) 2.x (Python API) | Each step compiles to a LazyFrame operation; the preview reads inputs of up to 200,000 lines in full and beyond that samples the beginning and end of each file (at most the first 100,000 + last 1,000 lines, all files together within a budget set by this computer's memory); export streams to Parquet or CSV. |
 | Window | [pywebview](https://pywebview.flowrl.com/) 6 | Native window (WebView2 on Windows, WKWebView on macOS). JS calls Python directly — **no HTTP server, no open port**. |
 | Front end | React 19 + TypeScript + Vite, [shadcn/ui](https://ui.shadcn.com/) (Radix + Tailwind CSS v4) | Built into **one self-contained HTML file** (~700 KB, ~200 KB gzipped) that Python loads as a string. |
 | Encoding | Python codecs | Auto-detects `utf-8-sig` → `cp950`; reports the first undecodable byte and line, or (line-by-line readers only) replaces undecodable characters with `�` and warns. |
@@ -353,8 +353,10 @@ tablade.spec          PyInstaller config (onefile / onedir via TABLADE_BUILD)
 - **A join's right table is held in memory** (the left side streams). Duplicate keys in the right table are an
   error rather than silently multiplying rows. With large inputs the preview's right table is a sample; the join
   form can run that stage once on all the data.
-- **Large files are previewed from a sample.** Above 200,000 lines the preview uses the first
-  100,000 and last 1,000 lines of each file, so per-step row counts in the UI are sample counts;
+- **Large files are previewed from a sample.** Above 200,000 lines the preview uses the beginning
+  and end of each file (at most the first 100,000 and last 1,000 lines; with many files, all of them
+  together stay within a budget of 32 MB per thread, at most 256 MB, less when memory is short; set
+  `TABLADE_SAMPLE_MB` to fix the size), so per-step row counts in the UI are sample counts;
   the data pane says “Sample mode”, plus a red “Warning: preview may be inaccurate” when a step that
   needs the whole file (remove duplicates, group by, pivot) comes before the selected step (hover to see
   which steps). Export streams through everything, the progress window shows how many

@@ -17,7 +17,7 @@ from tablade.recipe.schema import Recipe, RecipeError, load_json, parse_recipe
 from tablade.recipe.spec import build_spec
 from tablade.recipe.validator import validate
 
-from .run import SAMPLE_HEAD, SAMPLE_TAIL, RowWarning, RunError, RunReport, execute
+from .run import SAMPLE_MB_ENV, RowWarning, RunError, RunReport, execute
 
 
 @dataclass
@@ -207,12 +207,12 @@ def format_report(report: RunReport, max_warnings: int = 10) -> str:
         previous = report.sample_rows or 0
         lines.append(
             t(
-                f"大檔：試跑只用每個檔案的前 {SAMPLE_HEAD:,} 行與最後 {SAMPLE_TAIL:,} 行"
-                f"（共 {previous:,} 行），下面的列數是樣本的；匯出時會處理全部資料。",
-                f"Large files: the trial run uses only the first {SAMPLE_HEAD:,} and last "
-                f"{plural(SAMPLE_TAIL, 'line', 'lines')} of each file "
-                f"({plural(previous, 'line', 'lines')} in total), so the row counts below are "
-                "from the sample; export processes all data.",
+                f"大檔：試跑只用每個檔案的開頭與結尾（共 {previous:,} 行；樣本大小依這台電腦的記憶體決定，"
+                f"要固定可設環境變數 {SAMPLE_MB_ENV}），下面的列數是樣本的；匯出時會處理全部資料。",
+                "Large files: the trial run uses only the beginning and end of each file "
+                f"({plural(previous, 'line', 'lines')} in total; the sample size depends on this "
+                f"computer's memory, set the environment variable {SAMPLE_MB_ENV} to fix it), so the "
+                "row counts below are from the sample; export processes all data.",
             )
         )
     if report.mode == "stream":

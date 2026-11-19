@@ -1680,14 +1680,132 @@ def load(
     return lf.collect(engine="streaming"), files
 
 
+SAMPLE_MIN_HEAD = 200
+SAMPLE_MIN_TAIL = 20
+"""每個檔的樣本至少取這麼多行（開頭的標題、欄名，結尾的合計、頁尾都要在樣本裡）。"""
+SAMPLE_FLOOR_HEAD = 20
+SAMPLE_FLOOR_TAIL = 5
+"""檔非常多、下限加起來超過額度時，下限等比例縮小，最少到這麼多行；再多的檔就讓樣本超過額度。"""
+MEASURE_FILES = 8
+MEASURE_LINES = 2_000
+"""量一行在記憶體裡多大：挑最多這麼多個檔（平均分布在清單裡），各讀開頭這麼多行。"""
+
+
+@dataclass(frozen=True)
+class SamplePlan:
+    """樣本的計畫：每個來源檔取前幾行與最後幾行（``sample_plan`` 依額度算，或 ``fixed`` 固定行數）。"""
+
+    lines: dict[str, tuple[int, int]]
+    """來源檔名稱 → （前幾行, 最後幾行）；整份取的檔是（行數, 0）。"""
+    rows: int
+    """樣本共幾行。"""
+    truncated: bool
+    """有沒有任何一個檔被截掉；沒有時樣本就是全部的資料，不算抽樣。"""
+    head: int
+    """每檔最多前幾行（畫面與錯誤報告的說明用）。"""
+    tail: int
+    """每檔最多最後幾行。"""
+    budget: int | None = None
+    """額度（bytes，樣本在記憶體裡的大小）；固定行數的計畫是 None。"""
+
+    @classmethod
+    def fixed(cls, files: list[SourceFile], head: int, tail: int) -> SamplePlan:
+        """每個檔都取前 head 行與最後 tail 行（測試、指定行數的試跑）。"""
+        lines = {f.name: (head, tail) for f in files}
+        return cls(
+            lines,
+            sum(min(f.rows, head + tail) for f in files),
+            any(f.rows > head + tail for f in files),
+            head,
+            tail,
+        )
+
+
+def _line_sizes(parts: list[Part], files: list[SourceFile]) -> dict[str, float]:
+    """每個檔估計一行在記憶體裡多大（bytes）：挑幾個檔讀開頭實際量，換算成「原始檔每行的大小」的比例，
+    其他檔用自己的「原始檔大小 ÷ 行數」乘上這個比例（原始檔是壓縮過的 Parquet 時，用公式估會低估很多）。"""
+    lazy = dict(parts)
+    raw = {f.name: f.bytes / f.rows for f in files if f.rows > 0}
+    names = [f.name for f in files if f.name in raw and f.name in lazy]
+    if not names:
+        return {}
+    step = max(1, len(names) / MEASURE_FILES)
+    picked = sorted({names[int(i * step)] for i in range(min(MEASURE_FILES, len(names)))})
+    measured = raw_total = 0.0
+    for name in picked:
+        head = lazy[name].head(MEASURE_LINES).collect()
+        if head.height:
+            measured += head.estimated_size()
+            raw_total += raw[name] * head.height
+    ratio = measured / raw_total if raw_total > 0 else 1.0
+    return {name: max(size * ratio, 1.0) for name, size in raw.items()}
+
+
+def sample_plan(
+    parts: list[Part],
+    files: list[SourceFile],
+    budget: int,
+    head: int,
+    tail: int,
+) -> SamplePlan:
+    """依額度（bytes，樣本在記憶體裡最多佔多少）算每個檔取幾行（docs/memory-improve.md）。
+
+    - 每檔最多前 head 行＋最後 tail 行；至少前 ``SAMPLE_MIN_HEAD``＋最後 ``SAMPLE_MIN_TAIL`` 行（不超過最多）。
+      下限加起來超過額度時等比例縮小，最少 ``SAMPLE_FLOOR_HEAD``＋``SAMPLE_FLOOR_TAIL`` 行。
+    - 額度平均分給每個檔；比分到的小的檔整份取，剩下的再平均分給其他檔。
+    - 每檔取到的行數裡結尾占 1/10（夾在下限與 tail 之間）。
+    """
+    sizes = _line_sizes(parts, files)
+    fallback = max(sizes.values(), default=1.0)
+    size = {f.name: sizes.get(f.name, fallback) for f in files}
+    rows = {f.name: max(f.rows, 0) for f in files}
+    cap = {n: min(r, head + tail) for n, r in rows.items()}
+    min_head, min_tail = min(SAMPLE_MIN_HEAD, head), min(SAMPLE_MIN_TAIL, tail)
+    floor = sum(min(rows[n], min_head + min_tail) * size[n] for n in rows)
+    if floor > budget and floor > 0:
+        scale = budget / floor
+        min_head = min(head, max(SAMPLE_FLOOR_HEAD, int(min_head * scale)))
+        min_tail = min(tail, max(SAMPLE_FLOOR_TAIL, int(min_tail * scale)))
+    low = {n: min(r, min_head + min_tail) for n, r in rows.items()}
+    take: dict[str, int] = {}
+    left, todo = float(budget), sorted(rows, key=lambda n: cap[n] * size[n])
+    while todo:  # water-filling：小的先拿滿，剩下的額度分給後面的
+        share = left / len(todo)
+        name = todo[0]
+        if cap[name] * size[name] <= share:
+            take[name] = cap[name]
+            left -= cap[name] * size[name]
+            todo.pop(0)
+            continue
+        for name in todo:
+            take[name] = max(low[name], min(cap[name], int(share / size[name])))
+        break
+    lines: dict[str, tuple[int, int]] = {}
+    for name, count in take.items():
+        if count >= rows[name]:
+            lines[name] = (rows[name], 0)
+            continue
+        end = min(tail, max(min_tail, count // 10))
+        lines[name] = (min(head, count - end), end)
+    return SamplePlan(
+        lines,
+        sum(min(rows[n], h + t) for n, (h, t) in lines.items()),
+        any(h + t < rows[n] for n, (h, t) in lines.items()),
+        head,
+        tail,
+        budget,
+    )
+
+
 def sample(
-    parts: list[Part], files: list[SourceFile], reader: str, head: int, tail: int
+    parts: list[Part], files: list[SourceFile], reader: str, plan: SamplePlan
 ) -> pl.DataFrame:
-    """每個來源檔的前 ``head`` 行與最後 ``tail`` 行（預覽大檔用；每個檔串流掃描一次）。"""
+    """依計畫取每個來源檔的前幾行與最後幾行（預覽大檔用；每個檔串流掃描一次）。"""
     first = 2 if reader == "csv" else 1
     rows = {f.name: f.rows for f in files}
     kept = []
     for name, lf in parts:
+        head, tail = plan.lines.get(name, (plan.head, plan.tail))
         last = first + rows.get(name, 0) - 1
         kept.append(
             (name, lf.filter((pl.col(LINE_NO) < first + head) | (pl.col(LINE_NO) > last - tail)))

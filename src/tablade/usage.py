@@ -184,3 +184,96 @@ def _linux(pid: str) -> Memory | None:
         return None
     current = values["VmRSS"]
     return Memory(current, max(values.get("VmHWM", current), current))
+
+
+def system_memory() -> tuple[int, int] | None:
+    """這台電腦的（實體記憶體總量, 目前可用）bytes：預覽的樣本額度用（``engine.run.sample_budget``）。
+
+    - Windows：``GlobalMemoryStatusEx`` 的 ullTotalPhys、ullAvailPhys
+    - macOS：``hw.memsize``；可用是 ``host_statistics64`` 的 free＋inactive（只看 free 太小：
+      系統會拿空著的記憶體當檔案快取），頁大小讀 ``hw.pagesize``（Apple Silicon 是 16 KB）
+    - Linux：``/proc/meminfo`` 的 MemTotal、MemAvailable
+
+    讀不到時回傳 None，不丟例外。
+    """
+    try:
+        if sys.platform == "win32":
+            return _windows_system()
+        if sys.platform == "darwin":
+            return _macos_system()
+        if sys.platform.startswith("linux"):
+            return _linux_system()
+    except (OSError, AttributeError, ValueError, KeyError):
+        return None
+    return None
+
+
+def _windows_system() -> tuple[int, int] | None:
+    from ctypes import wintypes
+
+    class Status(ctypes.Structure):  # MEMORYSTATUSEX
+        _fields_ = [
+            ("dwLength", wintypes.DWORD),
+            ("dwMemoryLoad", wintypes.DWORD),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    query = ctypes.WinDLL("kernel32").GlobalMemoryStatusEx  # type: ignore[attr-defined]
+    query.argtypes = [ctypes.POINTER(Status)]
+    query.restype = wintypes.BOOL
+    status = Status()
+    status.dwLength = ctypes.sizeof(Status)
+    if not query(ctypes.byref(status)):
+        return None
+    return status.ullTotalPhys, status.ullAvailPhys
+
+
+class _VMStatistics64(ctypes.Structure):
+    """``<mach/vm_statistics.h>`` 的 vm_statistics64 開頭的欄位（只用 free_count、inactive_count）。"""
+
+    _fields_ = [
+        ("free_count", ctypes.c_uint32),
+        ("active_count", ctypes.c_uint32),
+        ("inactive_count", ctypes.c_uint32),
+        ("wire_count", ctypes.c_uint32),
+        ("rest", ctypes.c_uint64 * 32),  # 後面的欄位不用，留夠大的空間給系統寫
+    ]
+
+
+_HOST_VM_INFO64 = 4
+
+
+def _macos_system() -> tuple[int, int] | None:
+    libc = ctypes.CDLL(ctypes.util.find_library("c") or "/usr/lib/libSystem.B.dylib")
+
+    def sysctl(name: bytes) -> int:
+        value = ctypes.c_uint64()
+        size = ctypes.c_size_t(ctypes.sizeof(value))
+        if libc.sysctlbyname(name, ctypes.byref(value), ctypes.byref(size), None, 0) != 0:
+            raise OSError(name.decode())
+        return value.value
+
+    libc.mach_host_self.restype = ctypes.c_uint32
+    stat = _VMStatistics64()
+    count = ctypes.c_uint32(ctypes.sizeof(stat) // 4)
+    if libc.host_statistics64(
+        libc.mach_host_self(), _HOST_VM_INFO64, ctypes.byref(stat), ctypes.byref(count)
+    ):
+        return None
+    page = sysctl(b"hw.pagesize")
+    return sysctl(b"hw.memsize"), (stat.free_count + stat.inactive_count) * page
+
+
+def _linux_system() -> tuple[int, int] | None:
+    values = {}
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        key, _, rest = line.partition(":")
+        if key in ("MemTotal", "MemAvailable"):
+            values[key] = int(rest.split()[0]) * 1024  # kB
+    return values["MemTotal"], values["MemAvailable"]
