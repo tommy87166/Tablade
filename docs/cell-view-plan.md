@@ -1,6 +1,11 @@
 # 下方面板的「檢視」分頁：點一格，在下面看完整的內容（實作計畫）
 
-- 狀態：**實作計畫，尚未實作**（2026-11-20）。
+- 狀態：**已實作**（2026-11-20）。和計畫不同的地方：
+  - 字數只在**文字欄**（型別是 `String`）顯示：小數、日期從 Python 送過來也是文字，照計畫的 `typeof value === 'string'` 會把 `18960.00` 算成 8 個字。`cellView` 用傳進去的型別判斷（不知道型別時照樣算）。
+  - 元件的檔名是 `components/CellView.tsx`，元件叫 `CellPane`（`CellView` 是 `lib/cell.ts` 的型別名稱）。
+  - `sourceText(file, sheet, line, sheetText, stage?, slash?)`：多了階段（警告的位置有「@階段／」），「／」是預設值。
+  - 表格不畫了（沒有資料、那一步算不出來）時，由 `PreviewGrid` 卸載時呼叫 `onSelectCell(null)` 清掉，`App.tsx` 不用另外判斷。
+  - 前端測試的指令是 `node --test "tests/**/*.test.ts"`：Node 24 的 `node --test tests/` 會把資料夾當成一個檔來跑。
 - 範圍：只有前端。預覽表格（`frontend/src/components/PreviewGrid.tsx`）、下方面板（`frontend/src/App.tsx`）、一個新元件與一個小的純函式模組。Python、`bridge.ts` 的 API、Recipe 都不變，不升 `RECIPE_VERSION`。
 - 和 docs/custom-expression-plan.md 一起實作。兩份互不相干，各自一個（或幾個）commit；唯一共用的是前端測試的設定（見「測試」）。
 

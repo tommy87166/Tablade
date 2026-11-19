@@ -112,6 +112,15 @@ def test_frontend_sources_follow_policy():
     assert problems == []
 
 
+def test_preview_cells_have_no_hover_tooltip():
+    """資料格與行號格沒有滑鼠停留的提示：完整的內容在「檢視」分頁（docs/cell-view-plan.md）。"""
+    source = (FRONTEND / "src" / "components" / "PreviewGrid.tsx").read_text(encoding="utf-8")
+    rows = source[source.index("{items.map((item) => {") :]
+    rows = rows[: rows.index("</ContextMenuTrigger>")]
+    assert "data-col={name}" in rows
+    assert "title=" not in rows
+
+
 def test_bridge_types_match_python_api():
     source = (FRONTEND / "src" / "bridge.ts").read_text(encoding="utf-8")
     block = source.split("export interface TabladeApi {", 1)[1].split("\n}\n", 1)[0]

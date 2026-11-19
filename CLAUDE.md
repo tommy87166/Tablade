@@ -59,6 +59,7 @@ uv sync --group native   # 另外編 Rust 模組（解 zip 裡的 Deflate64；�
 cargo test --manifest-path native/Cargo.toml --locked   # Rust 模組自己的測試
 npm --prefix frontend ci && npm --prefix frontend run build   # 開視窗、跑 test_app.py 前要先 build
 npm --prefix frontend run lint
+npm --prefix frontend test       # 前端的純函式測試（node --test，frontend/tests/）
 npm --prefix frontend run dev   # 瀏覽器開 http://localhost:5173（假 API）
 TABLADE_DEV_URL=http://localhost:5173 uv run tablade   # 真正的視窗＋熱更新
 uv run pytest
@@ -84,4 +85,4 @@ uv run --group icons python scripts/make_icons.py   # 改 assets/icon.svg 後重
 - 前端的 Content-Security-Policy 必須保留 `default-src 'none'`（擋掉所有對外連線）。`'unsafe-eval'` 是 pywebview 的 JS bridge 需要的，不要拿掉。
 - 前端寫入資料一律用 `textContent`，不用 `innerHTML`（這個頁面可以呼叫 Python）。
 
-每次修改都要跑 `pytest`、`check_no_data.py --all`、`check_code_policy.py`；改到前端時再加 `npm --prefix frontend run lint` 與 `npm --prefix frontend run build`。
+每次修改都要跑 `pytest`、`check_no_data.py --all`、`check_code_policy.py`；改到前端時再加 `npm --prefix frontend run lint`、`npm --prefix frontend run build` 與 `npm --prefix frontend test`。

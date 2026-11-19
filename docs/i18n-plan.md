@@ -97,6 +97,7 @@
 | 系統欄位 | System columns |
 | 警告 | Warnings |
 | 型別 | Types |
+| 檢視（下方面板的分頁） | Inspect |
 | 準備檔案 | Preparing files |
 | 解不開的字 | Undecodable characters |
 | 報錯 | Report an error |

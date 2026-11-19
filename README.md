@@ -52,7 +52,7 @@ version check against GitHub at start-up (nothing is sent, nothing is downloaded
 > flatten sectioned print-format reports, read Excel sheets, clean text (full-width to half-width, invisible characters), replace values,
 > convert text to numbers and dates (rows that fail are reported with their line numbers), and remove, keep /
 > reorder or rename columns, remove duplicates, unpivot, group by and pivot (each source file on its own until you
-> combine them), and join another stage's result. The bottom pane's Types tab shows each column's type, and every export comes with a
+> combine them), and join another stage's result. The bottom pane's Types tab shows each column's type, clicking a cell shows its full content in the Inspect tab, and every export comes with a
 > manifest. See the [roadmap](#️-roadmap).
 
 ---

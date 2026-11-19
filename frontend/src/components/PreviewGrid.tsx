@@ -6,6 +6,8 @@
  *   回應的 key（資料的指紋）和畫面狀態的 preview.key 不同時也丟掉（Python 已經換了內容，新的畫面狀態隨後就到）。
  * - 取資料失敗的那一頁不自動重試（避免一直失敗一直要），表格上面寫原因、可以按「重試」。
  * - 列數太多時分段顯示（瀏覽器對單一元素的高度有上限）：一段最多 SEGMENT_ROWS 列，上面切換是哪一段。
+ * - 點一格（滑鼠左鍵）就選到那一格、加外框，完整的內容交給下方面板的「檢視」分頁（onSelectCell）；
+ *   儲存格沒有滑鼠停留的提示（docs/cell-view-plan.md）。換步驟、內容變了就清掉。
  */
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
@@ -22,6 +24,7 @@ import {
 } from '@/components/ui/context-menu'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { plural, tr } from '@/i18n'
+import { cellView, type CellView } from '@/lib/cell'
 import type { Cell, TabladeApi, ViewState } from '../bridge'
 
 const PAGE = 200
@@ -53,6 +56,8 @@ interface Props {
   maxLine?: number | null
   onAddStep: (request: AddStepRequest) => void
   onLoaded?: (total: number) => void
+  /** 點了一格（交給「檢視」分頁）；清掉選到的格子時是 null */
+  onSelectCell?: (cell: CellView | null) => void
   ref?: Ref<GridHandle>
 }
 
@@ -124,11 +129,17 @@ function candidates(values: string[]): string[] {
   return [...new Set(values)].sort((a, b) => textWidth(b) - textWidth(a)).slice(0, MEASURE_CANDIDATES)
 }
 
-export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAddStep, onLoaded, ref }: Props) {
+export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAddStep, onLoaded, onSelectCell, ref }: Props) {
   const scroller = useRef<HTMLDivElement>(null)
   const [pages, setPages] = useState<Map<number, Cell[][]>>(new Map())
   const [loadedColumns, setColumns] = useState<string[]>([])
   const [target, setTarget] = useState<{ name: string; value: Cell } | null>(null)
+  /** 選到的格子：整個結果的第幾列（從 0 起）與欄名 */
+  const [selected, setSelected] = useState<{ row: number; name: string } | null>(null)
+  const selectCell = useRef(onSelectCell)
+  useEffect(() => {
+    selectCell.current = onSelectCell
+  })
   const loading = useRef(new Set<number>())
   /** 取不到資料的頁（不自動重試）與原因 */
   const failed = useRef(new Set<number>())
@@ -166,7 +177,19 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
     setSegment(0)
     pendingScroll.current = null
     scroller.current?.scrollTo({ top: 0 })
+    setSelected(null)
+    selectCell.current?.(null)
   }, [step, resetKey])
+
+  // 系統欄位藏起來時，選到的正好是系統欄位：清掉
+  useEffect(() => {
+    if (showSystem || !selected?.name.startsWith('__')) return
+    setSelected(null)
+    selectCell.current?.(null)
+  }, [showSystem, selected])
+
+  // 表格不畫了（沒有資料、那一步算不出來）：「檢視」分頁不要留著上一次的內容
+  useEffect(() => () => selectCell.current?.(null), [])
 
   const load = useCallback(
     async (page: number) => {
@@ -238,7 +261,6 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
     return idx.filter(({ name }) => showSystem || !name.startsWith('__'))
   }, [columns, showSystem])
   const lineIndex = columns.indexOf('__line_no')
-  const fileIndex = columns.indexOf('__source_file')
   const dtypes = new Map(preview.columns.map((c) => [c.name, c.dtype]))
 
   const firstPage = pages.get(0)
@@ -380,6 +402,18 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
             <ContextMenuTrigger asChild>
               <div
                 style={{ height: virtualizer.getTotalSize(), position: 'relative' }}
+                onClick={(e) => {
+                  if (e.button !== 0) return
+                  const cell = (e.target as HTMLElement).closest<HTMLElement>('[data-col]')
+                  const name = cell?.dataset.col
+                  const rowIndex = Number(cell?.dataset.row) // 整個結果的第幾列（不是這一段的）
+                  const row = pages.get(Math.floor(rowIndex / PAGE))?.[rowIndex % PAGE]
+                  if (!name || !row) return
+                  const view = cellView(columns, row, rowIndex, name, dtypes.get(name) ?? null)
+                  if (!view) return
+                  setSelected({ row: rowIndex, name })
+                  onSelectCell?.(view)
+                }}
                 onContextMenu={(e) => {
                   const cell = (e.target as HTMLElement).closest<HTMLElement>('[data-col]')
                   const name = cell?.dataset.col
@@ -398,10 +432,7 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
                       className="absolute left-0 grid border-b even:bg-muted/40"
                       style={{ gridTemplateColumns: template, height: ROW_HEIGHT, transform: `translateY(${item.start}px)`, width: '100%' }}
                     >
-                      <div
-                        className="truncate px-2 py-1 text-right text-xs text-muted-foreground"
-                        title={row && fileIndex >= 0 ? String(row[fileIndex]) : undefined}
-                      >
+                      <div className="truncate px-2 py-1 text-right text-xs text-muted-foreground">
                         {row && lineIndex >= 0 ? String(row[lineIndex]) : index + 1}
                       </div>
                       {visible.map(({ name, i }) => {
@@ -412,13 +443,15 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
                             </div>
                           )
                         const value = row[i]
+                        const picked = selected?.row === index && selected.name === name
                         return (
                           <div
                             key={name}
                             data-col={name}
                             data-row={index}
-                            className={`truncate border-l px-2 py-1 ${value === null ? 'italic text-muted-foreground' : ''}`}
-                            title={value === null ? undefined : String(value)}
+                            className={`truncate border-l px-2 py-1 ${value === null ? 'italic text-muted-foreground' : ''} ${
+                              picked ? 'ring-2 ring-primary ring-inset' : ''
+                            }`}
                           >
                             {value === null ? 'null' : String(value)}
                           </div>

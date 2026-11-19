@@ -38,12 +38,13 @@ jobs:
             native/target
           key: cargo-${{ runner.os }}-${{ hashFiles('native/Cargo.lock') }}
       - run: uv sync --frozen --group native
-      - name: 前端（lint、型別檢查、build）
+      - name: 前端（lint、型別檢查、build、測試）
         working-directory: frontend
         run: |
           npm ci
           npm run lint
           npm run build
+          npm test
 
       - name: 資料防護檢查
         run: uv run python scripts/check_no_data.py --all

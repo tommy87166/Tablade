@@ -13,6 +13,7 @@ import {
   Play,
   Redo2,
   Save,
+  ScanSearch,
   Shapes,
   Stethoscope,
   Trash2,
@@ -67,9 +68,11 @@ import { InputPanel, OutputPanel } from './components/SourcePanel'
 import { StagesBar } from './components/StagesBar'
 import { StepsPanel } from './components/StepsPanel'
 import { TypesPane } from './components/TypesPane'
+import { CellPane } from './components/CellView'
 import { UpdateNotice } from './components/UpdateNotice'
 import { UsageStatus } from './components/UsageStatus'
 import { detectLang, lang, LANGS, plural, setLang, tr, type Lang } from './i18n'
+import { sourceText, type CellView } from './lib/cell'
 
 type Status = { text: string; error?: boolean }
 
@@ -83,6 +86,8 @@ const sampledStepText = (s: SampledStep) =>
   s.stage
     ? tr(`階段「${s.stage}」第 ${s.number} 步「${s.label}」`, `Stage "${s.stage}", step ${s.number} "${s.label}"`)
     : tr(`第 ${s.number} 步「${s.label}」`, `Step ${s.number} "${s.label}"`)
+/** 工作表名稱的括號（警告的位置、「檢視」分頁的來源） */
+const sheetText = (name: string) => tr(`［${name}］`, ` [${name}]`)
 const SMOKE_TIMEOUT_MS = 30_000
 /** Excel 工作表最多幾列（CSV 超過時匯出摘要提醒） */
 const EXCEL_MAX_ROWS = 1_048_576
@@ -106,7 +111,9 @@ function UnknownStep({ step, busy, onDelete }: { step: StepState; busy: boolean;
   )
 }
 
-/** 下方面板標題列的分頁按鈕（警告、型別）。 */
+type BottomTabName = 'warnings' | 'types' | 'view'
+
+/** 下方面板標題列的分頁按鈕（警告、型別、檢視）。 */
 function BottomTab({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
   return (
     <button
@@ -157,7 +164,9 @@ export default function App() {
   const busy = pendingCalls > 0
   const [status, setStatus] = useState<Status>(() => ({ text: tr('載入中…', 'Loading…') }))
   const [showSystem, setShowSystem] = useState(false)
-  const [bottomTab, setBottomTab] = useState<'warnings' | 'types'>('warnings')
+  const [bottomTab, setBottomTab] = useState<BottomTabName>('warnings')
+  /** 「檢視」分頁顯示的那一格（點的當下存一份） */
+  const [cell, setCell] = useState<CellView | null>(null)
   const [report, setReport] = useState<{ open: boolean; issues: Issue[]; text: string }>({ open: false, issues: [], text: '' })
   const [selftest, setSelftest] = useState<SelftestResult | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
@@ -182,7 +191,7 @@ export default function App() {
   const rightPanel = usePanelRef()
   const warnPanel = usePanelRef()
   /** 切換下方面板的分頁；收合時順便展開。 */
-  const openBottomTab = (tab: 'warnings' | 'types') => {
+  const openBottomTab = (tab: BottomTabName) => {
     setBottomTab(tab)
     if (warnPanel.current?.isCollapsed()) warnPanel.current.expand()
   }
@@ -550,6 +559,17 @@ export default function App() {
   // 預覽的內容變了才讓表格、型別分頁重新載入：Python 給的指紋（資料、階段、語言、匯出檔變了才換），沒有資料時是 null
   const previewKey = state?.preview.key ?? ''
 
+  /** 點了表格的一格：存起來並切到「檢視」（收合著就展開）；null 是清掉（不切分頁） */
+  const onSelectCell = useCallback(
+    (next: CellView | null) => {
+      setCell(next)
+      if (!next) return
+      setBottomTab('view')
+      if (warnPanel.current?.isCollapsed()) warnPanel.current.expand()
+    },
+    [warnPanel],
+  )
+
   const onGridLoaded = useCallback((total: number) => {
     gridLoaded.current?.(total)
     gridLoaded.current = null
@@ -837,12 +857,11 @@ function sampleNote(inputRows: number | null | undefined, sample: ViewState['inp
     .map((s) => ({ index: s.index, name: s.name, columns: s.columns, sampled: s.sampled, full: s.full }))
   /** 警告指到的位置：「@階段／檔名［工作表］:行號（原始：…）」 */
   const place = (w: (typeof warnings)[number]) => {
-    const slash = '／' // i18n-ignore：來源名稱的寫法（和資料裡的 __source_file 一樣，英文畫面也是）
-    const sheet = (name: string | null | undefined) => (name ? tr(`［${name}］`, ` [${name}]`) : '')
-    let where = `${w.stage ? `@${w.stage}${slash}` : ''}${w.source_file}${sheet(w.sheet)}:${w.line_no}`
+    // 來源名稱的「／」和資料裡的 __source_file 一樣，英文畫面也是（sourceText 的預設）
+    let where = sourceText(w.source_file, w.sheet, w.line_no, sheetText, w.stage)
     if (w.orig_source_file != null || w.orig_line_no != null) {
-      const orig = `${w.orig_stage ? `@${w.orig_stage}${slash}` : ''}${w.orig_source_file}${sheet(w.orig_sheet)}`
-      where += tr(`（原始：${orig}:${w.orig_line_no}）`, ` (original: ${orig}:${w.orig_line_no})`)
+      const orig = sourceText(w.orig_source_file, w.orig_sheet, w.orig_line_no, sheetText, w.orig_stage)
+      where += tr(`（原始：${orig}）`, ` (original: ${orig})`)
     }
     return where
   }
@@ -1145,6 +1164,7 @@ function sampleNote(inputRows: number | null | undefined, sample: ViewState['inp
                         maxLine={state.input.total_rows}
                         onAddStep={(r) => void addStep(r.type, r.context)}
                         onLoaded={onGridLoaded}
+                        onSelectCell={onSelectCell}
                       />
                     ) : (
                       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-muted-foreground">
@@ -1208,6 +1228,10 @@ function sampleNote(inputRows: number | null | undefined, sample: ViewState['inp
                         <Shapes className="size-4 shrink-0" />
                         {tr('型別', 'Types')}
                       </BottomTab>
+                      <BottomTab active={bottomTab === 'view'} onClick={() => openBottomTab('view')}>
+                        <ScanSearch className="size-4 shrink-0" />
+                        {tr('檢視', 'Inspect')}
+                      </BottomTab>
                     </div>
                     <Button
                       variant="ghost"
@@ -1224,6 +1248,10 @@ function sampleNote(inputRows: number | null | undefined, sample: ViewState['inp
                   {bottomTab === 'types' ? (
                     <div className="min-h-0 flex-1 overflow-auto">
                       <TypesPane api={api} step={state.preview.step} resetKey={previewKey} showSystem={showSystem} />
+                    </div>
+                  ) : bottomTab === 'view' ? (
+                    <div className="min-h-0 flex-1 overflow-auto">
+                      <CellPane cell={cell} sheetText={sheetText} />
                     </div>
                   ) : (
                     <ul className="flex-1 overflow-auto text-sm">
