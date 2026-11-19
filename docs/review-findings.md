@@ -4,6 +4,7 @@
 - git commit：`6bdf5bc`
 - 範圍：程式的 bug、畫面漏翻（中英文切換）、文件與程式不一致，以及每種步驟的測試涵蓋度。只記錄問題，沒有修改任何程式。
 - 修正：76 個發現都已修正（commit `2e80b79`、`5181505`、`413c289`；每個發現的「狀態」寫是哪一個，做了取捨的另外寫決定）。修正後 `uv run pytest -q` 是 1053 passed，其他檢查照舊全部通過。
+- 第二次審查（2026-11-19，commit `d6652dd`）：寬鬆解碼（docs/eudc-lenient-plan.md）的實作。發現是 F-077～F-082，都還沒修；基本檢查、做法、檢查過的部分寫在最後的「第二次審查：寬鬆解碼」一節。
 - 做法：一位主要審查者看引擎、Session、API 與文件，另外三位各看一部分（前端、步驟模組、驗證器與 AI skill）。其他三位回報的發現，都由主要審查者重新重現或讀程式確認後才列入；沒有重跑的部分，在「確認程度」寫明。
 - 環境：macOS（arm64）、Python 3.13、Node.js 24。Windows 專屬的行為沒有實測（見最後一節）。
 - 重現用的資料都是腳本當場產生的假資料，或 `src/tablade/fixtures.py` 產生的。
@@ -108,6 +109,12 @@
 | F-074 | 低 | 測試 | 新增步驟的建議值（`suggest()`）有 6 種步驟完全沒測；結合的說明與警告有分支沒測 | 已修（413c289） |
 | F-075 | 低 | 測試 | 這次找到的 bug，對應到的都是沒有測試的資料形狀 | 已修（413c289） |
 | F-076 | 低 | 測試 | 設了 `TABLADE_NO_UPDATE_CHECK` 的環境，`tests/test_update.py` 有 5 項會失敗 | 已修（2e80b79） |
+| F-077 | 中 | bug | `auto`＋寬鬆解碼：兩種編碼解不開的字一樣多時選 UTF-8，造字的第 2 個位元組漏出來 | 待修 |
+| F-078 | 低 | bug | 寬鬆解碼的警告：同一行有幾個字解不開，行號就重複幾次，後面的行排不進去 | 待修 |
+| F-079 | 低 | bug | 「可能選錯編碼」的門檻（行數的 1%）太低：編碼正確的造字報表也會出現 | 待修 |
+| F-080 | 低 | bug | 解碼失敗的提示只寫畫面上的用語，沒有寫 Recipe 的 `decode_errors` | 待修 |
+| F-081 | 低 | bug | 檔案裡只要有一個單獨的 `\r`，它後面換字警告的行號都少 1；文件只寫「只用 `\r` 換行的檔」 | 待修 |
+| F-082 | 低 | bug | 來源檔有換字的警告時，下方仍顯示「沒有警告」；選到其他步驟就看不到 | 待修 |
 
 ## 發現
 
@@ -3699,3 +3706,284 @@ PYTHONPATH=<資料夾> TABLADE_COV_OUT=<資料夾>/result.json uv run pytest -q 
 - **網路**：src/tablade/update.py 的實際連線（這次檢查不連網路）、GitHub Actions 實際執行的結果。
 - **Agent Builder**：把 skill 上傳到 Microsoft 365 Copilot 實測。
 - **前端要操作才看得到的行為**：有好幾項前端的發現（標成「只靠讀程式推論」的）需要在很短的時間內連續操作，或需要幾百萬列的資料，沒有在畫面上重現。
+
+## 第二次審查：寬鬆解碼（2026-11-19）
+
+- 檢查日期：2026-11-19
+- git commit：`d6652dd`（寬鬆解碼：逐行讀取時解不開的字換成 `�`；計畫在 docs/eudc-lenient-plan.md）
+- 範圍：這個 commit 改的 23 個檔。先對照計畫讀程式，再用假資料實際執行。只記錄問題，沒有修改任何程式。
+- 做法：一位審查者。和上一版（`1fe0818`）比對時，把上一版的 `src/` 匯出到 repo 外的資料夾，用 `PYTHONPATH` 指過去跑同一支腳本，再比兩邊的輸出。
+- 環境：macOS（arm64）、Python 3.13。
+- 結論：實作和計畫一致；計畫開頭列的三個不同之處（多一個 `auto_picked`、BOM 改由 `decode_range` 拿掉、前端的選項手寫在 `SourcePanel.tsx`）都合理，也都驗證過。發現共 6 個（F-077～F-082）。其中 F-077 的規則與 F-079 的門檻是計畫定的，實作照做；計畫當時沒有用這兩種資料試過。
+
+### 基本檢查（第二次）
+
+| 指令 | 結果 |
+|---|---|
+| `uv run pytest -q` | 1148 passed |
+| `uv run python scripts/check_no_data.py --all` | 通過（結束代碼 0） |
+| `uv run python scripts/check_code_policy.py` | 通過（結束代碼 0） |
+| `uv run python scripts/check_i18n.py` | 通過（結束代碼 0） |
+| `uv run ruff check .`、`uv run ruff format --check .` | 通過（109 個檔） |
+| `npm --prefix frontend run lint` | 通過 |
+| `npm --prefix frontend run build` | 通過。`dist/index.html` 698.16 kB，小於 2 MB 的上限。 |
+
+### F-077［中］［bug］`auto`＋寬鬆解碼：兩種編碼解不開的字一樣多時選 UTF-8，造字的第 2 個位元組漏出來
+
+- 位置：src/tablade/ingest/sources.py:1010（`_pick`）；規則來自 docs/eudc-lenient-plan.md「實作方式」第 3 節（「一樣多時照 `auto` 的順序選 UTF-8」）
+- 現象：編碼是 `auto`、打開寬鬆解碼、UTF-8 和 cp950 都解不開時，取一段樣本比較哪一種解不開的字比較少。樣本裡除了英數字只有造字、而且造字的第 2 個位元組在 ASCII 的範圍（例如 `8F 46`、`FA 40`）時，兩邊一樣多，就選 UTF-8。結果造字只有第 1 個位元組換成 `�`，第 2 個位元組變成多出來的一個字（`�F`、`�@`）：這正是寬鬆解碼要避免的情況，固定位置的欄位也會偏一格。
+  - 檔案裡只要有其他 cp950 的中文字，cp950 解不開的字就比較少，不會發生（下面的 c.txt）。所以只有幾乎全是英數字的檔會遇到。
+  - 警告會寫「自動選了 utf-8」；把編碼指定成 cp950 就正常。
+- 證據：
+  ```python
+  import tempfile
+  from pathlib import Path
+
+  from tablade.ingest import sources
+  from tablade.ingest.transcode import count_replaced
+
+  work = Path(tempfile.mkdtemp())
+  cases = {
+      "a.txt 英數字＋造字 8F 46": b"ID,NAME,AMOUNT\r\n" + b"001,LEE \x8f\x46,100\r\n" * 3,
+      "b.txt 英數字＋造字 FA 40": b"ID,NAME,AMOUNT\r\n" + b"001,LEE \xfa\x40,100\r\n" * 3,
+      "c.txt 有中文＋造字 8F 46": "編號,姓名,金額\r\n".encode("cp950")
+      + b"001,LEE \x8f\x46,100\r\n" * 3,
+      "d.txt 有 BOM 的 UTF-8＋一個壞位元組": b"\xef\xbb\xbfID,NAME,AMOUNT\r\n001,LEE \xff,100\r\n",
+  }
+  for title, raw in cases.items():
+      name = title.split()[0]
+      (work / name).write_bytes(raw)
+      counts = f"當 UTF-8 解 {count_replaced(raw, 'utf-8')} 個、當 cp950 解 {count_replaced(raw, 'cp950')} 個"
+      print(f"{title}（{counts}）")
+      for encoding in ("auto", "cp950"):
+          parts, files = sources.scan_parts(
+              [name], "text_lines", encoding, work, decode_errors="replace"
+          )
+          lines = sources.concat(parts).collect()["line"][:2].to_list()
+          print(f"  編碼設 {encoding}：用 {files[0].encoding} 讀，前 2 行 {lines}")
+  ```
+  ```text
+  a.txt 英數字＋造字 8F 46（當 UTF-8 解 3 個、當 cp950 解 3 個）
+    編碼設 auto：用 utf-8 讀，前 2 行 ['ID,NAME,AMOUNT', '001,LEE �F,100']
+    編碼設 cp950：用 cp950 讀，前 2 行 ['ID,NAME,AMOUNT', '001,LEE ��,100']
+  b.txt 英數字＋造字 FA 40（當 UTF-8 解 3 個、當 cp950 解 3 個）
+    編碼設 auto：用 utf-8 讀，前 2 行 ['ID,NAME,AMOUNT', '001,LEE �@,100']
+    編碼設 cp950：用 cp950 讀，前 2 行 ['ID,NAME,AMOUNT', '001,LEE ��,100']
+  c.txt 有中文＋造字 8F 46（當 UTF-8 解 11 個、當 cp950 解 3 個）
+    編碼設 auto：用 cp950 讀，前 2 行 ['編號,姓名,金額', '001,LEE ��,100']
+    編碼設 cp950：用 cp950 讀，前 2 行 ['編號,姓名,金額', '001,LEE ��,100']
+  d.txt 有 BOM 的 UTF-8＋一個壞位元組（當 UTF-8 解 1 個、當 cp950 解 1 個）
+    編碼設 auto：用 utf-8-sig 讀，前 2 行 ['ID,NAME,AMOUNT', '001,LEE �,100']
+    編碼設 cp950：用 cp950 讀，前 2 行 ['嚜澠D,NAME,AMOUNT', '001,LEE �,100']
+  ```
+- 確認程度：已重現。
+- 建議修法：一樣多時改選 cp950；但檔案開頭有 UTF-8 的 BOM 時維持 UTF-8（上面的 d.txt：有 BOM 的檔也是 1 比 1，用 cp950 讀的話開頭的 BOM 會變成亂字）。`prepare()` 已經從 `_check_utf8` 知道有沒有 BOM；zip 裡的檔要另外把「開頭有沒有 BOM」帶出來（樣本是從失敗的那一行開始的，看不到檔案開頭）。tests/test_lenient.py 補上平手的情況（檔案與 zip 各一個）。
+- 狀態：待修
+
+### F-078［低］［bug］寬鬆解碼的警告：同一行有幾個字解不開，行號就重複幾次，後面的行排不進去
+
+- 位置：src/tablade/ingest/transcode.py:121-123（每個換掉的字記一個行號）、src/tablade/ingest/sources.py:156（`Replaced.add`）、src/tablade/ingest/sources.py:1538（`decode_warning`）
+- 現象：`replaced_lines` 記的是「前 10 個換掉的字各在第幾行」，不是「前 10 個有換字的行」。
+  - 同一行有 3 個字解不開，警告就寫「第 3、3、3 行」。
+  - 一行有 10 個以上時，10 個位置都是同一行，後面有換字的行完全列不出來。
+  - 處理紀錄的 `decode.replaced_lines` 是同樣的內容。
+  - 選錯編碼時每一行都有很多個，行號全部是「1、1、1…」，看不出範圍。
+- 證據：
+  ```python
+  import tempfile
+  from pathlib import Path
+
+  import polars as pl
+
+  from tablade.ingest import sources
+
+  work = Path(tempfile.mkdtemp())
+  rows = [f"第{i}行,保溫瓶".encode("cp950") for i in range(1, 8)]
+  rows[1] = b"\x8f\x46" * 12 + rows[1]  # 第 2 行有 12 個造字
+  rows[4] += b"\xfa\x40"  # 第 5 行 1 個
+  rows[6] += b"\xfa\x40"  # 第 7 行 1 個
+  (work / "a.txt").write_bytes(b"\r\n".join(rows) + b"\r\n")
+  parts, files = sources.scan_parts(["a.txt"], "text_lines", "cp950", work, decode_errors="replace")
+  frame = sources.concat(parts).collect()
+  print("警告：", sources.decode_warning(files[0]))
+  print("replaced_lines（也寫進處理紀錄）：", list(files[0].replaced_lines))
+  print("實際有 � 的行：", frame.filter(pl.col("line").str.contains("�"))["__line_no"].to_list())
+  ```
+  ```text
+  警告： 有 14 個字解不開，換成 �（第 2、2、2、2、2、2、2、2、2、2… 行），可能選錯編碼
+  replaced_lines（也寫進處理紀錄）： [2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
+  實際有 � 的行： [2, 5, 7]
+  ```
+- 確認程度：已重現。
+- 建議修法：只記不同的行號。行號是遞增的，和上一個相同就跳過：`decode_range` 收集每一段的前 10 個時這樣做就夠了（段都切在換行後面，不同的段不會是同一行）。`SourceFile.replaced_lines` 的說明與 DESIGN.md §9 改成「前 10 個有換字的行」；tests/test_lenient.py 補一行有很多個字的情況。
+- 狀態：待修
+
+### F-079［低］［bug］「可能選錯編碼」的門檻（行數的 1%）太低：編碼正確的造字報表也會出現
+
+- 位置：src/tablade/ingest/sources.py:1550（`file.replaced > file.rows / 100`）；門檻來自 docs/eudc-lenient-plan.md「審查後調整的地方」第 6 點
+- 現象：換掉的字數超過行數的 1%，警告後面就加「可能選錯編碼」。編碼正確、只是有造字的檔很容易超過：
+  - 專案自己的造字假報表（`fixtures.eudc_report()`，用 cp950 讀是對的）是 15 個 ÷ 83 行＝18%。
+  - 不到 100 行的檔，只要有 1 個造字就超過。
+  - 真的選錯編碼時是行數的好幾倍（下面是 430%～590%）。1% 分不出這兩種情況，這句話幾乎每次都出現，就沒有提醒的作用了。
+- 證據：
+  ```python
+  import tempfile
+  from pathlib import Path
+
+  from tablade.fixtures import eudc_report
+  from tablade.ingest import sources
+
+  work = Path(tempfile.mkdtemp())
+  raw = eudc_report()[0]  # cp950 的假報表，裡面有造字
+  utf8 = raw.decode("cp950", "replace").encode("utf-8")
+  cases = [
+      ("a.txt", "cp950 的報表用 cp950 讀（編碼是對的）", raw, "cp950"),
+      ("b.txt", "cp950 的報表用 utf-8 讀（選錯）", raw, "utf-8"),
+      ("c.txt", "UTF-8 的報表用 cp950 讀（選錯）", utf8, "cp950"),
+      ("d.txt", "UTF-8 的報表用 big5hkscs 讀（選錯）", utf8, "big5hkscs"),
+  ]
+  for name, title, data, encoding in cases:
+      (work / name).write_bytes(data)
+      _, files = sources.scan_parts([name], "text_lines", encoding, work, decode_errors="replace")
+      f = files[0]
+      flagged = "可能選錯編碼" in sources.decode_warning(f)
+      print(
+          f"{title}：{f.replaced} 個 ÷ {f.rows} 行＝{f.replaced / f.rows:.0%}，寫「可能選錯編碼」：{flagged}"
+      )
+  ```
+  ```text
+  cp950 的報表用 cp950 讀（編碼是對的）：15 個 ÷ 83 行＝18%，寫「可能選錯編碼」：True
+  cp950 的報表用 utf-8 讀（選錯）：360 個 ÷ 83 行＝434%，寫「可能選錯編碼」：True
+  UTF-8 的報表用 cp950 讀（選錯）：486 個 ÷ 83 行＝586%，寫「可能選錯編碼」：True
+  UTF-8 的報表用 big5hkscs 讀（選錯）：358 個 ÷ 83 行＝431%，寫「可能選錯編碼」：True
+  ```
+- 確認程度：已重現。
+- 建議修法：把門檻提高（例如換掉的字數超過行數的一半）。要訂多少由維護者決定：沒有中文的行很多的檔，選錯編碼時的比例也會比上面低。tests/test_lenient.py 的 `test_warning_text` 跟著改。
+- 狀態：待修
+
+### F-080［低］［bug］解碼失敗的提示只寫畫面上的用語，沒有寫 Recipe 的 `decode_errors`
+
+- 位置：src/tablade/ingest/sources.py:999（`_lenient_hint`）
+- 現象：逐行讀取解碼失敗時，訊息後面加一句「可以把「解不開的字」改成「換成 �」」。這是畫面上的用語；命令列（`tablade run`、`tablade validate --run`）和用驗證器的 AI 看到的是同一句，看不出要改 Recipe 的哪個欄位、填什麼值。
+- 證據：
+  ```python
+  import json
+  import tempfile
+  from pathlib import Path
+
+  from tablade.cli import main
+  from tablade.fixtures import eudc_report
+
+  work = Path(tempfile.mkdtemp())
+  (work / "data").mkdir()
+  (work / "data" / "r.txt").write_bytes(eudc_report()[0])
+  recipe = {
+      "tablade_recipe": "1.1",
+      "name": "r",
+      "stages": [
+          {
+              "name": "main",
+              "input": {"files": ["data/r.txt"], "reader": "text_lines"},
+              "steps": [],
+              "output_format": "csv",
+          }
+      ],
+      "output": {"keep_system_columns": True, "manifest": True},
+  }
+  path = work / "r.recipe.json"
+  path.write_text(json.dumps(recipe), encoding="utf-8")
+  print("結束代碼：", main(["validate", str(path), "--run"]))
+  ```
+  ```text
+  Recipe 有 1 個錯誤：
+    [錯誤] stages: 無法判斷編碼：utf-8 在第 0 個位元組（第 1 行，0xBD）無法解碼；cp950 在第 275 個位元組（第 8 行，0x8F）無法解碼。可以把「解不開的字」改成「換成 �」
+  結束代碼： 1
+  ```
+- 確認程度：已重現。
+- 建議修法：提示裡加上 Recipe 的寫法，例如「可以把「解不開的字」改成「換成 �」（Recipe：`input` 的 `"decode_errors": "replace"`）」；英文同樣。tests/test_lenient.py 的 `test_strict_reports_error_with_hint` 跟著改。
+- 狀態：待修
+
+### F-081［低］［bug］檔案裡只要有一個單獨的 `\r`，它後面換字警告的行號都少 1；文件只寫「只用 `\r` 換行的檔」
+
+- 位置：src/tablade/ingest/transcode.py:123、138（只數 `\n`）；docs/eudc-lenient-plan.md「已知的限制」、DESIGN.md §5.2（都寫「只用 `\r` 換行的檔行號不準」）
+- 現象：逐行讀取把單獨的 `\r` 也當成換行，`__line_no` 照這樣編；換字警告的行號只數原檔的 `\n`。所以不只是「只用 `\r` 換行的檔」：檔案裡任何地方有一個單獨的 `\r`，它後面每一個換字的行號都比資料裡的 `__line_no` 少 1（有幾個就少幾）。照警告的行號到預覽表格找，會找到別的行。
+  - 嚴格模式的解碼錯誤訊息是同一種算法，行號也一樣少 1（這一部分原本就有）。
+- 證據：
+  ```python
+  import tempfile
+  from pathlib import Path
+
+  import polars as pl
+
+  from tablade.ingest import sources
+
+  work = Path(tempfile.mkdtemp())
+  rows = [f"第{i}行,保溫瓶".encode("cp950") for i in range(1, 7)]
+  rows[1] = "第2行,保溫".encode("cp950") + b"\r" + "瓶".encode("cp950")  # 第 2 行中間有一個單獨的 \r
+  rows[4] += b"\x8f\x46"  # 第 5 行有造字
+  (work / "a.txt").write_bytes(b"\r\n".join(rows) + b"\r\n")
+  parts, files = sources.scan_parts(["a.txt"], "text_lines", "cp950", work, decode_errors="replace")
+  frame = sources.concat(parts).collect()
+  print(
+      "資料共",
+      frame.height,
+      "行；有 � 的是第",
+      frame.filter(pl.col("line").str.contains("�"))["__line_no"].to_list(),
+      "行",
+  )
+  print("警告：", sources.decode_warning(files[0]))
+  try:
+      sources.scan_parts(["a.txt"], "text_lines", "cp950", work)
+  except sources.DecodeError as err:
+      print("嚴格模式的錯誤：", err)
+  ```
+  ```text
+  資料共 7 行；有 � 的是第 [6] 行
+  警告： 有 1 個字解不開，換成 �（第 5 行），可能選錯編碼
+  嚴格模式的錯誤： cp950 在第 69 個位元組（第 5 行，0x8F）無法解碼。可以把「解不開的字」改成「換成 �」
+  ```
+- 確認程度：已重現。
+- 建議修法：二選一。
+  1. 行號改成和讀出來的行一致：數 `\n` 的地方同時數單獨的 `\r`。塊結尾的 `\r` 要等下一塊才知道後面是不是 `\n`，可以照 `_check_utf8` 的做法留到下一塊再判斷。
+  2. 不改算法的話，把兩份文件的限制改寫成「檔案裡有單獨的 `\r` 時，它後面的行號不準」。
+- 狀態：待修
+
+### F-082［低］［bug］來源檔有換字的警告時，下方仍顯示「沒有警告」；選到其他步驟就看不到
+
+- 位置：frontend/src/App.tsx:1164-1183（下方「警告」分頁的標題）、frontend/src/components/SourcePanel.tsx:412（換字的警告只畫在這裡）
+- 現象：換字的警告只出現在「讀取資料」的設定面板；下方的警告分頁只算步驟的警告。
+  - 選「讀取資料」時，右邊是橘色的「有 15 個字解不開…」，下方同時是綠色勾勾的「沒有警告」。
+  - 選到其他步驟時，畫面上沒有任何換字的提示（步驟清單的「讀取資料」也沒有標記），只能從資料裡的 `�` 發現。
+  - 匯出之後，下方分頁照程式會寫「匯出時沒有警告」（匯出結果的訊息另外有「1 個檔有解不開的字」）。
+- 證據：開發畫面（先 `uv run python scripts/gen_frontend_dev_data.py --recipe eudc_report`，再 `npm --prefix frontend run dev`）選「讀取資料」：
+  ```text
+  右邊的面板：data/造字報表.txt：有 15 個字解不開，換成 �（第 8、12、16、20、24、28、32、36、52、56… 行），可能選錯編碼（自動選了 cp950）
+  下方的分頁：沒有警告（英文畫面：No warnings）
+  ```
+  同一份假資料用 `Session.export()` 匯出，回傳 `warnings: 0`、`input_warnings: 1`。
+- 確認程度：「讀取資料」與其他步驟的畫面，在開發畫面（假 API）看到；匯出之後的分頁標題只靠讀程式推論（`export()` 的回傳值實際跑過）。
+- 建議修法：來源檔有換字的警告時，下方的分頁不要寫「沒有警告」（例如另外寫「N 個檔有解不開的字」），步驟清單的「讀取資料」加上警告的標記。計畫沒有規定這一塊，要不要做由維護者決定。
+- 狀態：待修
+
+### 檢查過、沒有發現問題的部分（第二次）
+
+- **沒開寬鬆解碼時結果不變**：新舊兩版跑同一批假資料，共 201 個案例（15 個假檔 × 逐行與 CSV × 5 種編碼設定；同樣的檔放進 zip × 3 種編碼設定；再加小段的平行轉碼）。假檔包含有／沒有 BOM 的 UTF-8、單獨的 `\r` 換行、cp950、big5hkscs、只有 BOM 的檔、中間壞一個位元組、檔尾只有半個字。
+  - 讀得進來的案例：編碼、SHA-256、列數、內容完全相同。BOM 改由 `decode_range` 拿掉沒有影響結果。
+  - 讀不進來的案例：錯誤訊息相同；唯一的差別是逐行讀取與 zip 的 67 則後面多了提示，CSV 的錯誤訊息沒有多。
+- **換字的結果**：計畫「審查紀錄」那張表的每一列（`8F 46`、`8F 7C`、`8F A1`、`80`、`FF 41`、lead byte 接換行、檔尾的 lead byte），cp950 的結果和表一致。big5hkscs 解得開的字（例如 `8F 46`）照常解開，解不開的處理方式相同。UTF-8 壞掉的位元組換成的 `�` 個數和 Python 內建的 `replace` 相同（tests/test_lenient.py 有測，另外用壞掉的假檔看過）。
+- **行號**：解不開的字剛好跨在 1 MB 的塊的邊界（第 1 個位元組在前一塊的最後）、在塊的開頭、在沒有換行的最後一行、檔尾只有半個字，警告的行號都和資料裡有 `�` 的 `__line_no` 相同（檔案與 zip 都是；單獨的 `\r` 見 F-081）。
+- **平行轉碼**：把段調小，平行和單一程序的內容、字數、行號相同。
+- **`auto`＋寬鬆的流程**：造字只在檔案很後面時，先嚴格轉到一半失敗、再寬鬆重轉，暫存資料夾裡只有最後這一次的段；結果和直接指定 cp950 相同。同一個檔的嚴格與寬鬆結果分開快取。250 MB 的假檔（造字在最後一行）：指定 cp950 是 0.3 秒，`auto` 多轉一次是 0.7 秒。
+- **檔尾不完整的字**：UTF-8 與 cp950 的檔尾只有半個字，檔案與 zip 都換成 1 個 `�`，`auto` 選到對的編碼。
+- **Session**：改「解不開的字」之後資料標成要重新載入；`state.input.decode_warnings` 中英文都正確；讀取方式不是逐行、或值是 `error` 時不寫進 Recipe；1.0 的 Recipe 開得起來，存檔是 1.1。
+  - `set_input` 不檢查 `decode_errors` 的值（傳 `"ignore"` 也收下）。`reader`、`encoding` 原本就是這樣，畫面只會送合法的值，所以沒有列成發現。
+- **命令列、處理紀錄、驗證器**：`tablade run` 與 `validate --run` 的報告在那個檔底下有一行警告；處理紀錄的 `inputs[].decode` 有字數與行號；CSV 設 `replace`、不支援的值，驗證器都擋下，`tablade run` 也回報同一則錯誤（pydantic 那一邊由 tests/test_lenient.py 的測試涵蓋）。
+- **畫面**：開發畫面（假 API）的「解不開的字」選項、說明、警告，中英文都正確。
+- **文件**：兩份 README、DESIGN.md §5.2 與 §9、docs/i18n-plan.md 的用語表、SKILL.md 都寫到這個功能；讀過這次改的段落，和程式一致（F-081 的那一句除外）。
+
+### 沒辦法驗證的部分（第二次）
+
+- **Windows 與真的視窗**：`�` 在 WebView2 裡的顯示、pywebview 視窗裡的實際操作。前端只在瀏覽器的開發畫面看過。
+- **真實的造字檔**：計畫「驗證」的第 3 步（拿真實檔案在本機載入）只能由使用者自己做；這裡用的都是假資料。
+- **幾 GB 的大檔**：最大只試到 250 MB，記憶體沒有重新量。
+- **打包後的 App**：沒有重新打包。
