@@ -380,10 +380,45 @@ export function InputPanel({ state, onAddFiles, onAddEntry, onRemove, onInput }:
                 ))}
               </SelectContent>
             </Select>
+            {input.reader === 'text_lines' || input.reader === 'zip_lines' ? (
+              <>
+                <div className="pt-1.5 text-xs text-muted-foreground">{tr('解不開的字', 'Undecodable characters')}</div>
+                <Select
+                  value={input.decode_errors ?? 'error'}
+                  onValueChange={(value) => onInput({ decode_errors: value as 'error' | 'replace' })}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="error">{tr('報錯', 'Report an error')}</SelectItem>
+                    <SelectItem value="replace">{tr('換成 �', 'Replace with �')}</SelectItem>
+                  </SelectContent>
+                </Select>
+                {input.decode_errors === 'replace' ? (
+                  <p className="text-xs text-muted-foreground">
+                    {tr(
+                      '用這個編碼解不開的字（例如造字）換成 �，照樣讀完；每個有換字的檔會有警告，處理紀錄記下換了幾個字。',
+                      'Characters this encoding cannot decode (such as custom characters) are replaced with �; each file with replacements gets a warning and the processing log records how many.',
+                    )}
+                  </p>
+                ) : null}
+              </>
+            ) : null}
           </div>
         )}
       </div>
       {input.reader === 'zip_lines' && input.zip_scan ? <ZipScanList scan={input.zip_scan} /> : null}
+      {input.decode_warnings?.length ? (
+        <ul className="space-y-1 text-xs text-amber-700 dark:text-amber-400">
+          {input.decode_warnings.map((w) => (
+            <li key={w.file} className="flex gap-1.5">
+              <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
+              <span className="min-w-0 break-all">{tr(`${w.file}：${w.text}`, `${w.file}: ${w.text}`)}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {input.error ? <p className="rounded-md bg-destructive/10 p-2 text-sm text-destructive">{input.error}</p> : null}
       {/* 載入資料在工具列（依序載入全部階段）；這裡只寫狀態 */}
       {!input.loaded ? (

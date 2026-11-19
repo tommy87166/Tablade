@@ -152,6 +152,11 @@ class RunReport:
     skipped_archives: list[dict[str, str]] = field(default_factory=list)
     """讀取方式 ``zip_lines``：沒有符合的檔、略過的 zip（``{"stage", "file"}``，處理紀錄記下來）。"""
 
+    @property
+    def input_warnings(self) -> int:
+        """寬鬆解碼換了字的檔數（每個檔算 1 則；不併進步驟的 ``warning_count``，那個數字和警告清單是成對的）。"""
+        return sum(1 for f in self.inputs if f.replaced)
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -597,6 +602,7 @@ def scan_stages(
             source.sheet,
             on_file=on_file,
             members=source.members,
+            decode_errors=source.decode_errors,
         )
         out[stage.name] = (parts, [replace(f, stage=stage.name) for f in files])
     if preparing:

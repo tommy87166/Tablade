@@ -130,6 +130,13 @@
 - `encoding: "auto"`：依序嘗試 `utf-8-sig` → `cp950`；都失敗就報錯，並列出第一個無法解碼的位元組位置。
 - 台灣 Windows 產出的「Big5」檔案實際上大多是 **cp950**（Big5 的超集），預設用 `cp950`，可手動指定 `big5hkscs`。
 - 轉碼在 Python 層完成，之後一律以 UTF-8 交給 Polars。要不要轉碼、轉完暫存成什麼，見 §5.4。
+- **寬鬆解碼**（`decode_errors`，計畫在 docs/eudc-lenient-plan.md）：預設 `"error"`，用這個編碼解不開的字就報錯（例如 Big5 的造字區，Python 的 cp950 不認）。
+  - 只有逐行讀取（`text_lines`、`zip_lines`）可以設 `"replace"`：解不開的字換成 `�`，照樣讀完。CSV 是交給 Polars 整份解析，換字後位置錯了很難察覺，所以不開放（pydantic 與驗證器都擋）。
+  - 換字用自己的錯誤處理器（`transcode.py` 的 `tablade-lenient`）：cp950、Big5-HKSCS 的 lead byte（`81`～`FE`）後面接合法的 trail（`40`～`7E`、`A1`～`FE`）時，**兩個位元組一起換成兩個 `�`**，否則只換一個。Python 內建的 `replace` 只換前半個，後半個會漏出來（`8F 7C` 變成 `�|`，拆欄就錯位）；兩個 `�` 佔 2 格，「依固定位置拆欄」不會偏。UTF-8 照內建的範圍換。換行 `0A` 不是 trail，所以不會被吃掉，切段規則照舊。
+  - 字數（一個 2 位元組的字算 1 個）與前 10 個的行號（只數 `\n`）由每一段的轉碼一起算，照檔案順序加起來（平行轉碼的結果相同）；記在 `SourceFile.replaced`、`replaced_lines`，畫面的讀取資料面板、命令列的報告、處理紀錄（§9 的 `inputs[].decode`）都看得到。換掉的字數超過總行數的 1% 時，警告多一句「可能選錯編碼」。
+  - 合法的 UTF-8 檔照樣直接讀原檔。`auto`＋寬鬆：先照原本的流程嚴格地試 UTF-8 → cp950，有一個成功就沒有換字；兩種都失敗時，從第一個不合 UTF-8 的那一行起取最多 4 MB（zip 裡的檔用 UTF-8 失敗那一段，還在記憶體裡），兩種都寬鬆地解、數換掉的字數，選少的那個（一樣多選 UTF-8），警告寫「自動選了…」。
+  - 嚴格模式的錯誤訊息，逐行讀取時後面提示「可以把『解不開的字』改成『換成 �』」。
+  - 已知的限制：不同的造字都是 `��`，分不出來、也換不回來（之後要的話另加「cp950＋造字區」編碼，見計畫的「不做的事」）；UTF-8 的固定位置報表換字後可能偏；只用 `\r` 換行的檔行號不準。
 
 ### 5.3 多檔
 
@@ -412,7 +419,9 @@ CSV 不改成 Parquet：Polars 讀 CSV 一定要一整份檔，不管轉碼怎�
   "mode": "eager",
   "recipe": { "name": "門市銷售明細整理", "sha256": "…", "content": { "…完整的 Recipe…": "" } },
   "inputs": [
-    { "file": "data/明細_01.csv", "bytes": 123456, "sha256": "…", "encoding": "cp950", "rows": 120345 }
+    { "file": "data/明細_01.csv", "bytes": 123456, "sha256": "…", "encoding": "cp950", "rows": 120345 },
+    { "file": "data/報表.txt", "bytes": 98765, "sha256": "…", "encoding": "cp950", "rows": 2048,
+      "decode": { "replaced": 2, "replaced_lines": [1203, 1207] } }
   ],
   "steps": [
     { "id": "s1", "type": "remove_top_rows", "description": "移除每個檔案的前 2 列", "enabled": true, "rows": 120341, "warning_count": 0 }
@@ -427,6 +436,7 @@ CSV 不改成 Parquet：Polars 讀 CSV 一定要一整份檔，不管轉碼怎�
 - 串流執行沒有每一步的列數（`rows` 是 `null`）；警告沿用執行報告（每項檢查最多 100 則），`count` 是總數。
 - `inputs[].rows` 是讀進來的資料列數：逐行讀取（`text_lines`、`zip_lines`）是行數；CSV 不含標題列（7 行的檔是 6）；Excel、Parquet 是列數。
 - zip 裡的檔（`zip_lines`）：`inputs[].file` 是「zip 的路徑/zip 裡的路徑」，`bytes`、`sha256` 是解開後的內容，`archive` 是 zip 本身（`{file, bytes, sha256}`）。沒有符合的檔、略過的 zip 記在最上層的 `archives_without_matches`（`[{stage?, file}]`，有才寫）。
+- 寬鬆解碼（`decode_errors: "replace"`，§5.2）換了字的檔多 `decode`：`replaced` 是換成 `�` 的字數，`replaced_lines` 是前 10 個的行號；沒有換字的檔沒有這個欄位。
 - `output.columns` 只列資料欄：輸出檔保留了系統欄位（`__source_file`、`__line_no`…，「保留系統欄位」開著）時也不列在這裡。
 - 處理紀錄也先寫暫存檔，和輸出檔一起改名（§6）：不會留下半個檔案，改名到一半失敗時一起還原。自我檢測的「完整執行範例 Recipe」也檢查 manifest 的 SHA-256。
 - 有好幾個階段時：`stage` 記寫出這個檔的階段，`inputs[].stage`、`steps[].stage` 記是哪個階段的，`stages` 記它往上用到的階段的結果（列數、欄位；暫存檔會刪掉，不記雜湊）。

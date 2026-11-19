@@ -78,7 +78,7 @@
 | 引擎 | [Polars](https://pola.rs/) 2.x（Python API） | 每個步驟編譯成 LazyFrame 操作；預覽在 20 萬行以內整份讀進來，超過時用每個檔的前 10 萬行＋最後 1,000 行，匯出時串流寫成 Parquet 或 CSV。 |
 | 視窗 | [pywebview](https://pywebview.flowrl.com/) 6 | 原生視窗（Windows 用 WebView2、macOS 用 WKWebView）。JS 直接呼叫 Python——**不起 HTTP 服務、不開 port**。 |
 | 前端 | React 19 + TypeScript + Vite，[shadcn/ui](https://ui.shadcn.com/)（Radix + Tailwind CSS v4） | build 成**單一、自給自足的 HTML 檔**（約 700 KB、gzip 後約 200 KB），由 Python 以字串載入。 |
-| 編碼 | Python codecs | 自動偵測 `utf-8-sig` → `cp950`；失敗時指出第一個無法解碼的位元組與行號。 |
+| 編碼 | Python codecs | 自動偵測 `utf-8-sig` → `cp950`；失敗時指出第一個無法解碼的位元組與行號，或（只有逐行讀取）把解不開的字換成 `�` 並警告。 |
 | Excel | [fastexcel](https://github.com/ToucanToco/fastexcel)（calamine） | 快速、唯讀的 XLSX / XLS 讀取。 |
 | Recipe | pydantic v2 | 驗證 recipe JSON。 |
 | 打包 | PyInstaller 6 + uv | 同一份鎖定檔產出 `onefile` 與 `onedir`。 |
@@ -322,6 +322,7 @@ tablade.spec          PyInstaller 設定（以 TABLADE_BUILD 切換 onefile / on
   資料 pane 會標「抽樣模式」，前面有移除重複、群組彙總、樞紐這類要看整個檔的步驟時另外標紅色的「警告：預覽結果可能不正確」（滑鼠移上去列出是哪幾步）；匯出時會串流處理全部資料，進度視窗顯示處理到第幾行與百分比，匯出後「輸出資料」改成讀匯出檔，標「完整模式」。串流匯出只回報最後的列數，警告也只算最後還留著的列。群組彙總、樞紐的預覽也是用樣本算的（樞紐要變成欄的值從預覽的資料讀出，匯出時資料裡多出來的值會產生警告）。
 - **非 UTF-8 的檔案會先轉碼成暫存檔**（cp950 單核心約每秒 230 MB；64 MB 以上的檔用多個程序同時轉，最多 8 個，結果和單核心相同）。逐行讀取（`text_lines`）的暫存是壓縮過的 Parquet，大約只要原檔的 1/10 的暫存空間；`csv` 的暫存是一整份 UTF-8 文字，需要約原檔 1.5 倍（大檔請盡量用逐行讀取）。暫存在關閉視窗時刪除；當掉或被強制結束時留下的副本，下次啟動 Tablade 時清掉。
 - **`csv` 模式的行號假設沒有跨行欄位**；有跨行欄位的檔案請用 `text_lines`。
+- **解不開的字**（例如 Big5 的造字，Python 的 cp950 不認）預設會讓整個檔讀不了。逐行讀取（`text_lines`、`zip_lines`）可以把「解不開的字」改成「換成 �」：2 位元組的字換成兩個 `�`（固定位置的欄位不會偏），照樣讀完，警告與處理紀錄寫出換了幾個字、在第幾行。不同的造字都會變成 `��`，分不出來也換不回來。CSV 不能用；要的話改用逐行讀取再依分隔符號拆欄。
 - **zip 只支援裡面的文字檔（`zip_lines`，逐行讀取）**：不用先解壓縮，`members` 寫 zip 裡要讀的檔（例如 `2026*/HEADER*.TXT`）。CSV、Excel 要先解壓縮；有密碼的 zip、zip 裡的 zip、7z、rar 不支援。Deflate64（Windows 檔案總管壓縮大檔時可能用）由內建的 Rust 模組解開。
 - **onefile 啟動較慢**：每次啟動都要先解壓縮；部分防毒軟體或 AppLocker 會擋暫存資料夾裡的程式。Windows 只發布 onefile，遇到這種情況請用 `uv run python scripts/build.py onedir` 另外打包 onedir 版。
 - **執行檔未簽章**：macOS 會出現 Gatekeeper、Windows 會出現 SmartScreen 提示。

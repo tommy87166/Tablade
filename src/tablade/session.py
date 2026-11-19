@@ -56,6 +56,7 @@ from .ingest.sources import (
     SourceFile,
     check_entries,
     concat,
+    decode_warning,
     expand,
     release_workers,
     sample,
@@ -95,6 +96,7 @@ DEFAULT_INPUT = {
     "sheet": "",
     "stages": [],
     "members": "",
+    "decode_errors": "error",
 }
 DEFAULT_OUTPUT = {"keep_system_columns": True, "manifest": True}
 DEFAULT_FORMAT = "parquet"
@@ -491,6 +493,11 @@ class Session:
                 source.pop(
                     "members", None
                 )  # 不是 zip 時不寫 members（畫面上填過的留在 Session 裡）
+            if (
+                source.get("reader") not in ("text_lines", "zip_lines")
+                or source.get("decode_errors", "error") == "error"
+            ):
+                source.pop("decode_errors", None)  # 沒用到寬鬆解碼時不寫，Recipe 比較好讀
         out = {"name": stage["name"], "input": source, "steps": stage["steps"]}
         if stage.get("output_file"):
             out["output_file"] = stage["output_file"]  # 沒填就不寫，Recipe 比較好讀
@@ -784,7 +791,8 @@ class Session:
             del self.input["files"][index]
 
     def set_input(self, values: dict[str, Any]) -> None:
-        """讀取方式、編碼、工作表、zip 裡的檔（members）；讀前面階段的輸出時，要讀的階段（只能選前面的）。"""
+        """讀取方式、編碼、解不開的字（decode_errors）、工作表、zip 裡的檔（members）；
+        讀前面階段的輸出時，要讀的階段（只能選前面的）。"""
         with self._lock:
             if "stages" in values:
                 earlier = [st["name"] for st in self.stages[: self.current]]
@@ -805,7 +813,7 @@ class Session:
                     )
                 )
             self._change()
-            for key in ("reader", "encoding", "sheet", "members"):
+            for key in ("reader", "encoding", "decode_errors", "sheet", "members"):
                 if key in values:
                     self.input[key] = values[key]
             if "stages" in values:
@@ -1083,7 +1091,9 @@ class Session:
                         files.append((str(p.resolve()), st.st_size, st.st_mtime_ns))
                     except OSError:
                         continue
-        reading = {k: source.get(k) for k in ("reader", "encoding", "sheet", "members")}
+        reading = {
+            k: source.get(k) for k in ("reader", "encoding", "decode_errors", "sheet", "members")
+        }
         return _digest({"reading": reading, "files": files})
 
     @staticmethod
@@ -1154,6 +1164,7 @@ class Session:
                 source.get("sheet", ""),
                 on_file=lambda i, file: tracker.files(i, total, file),
                 members=source.get("members", ""),
+                decode_errors=source.get("decode_errors", "error"),
             )
             tracker.files(total, total)
             if sum(f.rows for f in files) <= SAMPLE_THRESHOLD:
@@ -1616,6 +1627,11 @@ class Session:
                     "rows": source.height if source is not None else None,
                     "columns": _data_columns(source) if source is not None else None,
                     "sources": [f.__dict__ for f in files] if loaded is not None else [],
+                    "decode_warnings": [
+                        {"file": f.name, "text": text}
+                        for f in (files if loaded is not None else [])
+                        if (text := decode_warning(f))
+                    ],
                     "zip_scan": self._zip_state(),
                 },
                 "output": self.output,
@@ -2151,6 +2167,7 @@ class Session:
                 "rows": report.rows,
                 "columns": len(report.columns),
                 "warnings": report.warning_count,
+                "input_warnings": report.input_warnings,
                 "mode": report.mode,
                 "manifest": report.manifest,
                 "outputs": [

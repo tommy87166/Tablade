@@ -1333,6 +1333,21 @@ def link_issues(recipe: dict[str, Any], ref_fields: dict[str, list[str]]) -> lis
                     ),
                 )
             )
+        if source.get("decode_errors") == "replace" and source.get("reader", "text_lines") not in (
+            "text_lines",
+            "zip_lines",
+        ):
+            issues.append(
+                _issue(
+                    ["stages", si, "input", "decode_errors"],
+                    t(
+                        "只有讀取方式是逐行讀取（text_lines）或 zip 裡的文字檔（zip_lines）時，"
+                        "decode_errors 才能設成 replace（換成 �）",
+                        'decode_errors can be "replace" (replace with �) only when the reader is '
+                        "text_lines or zip_lines",
+                    ),
+                )
+            )
         if source.get("reader") != "stages" and listed:
             issues.append(
                 _issue(

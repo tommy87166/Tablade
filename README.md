@@ -89,7 +89,7 @@ Five needs drove this tool:
 | Engine | [Polars](https://pola.rs/) 2.x (Python API) | Each step compiles to a LazyFrame operation; the preview reads inputs of up to 200,000 lines in full and samples the first 100,000 + last 1,000 lines of each file beyond that; export streams to Parquet or CSV. |
 | Window | [pywebview](https://pywebview.flowrl.com/) 6 | Native window (WebView2 on Windows, WKWebView on macOS). JS calls Python directly — **no HTTP server, no open port**. |
 | Front end | React 19 + TypeScript + Vite, [shadcn/ui](https://ui.shadcn.com/) (Radix + Tailwind CSS v4) | Built into **one self-contained HTML file** (~700 KB, ~200 KB gzipped) that Python loads as a string. |
-| Encoding | Python codecs | Auto-detects `utf-8-sig` → `cp950`; reports the first undecodable byte and line. |
+| Encoding | Python codecs | Auto-detects `utf-8-sig` → `cp950`; reports the first undecodable byte and line, or (line-by-line readers only) replaces undecodable characters with `�` and warns. |
 | Excel | [fastexcel](https://github.com/ToucanToco/fastexcel) (calamine) | Fast, read-only XLSX / XLS. |
 | Recipe | pydantic v2 | Validates recipe JSON. |
 | Packaging | PyInstaller 6 + uv | `onefile` and `onedir` builds from one lock file. |
@@ -369,6 +369,12 @@ tablade.spec          PyInstaller config (onefile / onedir via TABLADE_BUILD)
   large files). The copy is deleted when the window closes, and copies left by a crash are removed the
   next time Tablade starts.
 - **`csv` reader line numbers assume no multi-line fields**; use `text_lines` for such files.
+- **Undecodable characters** (such as Big5 custom characters, which Python's cp950 can't read) stop the
+  file by default. With `text_lines` and `zip_lines` you can set “Undecodable characters” to “Replace with �”:
+  each 2-byte character becomes two `�` (so fixed-width columns don't shift), the file is read anyway, and a
+  warning plus the processing log say how many were replaced and on which lines. Different custom characters
+  all become `��` and can't be told apart or restored. Not available for `csv`; read such files line by line
+  and split by delimiter instead.
 - **Zip support is for text files only (`zip_lines`, line by line)**: no need to extract first; `members`
   names the files inside the zip (for example `2026*/HEADER*.TXT`). Extract CSV and Excel files first;
   password-protected zips, zips inside zips, 7z and rar aren't supported. Deflate64 (which Windows Explorer

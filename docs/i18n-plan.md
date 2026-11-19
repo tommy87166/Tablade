@@ -98,6 +98,9 @@
 | 警告 | Warnings |
 | 型別 | Types |
 | 準備檔案 | Preparing files |
+| 解不開的字 | Undecodable characters |
+| 報錯 | Report an error |
+| 換成 � | Replace with � |
 | 試跑 | Trial run |
 | 轉碼 | Transcoding |
 | 暫存資料夾 | Temp folder |

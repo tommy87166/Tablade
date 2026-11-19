@@ -205,6 +205,12 @@ export interface SourceFile {
   archive?: string | null
   archive_bytes?: number | null
   archive_sha256?: string | null
+  /** 寬鬆解碼：解不開、換成 � 的字數（一個 2 位元組的字算 1 個） */
+  replaced?: number
+  /** 前 10 個換字在第幾行 */
+  replaced_lines?: number[]
+  /** auto＋寬鬆：UTF-8、cp950 都解不開，取樣後選了 encoding */
+  auto_picked?: boolean
 }
 
 /** zip 裡一個符合的檔 */
@@ -281,6 +287,8 @@ export interface ViewState {
     stale: boolean
     reader: 'text_lines' | 'zip_lines' | 'csv' | 'excel' | 'parquet' | 'stages'
     encoding: string
+    /** 解不開的字：error 報錯（預設）；replace 換成 �（只有逐行讀取、zip 裡的文字檔能用） */
+    decode_errors?: 'error' | 'replace'
     /** Excel 的工作表名稱；空白代表第一個工作表，* 代表全部工作表 */
     sheet: string
     /** 讀取方式是 Excel 時，第一個 Excel 檔有哪些工作表 */
@@ -300,6 +308,8 @@ export interface ViewState {
     members?: string
     /** 讀取方式是「zip 裡的文字檔」時的掃描結果（只讀 zip 的目錄）；其他讀取方式是 null */
     zip_scan?: ZipScan | null
+    /** 寬鬆解碼換了字的檔，一個檔一則（文字由 Python 產生） */
+    decode_warnings?: { file: string; text: string }[]
   }
   output: { keep_system_columns: boolean; manifest: boolean }
   steps: StepState[]
@@ -489,6 +499,8 @@ export interface TabladeApi {
       rows?: number
       columns?: number
       warnings?: number
+      /** 寬鬆解碼換了字的檔數（不算在 warnings 裡） */
+      input_warnings?: number
       mode?: string
       manifest?: string | null
       /** 寫出的每個檔（依階段順序） */

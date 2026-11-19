@@ -33,7 +33,7 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures import wait as wait_futures
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +45,17 @@ from tablade.usage import worker_memory
 from ..i18n import t
 from . import excel, zip_lines
 from .encoding import AUTO_ORDER, SUPPORTED, DecodeError
-from .transcode import CHUNK, decode_range, segment_bounds, transcode_bytes, transcode_segment
+from .transcode import (
+    CHUNK,
+    LENIENT,
+    REPLACED_LINES,
+    Stats,
+    count_replaced,
+    decode_range,
+    segment_bounds,
+    transcode_bytes,
+    transcode_segment,
+)
 
 SOURCE_FILE, LINE_NO, SHEET, STAGE = "__source_file", "__line_no", "__sheet", "__stage"
 ORDER = (SOURCE_FILE, LINE_NO)
@@ -102,6 +112,12 @@ class SourceFile:
     archive_bytes: int | None = None
     archive_sha256: str | None = None
     """zip 檔本身的大小與 SHA-256（``bytes``、``sha256`` 是 zip 裡這個檔解開後的）。"""
+    replaced: int = 0
+    """寬鬆解碼（``decode_errors: "replace"``）換成 ``�`` 的字數（一個 2 位元組的字算 1 個）。"""
+    replaced_lines: tuple[int, ...] = ()
+    """前 ``REPLACED_LINES`` 個換字在第幾行。"""
+    auto_picked: bool = False
+    """``auto``＋寬鬆時 UTF-8、cp950 都解不開，取樣比較後選了 ``encoding``（警告裡寫出來）。"""
 
     @property
     def name(self) -> str:
@@ -120,6 +136,34 @@ class Prepared:
     lines: int
     parquet: tuple[Path, ...] = ()
     """逐行讀取、要轉碼的檔：依序的暫存 Parquet（一段一個，``line`` 一欄）；其他情況是空的。"""
+    replaced: int = 0
+    replaced_lines: tuple[int, ...] = ()
+    auto_picked: bool = False
+    """寬鬆解碼的結果，見 ``SourceFile`` 同名的欄位。"""
+
+
+@dataclass
+class Replaced:
+    """寬鬆解碼的統計，照檔案順序一段一段加進來（平行轉碼時段也是照順序收的，行號才對）。"""
+
+    count: int = 0
+    """換成 ``�`` 的字數。"""
+    lines: list[int] = field(default_factory=list)
+    """前 ``REPLACED_LINES`` 個換字在第幾行（從 1 算）。"""
+    newlines: int = 0
+    """已經收到的段共有幾個 ``\\n``。"""
+
+    def add(self, stats: Stats) -> None:
+        count, lines, newlines = stats
+        self.count += count
+        for before in lines:
+            if len(self.lines) < REPLACED_LINES:
+                self.lines.append(self.newlines + before + 1)
+        self.newlines += newlines
+
+    def clear(self) -> None:
+        self.count, self.newlines = 0, 0
+        self.lines.clear()
 
 
 def _alive(prepared: Prepared) -> bool:
@@ -295,12 +339,13 @@ def _failure(encoding: str, offset: int, newlines: int, byte: int) -> str:
 _LONE_CR = re.compile(rb"\r(?!\n)")
 
 
-def _check_utf8(path: Path, progress: Progress) -> tuple[str, bool, bool, str | None]:
-    """一次讀完：回傳（sha256, 是否有 BOM, 是否有單獨的 \\r 換行, UTF-8 錯誤訊息或 None）。"""
+def _check_utf8(path: Path, progress: Progress) -> tuple[str, bool, bool, str | None, int]:
+    """一次讀完：回傳（sha256, 是否有 BOM, 是否有單獨的 \\r 換行, UTF-8 錯誤訊息或 None,
+    第一個不合 UTF-8 的位置；``auto``＋寬鬆從這裡取樣）。"""
     digest = hashlib.sha256()
     decoder = codecs.getincrementaldecoder("utf-8")()
     total, done, newlines = path.stat().st_size, 0, 0
-    bom, lone_cr, error, carry = False, False, None, b""
+    bom, lone_cr, error, carry, bad = False, False, None, b"", 0
     with path.open("rb") as f:
         while chunk := f.read(CHUNK):
             if done == 0:
@@ -316,8 +361,9 @@ def _check_utf8(path: Path, progress: Progress) -> tuple[str, bool, bool, str | 
                     decoder.decode(chunk)
                 except UnicodeDecodeError as err:
                     pos = min(max(err.start, 0), len(chunk) - 1)
+                    bad = done + pos
                     error = _failure(
-                        "utf-8", done + pos, newlines + chunk.count(b"\n", 0, pos), chunk[pos]
+                        "utf-8", bad, newlines + chunk.count(b"\n", 0, pos), chunk[pos]
                     )
             newlines += chunk.count(b"\n")
             done += len(chunk)
@@ -330,11 +376,12 @@ def _check_utf8(path: Path, progress: Progress) -> tuple[str, bool, bool, str | 
         try:
             decoder.decode(b"", final=True)
         except UnicodeDecodeError:
+            bad = max(total - 1, 0)
             error = t(
                 f"utf-8 在檔案結尾（第 {newlines + 1} 行）有不完整的字元",
                 f"utf-8: incomplete character at the end of the file (line {newlines + 1})",
             )
-    return digest.hexdigest(), bom, lone_cr, error
+    return digest.hexdigest(), bom, lone_cr, error, bad
 
 
 PARALLEL_MIN = 64 << 20
@@ -427,7 +474,7 @@ def _transcode_single(path: Path, encoding: str, target: Path, progress: Progres
         _report(progress, t("轉碼", "Transcoding"), path.name, done, total)
 
     with path.open("rb") as f, target.open("wb") as out:
-        failure = decode_range(f, out, encoding, on_chunk=on_chunk)
+        failure, _ = decode_range(f, out, encoding, on_chunk=on_chunk)
     if failure is not None:
         raise _decode_error(path, encoding, failure)
     return digest.hexdigest()
@@ -461,7 +508,7 @@ def _transcode_parallel(
     middle = "utf-8" if encoding == "utf-8-sig" else encoding
     parts = [target.with_name(f"{target.name}.part{i}") for i in range(len(cuts) - 1)]
     jobs = [
-        (str(path), encoding if i == 0 else middle, cuts[i], cuts[i + 1], str(parts[i]))
+        (str(path), encoding if i == 0 else middle, cuts[i], cuts[i + 1], str(parts[i]), "strict")
         for i in range(len(parts))
     ]
     digest = hashlib.sha256()  # SHA-256 一定要從頭讀到尾：主程序另外用一條執行緒算
@@ -483,7 +530,7 @@ def _transcode_parallel(
         done = 0
         for i, future in enumerate(futures):  # 依序等：第一個失敗的就是檔案裡最前面的錯誤
             try:
-                failure = future.result()
+                failure, _ = future.result()
             except BrokenProcessPool as err:  # 工作程序意外結束（例如被系統擋掉）
                 raise PoolUnavailable(str(err)) from err
             if failure is not None:
@@ -570,6 +617,8 @@ def _segments(
     segment: int,
     pool: ProcessPoolExecutor | None,
     ahead: int,
+    errors: str = "strict",
+    replaced: Replaced | None = None,
 ) -> Iterator[Path]:
     """在換行處切段、轉成 UTF-8，依檔案順序一段一段交出（每段一個文字檔，呼叫的人用完就刪）。
 
@@ -578,6 +627,7 @@ def _segments(
 
     轉不了的字依檔案順序回報第一個（和單核心相同的訊息）；開不了工作程序、工作程序意外結束時丟出
     ``PoolUnavailable``。結束時（包括出錯、呼叫的人提早停下）刪掉還沒交出的段。
+    ``errors`` 是 ``LENIENT`` 時解不開的字換成 ``�``，每段的統計照檔案順序加進 ``replaced``。
     """
     total = path.stat().st_size
     cuts = segment_bounds(str(path), total, segment)
@@ -590,6 +640,7 @@ def _segments(
             cuts[i],
             cuts[i + 1],
             str(folder / f"{i:06d}.txt"),
+            errors,
         )
         for i in range(len(cuts) - 1)
     ]
@@ -602,12 +653,16 @@ def _segments(
         except (OSError, RuntimeError, BrokenProcessPool) as err:  # 開不了工作程序
             raise PoolUnavailable(str(err)) from err
 
+    def received(failure: Any, stats: Stats) -> None:
+        if failure is not None:
+            raise _decode_error(path, encoding, failure)
+        if replaced is not None:
+            replaced.add(stats)
+
     try:
         if pool is None:
             for i, job in enumerate(jobs):
-                failure = transcode_segment(job)
-                if failure is not None:
-                    raise _decode_error(path, encoding, failure)
+                received(*transcode_segment(job))
                 _report(progress, label, path.name, cuts[i + 1], total)
                 yield Path(job[4])
             return
@@ -618,11 +673,10 @@ def _segments(
         while pending:
             i, future = pending.popleft()
             try:
-                failure = future.result()
+                outcome = future.result()
             except BrokenProcessPool as err:  # 工作程序意外結束（例如被系統擋掉）
                 raise PoolUnavailable(str(err)) from err
-            if failure is not None:
-                raise _decode_error(path, encoding, failure)
+            received(*outcome)
             _report(progress, label, path.name, cuts[i + 1], total)
             yield Path(jobs[i][4])
             if following < len(jobs):
@@ -687,6 +741,8 @@ def _stage_lines(
     pool: ProcessPoolExecutor | None = None,
     parallel_min: int | None = None,
     segment: int | None = None,
+    errors: str = "strict",
+    replaced: Replaced | None = None,
 ) -> tuple[str, tuple[Path, ...], int]:
     """逐行讀取、要轉碼的檔：轉成 UTF-8 後一段一段寫成 zstd 壓縮的 Parquet，放在 ``folder``。
 
@@ -696,6 +752,7 @@ def _stage_lines(
     大檔用多個工作程序同時轉（``pool`` 預設是共用的工作程序；自我檢測傳自己開的）；開不了工作程序時
     改用單核心重來，這次開著的期間都不再試（自我檢測傳了 ``pool`` 時照原樣丟出 ``PoolUnavailable``）。
     解碼失敗丟出 ``DecodeError``；出錯時 ``folder`` 整個刪掉，不留半套暫存。
+    ``errors`` 是 ``LENIENT`` 時不會解碼失敗，換字的統計記在 ``replaced``。
     """
     size = path.stat().st_size
     minimum = PARALLEL_MIN if parallel_min is None else parallel_min
@@ -707,14 +764,20 @@ def _stage_lines(
     try:
         try:
             files = _write_lines(
-                _segments(path, encoding, folder, progress, step, workers, ahead), folder
+                _segments(path, encoding, folder, progress, step, workers, ahead, errors, replaced),
+                folder,
             )
         except PoolUnavailable:
             if pool is not None:
                 raise
             _give_up_pool()
             shutil.rmtree(folder, ignore_errors=True)
-            files = _write_lines(_segments(path, encoding, folder, progress, step, None, 2), folder)
+            if replaced is not None:
+                replaced.clear()
+            files = _write_lines(
+                _segments(path, encoding, folder, progress, step, None, 2, errors, replaced),
+                folder,
+            )
     except BaseException:
         shutil.rmtree(folder, ignore_errors=True)
         raise
@@ -746,6 +809,20 @@ def _cut(buffer: bytes) -> int:
     return last
 
 
+SAMPLE = 4 << 20
+"""``auto``＋寬鬆：UTF-8、cp950 都解不開時，取這麼大的一段比較哪個解不開的字比較少。"""
+
+
+def _sample_lines(data: bytes, start: int) -> bytes:
+    """從 ``start``（一行的開頭）起最多 ``SAMPLE`` 個位元組，切在行尾（一整行都超過時就不切）。"""
+    piece = data[start : start + SAMPLE]
+    if start + SAMPLE < len(data):
+        end = piece.rfind(b"\n")
+        if end >= 0:
+            piece = piece[: end + 1]
+    return piece
+
+
 def _stream_segments(
     read: Callable[[int], bytes],
     total: int,
@@ -756,35 +833,47 @@ def _stream_segments(
     segment: int,
     pool: ProcessPoolExecutor | None,
     ahead: int,
+    errors: str = "strict",
+    replaced: Replaced | None = None,
 ) -> Iterator[Path]:
     """依序讀出的位元組（zip 裡的檔）在換行處切段、轉成 UTF-8，依順序一段一段交出（每段一個文字檔）。
 
     和 ``_segments`` 一樣：``pool`` 是工作程序時同時轉好幾段，在路上的段最多 ``ahead`` 個；``pool`` 是 None 時
     在這個程序依序轉；第一個轉不了的字照檔案順序回報；結束時刪掉還沒交出的段（交出的段歸呼叫的人刪）。
     每段記著它之前有幾個換行：轉不了時直接算出第幾行，不用重新解壓一遍。
+
+    ``errors``、``replaced`` 和 ``_segments`` 一樣。轉不了時丟出的 ``DecodeError`` 帶著 ``sample``：
+    從那一行開頭起的一段（還在記憶體裡），``auto``＋寬鬆拿它比較編碼，不用重新解壓。
     """
     middle = "utf-8" if encoding == "utf-8-sig" else encoding
     label = t("解壓與轉碼", "Extracting and transcoding")
-    pending: collections.deque[tuple[Any, tuple[bytes, str, int, str], int]] = collections.deque()
+    Work = tuple[bytes, str, int, str, str]
+    pending: collections.deque[tuple[Any, Work, int]] = collections.deque()
     made: list[Path] = []
     handed: set[Path] = set()
     state = {"start": 0, "newlines": 0}
 
-    def job(data: bytes) -> tuple[tuple[bytes, str, int, str], int]:
-        """這一段的工作（位元組, 編碼, 起點, 暫存檔）與它之前有幾個換行。"""
+    def job(data: bytes) -> tuple[Work, int]:
+        """這一段的工作（位元組, 編碼, 起點, 暫存檔, errors）與它之前有幾個換行。"""
         dst = folder / f"{len(made):06d}.txt"
-        work = (data, encoding if not made else middle, state["start"], str(dst))
+        work = (data, encoding if not made else middle, state["start"], str(dst), errors)
         before = state["newlines"]
         made.append(dst)
         state["start"] += len(data)
         state["newlines"] += data.count(b"\n")
         return work, before
 
-    def finished(failure: Any, work: tuple[bytes, str, int, str], before: int) -> Path:
-        data, _, start, dst = work
+    def finished(outcome: tuple[Any, Stats], work: Work, before: int) -> Path:
+        failure, stats = outcome
+        data, _, start, dst, _ = work
         if failure is not None:
             count = lambda offset: before + data.count(b"\n", 0, offset - start)  # noqa: E731
-            raise _decode_error(Path(name), encoding, failure, count)
+            err = _decode_error(Path(name), encoding, failure, count)
+            at = min(max(failure[0] - start, 0), len(data))
+            err.sample = _sample_lines(data, data.rfind(b"\n", 0, at) + 1)  # type: ignore[attr-defined]
+            raise err
+        if replaced is not None:
+            replaced.add(stats)
         _report(progress, label, name, start + len(data), total)
         handed.add(Path(dst))
         return Path(dst)
@@ -847,11 +936,14 @@ def _stage_member(
     pool: ProcessPoolExecutor | None = None,
     parallel_min: int | None = None,
     segment: int | None = None,
+    errors: str = "strict",
+    replaced: Replaced | None = None,
 ) -> tuple[str, tuple[Path, ...], int, bool]:
     """zip 裡的一個檔：一邊解壓一邊切段、轉成 UTF-8，一段一段寫成 Parquet（和 ``_stage_lines`` 同一種暫存）。
 
     回傳（解開後內容的 sha256, 依序的 Parquet 檔, 行數, 開頭有沒有 BOM）。轉不了丟出 ``DecodeError``，
     zip 壞了丟出 ``zip_lines.ZipError``；出錯時 ``folder`` 整個刪掉。
+    ``errors`` 是 ``LENIENT`` 時不會轉不了，換字的統計記在 ``replaced``。
     """
     minimum = PARALLEL_MIN if parallel_min is None else parallel_min
     step = segment or ZIP_SEGMENT
@@ -880,6 +972,8 @@ def _stage_member(
                 step,
                 executor,
                 2 * count,
+                errors,
+                replaced,
             )
             files = _write_lines(segments, folder, ZIP_GROUP)
         return digest.hexdigest(), files, bool(first["bom"])
@@ -892,6 +986,8 @@ def _stage_member(
                 raise
             _give_up_pool()
             shutil.rmtree(folder, ignore_errors=True)
+            if replaced is not None:
+                replaced.clear()
             sha, files, bom = run(None)
     except BaseException:
         shutil.rmtree(folder, ignore_errors=True)
@@ -900,13 +996,63 @@ def _stage_member(
     return sha, tuple(files), lines, bom
 
 
+def _lenient_hint(message: str) -> DecodeError:
+    """逐行讀取解碼失敗：訊息後面提示可以打開寬鬆解碼（CSV 不能用，所以不加）。"""
+    return DecodeError(
+        message
+        + t(
+            "。可以把「解不開的字」改成「換成 �」",
+            '. You can set "Undecodable characters" to "Replace with �"',
+        )
+    )
+
+
+def _pick(sample: bytes) -> str:
+    """``auto``＋寬鬆、UTF-8 與 cp950 都解不開：樣本裡解不開的字比較少的那個（一樣多時照 ``auto`` 的順序選 UTF-8）。
+
+    兩者差很多：有造字的 cp950 檔當 UTF-8 解，幾乎每個中文字都解不開；只壞了幾個位元組的 UTF-8 檔當 cp950 解也是。
+    """
+    fallback = AUTO_ORDER[1]
+    return (
+        "utf-8-sig"
+        if count_replaced(sample, "utf-8") <= count_replaced(sample, fallback)
+        else fallback
+    )
+
+
+def _file_sample(path: Path, bad: int) -> bytes:
+    """從 ``bad``（第一個不合 UTF-8 的位置）那一行的開頭起，最多 ``SAMPLE`` 個位元組，切在行尾。"""
+    with path.open("rb") as f:
+        back = max(bad - (64 << 10), 0)  # 往前找那一行的開頭（找不到就從這裡開始）
+        f.seek(back)
+        start = back + f.read(bad - back).rfind(b"\n") + 1
+        f.seek(start)
+        return _sample_lines(f.read(SAMPLE + 1), 0)
+
+
+def _with_replaced(prepared: Prepared, replaced: Replaced, picked: bool = False) -> Prepared:
+    return replace(
+        prepared,
+        replaced=replaced.count,
+        replaced_lines=tuple(replaced.lines),
+        auto_picked=picked,
+    )
+
+
 def prepare_member(
-    member: zip_lines.Member, name: str, encoding: str = "auto", progress: Progress = None
+    member: zip_lines.Member,
+    name: str,
+    encoding: str = "auto",
+    progress: Progress = None,
+    errors: str = "strict",
 ) -> Prepared:
     """zip 裡的一個檔：暫存成一段一段的 Parquet（zip 裡的檔不能直接交給 Polars 讀，UTF-8 的也一樣）。結果會快取。
 
     ``auto``：先當 UTF-8 一邊解壓一邊寫暫存，UTF-8 的檔只解壓一遍；遇到不合 UTF-8 的位元組就丟掉已寫的暫存，
     改用 cp950 從頭再解壓一遍（cp950 的檔通常前幾行就有中文，浪費的只有開頭一點點）。
+
+    ``errors`` 是 ``LENIENT``（寬鬆解碼）時解不開的字換成 ``�``。``auto`` 時先照上面嚴格地試，
+    兩種都解不開才用 UTF-8 失敗那一段當樣本（還在記憶體裡，不用重新解壓）選編碼，再寬鬆地轉。
     """
     if encoding not in SUPPORTED:
         raise DecodeError(
@@ -925,39 +1071,47 @@ def prepare_member(
         member.crc,
         member.compressed,
         encoding,
+        errors,
     )
     with _lock:
         if key in _cache and _alive(_cache[key]):  # type: ignore[index]
             return _cache[key]  # type: ignore[index]
     folder = staging_dir() / hashlib.sha256(repr(key).encode()).hexdigest()[:24]
 
-    def stage(candidate: str) -> Prepared:
-        sha, files, lines, bom = _stage_member(member, name, candidate, folder, progress)
+    def stage(candidate: str, mode: str = "strict", picked: bool = False) -> Prepared:
+        replaced = Replaced()
+        sha, files, lines, bom = _stage_member(
+            member, name, candidate, folder, progress, errors=mode, replaced=replaced
+        )
         label = ("utf-8-sig" if bom else "utf-8") if candidate.startswith("utf-8") else candidate
-        return Prepared(folder, label, sha, member.size, False, lines, files)
+        prepared = Prepared(folder, label, sha, member.size, False, lines, files)
+        return _with_replaced(prepared, replaced, picked)
 
     if member.size == 0:
         prepared = Prepared(folder, "utf-8", hashlib.sha256().hexdigest(), 0, False, 0)
         folder.mkdir(parents=True, exist_ok=True)
     elif encoding == "auto":
-        failures = []
+        failures, sample = [], b""
         for candidate in AUTO_ORDER:
             try:
                 prepared = stage(candidate)
             except DecodeError as err:
                 failures.append(str(err))
+                sample = sample or getattr(err, "sample", b"")
                 continue
             break
         else:
-            raise DecodeError(
-                t(f"「{name}」無法判斷編碼：", f'"{name}": couldn\'t detect the encoding: ')
-                + t("；", "; ").join(failures)
-            )
+            if errors != LENIENT:
+                raise _lenient_hint(
+                    t(f"「{name}」無法判斷編碼：", f'"{name}": couldn\'t detect the encoding: ')
+                    + t("；", "; ").join(failures)
+                )
+            prepared = stage(_pick(sample), LENIENT, picked=True)
     else:
         try:
-            prepared = stage("utf-8-sig" if encoding == "utf-8" else encoding)
+            prepared = stage("utf-8-sig" if encoding == "utf-8" else encoding, errors)
         except DecodeError as err:  # zip 裡有很多檔：訊息前面寫是哪一個
-            raise DecodeError(t(f"「{name}」：{err}", f'"{name}": {err}')) from None
+            raise _lenient_hint(t(f"「{name}」：{err}", f'"{name}": {err}')) from None
 
     with _lock:
         _cache[key] = prepared  # type: ignore[index]
@@ -1082,6 +1236,7 @@ def _scan_zip_parts(
     base_dir: Path,
     progress: Progress,
     on_file: Callable[[int, str], None] | None,
+    errors: str = "strict",
 ) -> tuple[list[Part], list[SourceFile]]:
     """讀取方式 ``zip_lines``：zip 裡每個符合的檔是一個來源（名稱是「zip 的路徑/zip 裡的路徑」）。"""
     scan = scan_zips(entries, members, base_dir)
@@ -1101,12 +1256,12 @@ def _scan_zip_parts(
                 on_file(i, name)
             i += 1
             try:
-                prepared = prepare_member(member, name, encoding, progress)
+                prepared = prepare_member(member, name, encoding, progress, errors)
             except zip_lines.ZipError as err:
                 raise InputError(str(err)) from None
             lf, rows = _scan_one(prepared, "text_lines", name)
             parts.append((name, lf))
-            found.append(SourceFile(name, prepared.bytes, prepared.sha256, prepared.encoding, rows))
+            found.append(_source_file(name, prepared, rows))
         sha = digest.result()
         files += [
             replace(f, archive=entry.path, archive_bytes=digest.bytes, archive_sha256=sha)
@@ -1123,12 +1278,20 @@ def source_count(entries: str | list[str], reader: str, base_dir: Path, members:
 
 
 def prepare(
-    path: Path, encoding: str = "auto", progress: Progress = None, lines: bool = False
+    path: Path,
+    encoding: str = "auto",
+    progress: Progress = None,
+    lines: bool = False,
+    errors: str = "strict",
 ) -> Prepared:
     """確保檔案可以用 UTF-8 掃描：必要時轉碼成暫存檔。結果會快取。
 
     ``lines``：逐行讀取用。要轉碼時暫存成一段一段的 Parquet（``_stage_lines``，小很多）；
     否則（CSV）暫存成一整份 UTF-8 文字。不用轉碼的 UTF-8 檔兩種都直接讀原檔。
+
+    ``errors`` 是 ``LENIENT``（寬鬆解碼，只有逐行讀取能用）時解不開的字換成 ``�``：
+    合法的 UTF-8 檔照樣直接讀原檔；``auto`` 時先照原本的流程嚴格地試 UTF-8 → cp950，兩種都解不開
+    才從第一個不合 UTF-8 的那一行取樣選編碼（``_pick``），再寬鬆地轉整個檔。
     """
     if encoding not in SUPPORTED:
         raise DecodeError(
@@ -1137,20 +1300,33 @@ def prepare(
                 f"Unsupported encoding: {encoding} (available: {', '.join(SUPPORTED)})",
             )
         )
+    lenient = lines and errors == LENIENT
     stat = path.stat()
-    key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns, encoding, lines)
+    key = (
+        str(path.resolve()),
+        stat.st_size,
+        stat.st_mtime_ns,
+        encoding,
+        lines,
+        LENIENT if lenient else "strict",
+    )
     with _lock:
         if key in _cache and _alive(_cache[key]):
             return _cache[key]
 
     name = hashlib.sha256(repr(key).encode()).hexdigest()[:24]
+    hint = _lenient_hint if lines else DecodeError
 
-    def convert(candidate: str) -> Prepared:
+    def convert(candidate: str, mode: str = "strict", picked: bool = False) -> Prepared:
         """用 candidate 轉碼成暫存：逐行讀取是 Parquet，CSV 是 UTF-8 文字。"""
         if lines:
             folder = staging_dir() / name
-            digest, files, count = _stage_lines(path, candidate, folder, progress)
-            return Prepared(folder, candidate, digest, stat.st_size, False, count, files)
+            replaced = Replaced()
+            digest, files, count = _stage_lines(
+                path, candidate, folder, progress, errors=mode, replaced=replaced
+            )
+            prepared = Prepared(folder, candidate, digest, stat.st_size, False, count, files)
+            return _with_replaced(prepared, replaced, picked)
         staged = staging_dir() / f"{name}.txt"
         digest = _transcode(path, candidate, staged, progress)
         return Prepared(staged, candidate, digest, stat.st_size, False, _count_lines(staged))
@@ -1158,16 +1334,16 @@ def prepare(
     if stat.st_size == 0:
         prepared = Prepared(path, "utf-8", hashlib.sha256().hexdigest(), 0, False, 0)
     elif encoding in ("auto", "utf-8", "utf-8-sig"):
-        digest, bom, lone_cr, error = _check_utf8(path, progress)
+        digest, bom, lone_cr, error, bad = _check_utf8(path, progress)
+        utf8 = "utf-8-sig" if bom else "utf-8"
         if error is None and not lone_cr:
-            detected = "utf-8-sig" if bom else "utf-8"
-            prepared = Prepared(path, detected, digest, stat.st_size, bom, _count_lines(path))
+            prepared = Prepared(path, utf8, digest, stat.st_size, bom, _count_lines(path))
         elif error is None:  # UTF-8，但有單獨的 \r 換行：轉成暫存檔統一換行
-            prepared = replace(
-                convert("utf-8-sig"), encoding="utf-8-sig" if bom else "utf-8", sha256=digest
-            )
+            prepared = replace(convert("utf-8-sig"), encoding=utf8, sha256=digest)
         elif encoding != "auto":
-            raise DecodeError(error)
+            if not lenient:
+                raise hint(error)
+            prepared = replace(convert("utf-8-sig", LENIENT), encoding=utf8)
         else:
             failures = [error]
             for candidate in AUTO_ORDER[1:]:
@@ -1178,12 +1354,20 @@ def prepare(
                     continue
                 break
             else:
-                raise DecodeError(
-                    t("無法判斷編碼：", "Couldn't detect the encoding: ")
-                    + t("；", "; ").join(failures)
-                )
+                if not lenient:
+                    raise hint(
+                        t("無法判斷編碼：", "Couldn't detect the encoding: ")
+                        + t("；", "; ").join(failures)
+                    )
+                picked = _pick(_file_sample(path, bad))
+                prepared = convert(picked, LENIENT, picked=True)
+                if picked == "utf-8-sig":
+                    prepared = replace(prepared, encoding=utf8)
     else:
-        prepared = convert(encoding)
+        try:
+            prepared = convert(encoding, LENIENT if lenient else "strict")
+        except DecodeError as err:
+            raise hint(str(err)) from None
 
     with _lock:
         _cache[key] = prepared
@@ -1292,15 +1476,22 @@ def scan_parts(
     sheet: str = "",
     on_file: Callable[[int, str], None] | None = None,
     members: str = "",
+    decode_errors: str = "error",
 ) -> tuple[list[Part], list[SourceFile]]:
     """每個來源檔一個 LazyFrame（依檔案清單的順序），欄位對齊成同一組。
 
     ``sheet`` 只有 ``reader="excel"`` 時用：工作表名稱，空白代表第一個工作表。
     ``members`` 只有 ``reader="zip_lines"`` 時用：zip 裡要讀的檔（檔案清單是 zip）。
+    ``decode_errors`` 只有逐行讀取（``text_lines``、``zip_lines``）時用：``"replace"`` 是寬鬆解碼，
+    解不開的字換成 ``�``（``SourceFile.replaced`` 記字數）；其他讀取方式一律嚴格。
     ``on_file(i, 名稱)`` 在開始讀第 i 個檔（從 0 起）之前呼叫（畫面上的「已處理幾個檔」）。
     """
+    lenient = decode_errors == "replace" and reader in ("text_lines", "zip_lines")
+    errors = LENIENT if lenient else "strict"
     if reader == "zip_lines":
-        parts, files = _scan_zip_parts(entries, members, encoding, base_dir, progress, on_file)
+        parts, files = _scan_zip_parts(
+            entries, members, encoding, base_dir, progress, on_file, errors
+        )
         return align(parts), files
     parts, files = [], []
     for i, path in enumerate(resolve(entries, base_dir)):
@@ -1324,11 +1515,43 @@ def scan_parts(
             parts.append((name, lf))
             files.append(info)
             continue
-        prepared = prepare(path, encoding, progress, lines=reader == "text_lines")
+        prepared = prepare(path, encoding, progress, lines=reader == "text_lines", errors=errors)
         lf, rows = _scan_one(prepared, reader, name)
         parts.append((name, lf))
-        files.append(SourceFile(name, prepared.bytes, prepared.sha256, prepared.encoding, rows))
+        files.append(_source_file(name, prepared, rows))
     return align(parts), files
+
+
+def _source_file(name: str, prepared: Prepared, rows: int) -> SourceFile:
+    return SourceFile(
+        name,
+        prepared.bytes,
+        prepared.sha256,
+        prepared.encoding,
+        rows,
+        replaced=prepared.replaced,
+        replaced_lines=prepared.replaced_lines,
+        auto_picked=prepared.auto_picked,
+    )
+
+
+def decode_warning(file: SourceFile) -> str | None:
+    """寬鬆解碼換了字的檔的警告（畫面、命令列、錯誤報告共用）；沒有換字時是 None。"""
+    if not file.replaced:
+        return None
+    where = t("、", ", ").join(str(n) for n in file.replaced_lines)
+    if file.replaced > len(file.replaced_lines):
+        where += "…"
+    text = t(
+        f"有 {file.replaced:,} 個字解不開，換成 �（第 {where} 行）",
+        f"{file.replaced:,} undecodable character{'s' if file.replaced != 1 else ''} "
+        f"replaced with � ({'line' if len(file.replaced_lines) == 1 else 'lines'} {where})",
+    )
+    if file.rows and file.replaced > file.rows / 100:
+        text += t("，可能選錯編碼", "; the encoding may be wrong")
+    if file.auto_picked:
+        text += t(f"（自動選了 {file.encoding}）", f" (auto-detected {file.encoding})")
+    return text
 
 
 def parquet_names(columns: list[str]) -> dict[str, str]:

@@ -24,7 +24,7 @@ from tablade.steps.base import Step
 
 from .validator import check_version, link_issues
 
-RECIPE_VERSION = "1.0"
+RECIPE_VERSION = "1.1"
 """recipe 格式（也是 AI skill）的版本號：MAJOR.MINOR（DESIGN.md §17.6）。"""
 
 READERS: dict[str, dict[str, Any]] = {
@@ -48,6 +48,16 @@ StageName = Annotated[str, StringConstraints(min_length=1, max_length=40, patter
 
 class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+
+
+def decode_errors_only_for_lines() -> str:
+    """寬鬆解碼只有逐行讀取能用（訊息和驗證器的一致）。"""
+    return t(
+        "只有讀取方式是逐行讀取（text_lines）或 zip 裡的文字檔（zip_lines）時，"
+        "decode_errors 才能設成 replace（換成 �）",
+        'decode_errors can be "replace" (replace with �) only when the reader is '
+        "text_lines or zip_lines",
+    )
 
 
 class Input(_Model):
@@ -81,6 +91,16 @@ class Input(_Model):
         ),
     )
     encoding: Literal[SUPPORTED] = Field(default="auto", title="編碼", description="Excel 不用設")  # type: ignore[valid-type]
+    decode_errors: Literal["error", "replace"] = Field(
+        default="error",
+        title="解不開的字",
+        description=(
+            "只有讀取方式是逐行讀取（text_lines）或 zip 裡的文字檔（zip_lines）時能改："
+            "error（預設）碰到用這個編碼解不開的字就報錯；replace 換成 �（2 位元組的字換成兩個 �，"
+            "固定位置的報表不會偏）照樣讀完，每個有換字的檔產生警告，處理紀錄記下換了幾個字"
+        ),
+        json_schema_extra={"ui_labels": {"error": "報錯", "replace": "換成 �"}},
+    )
     sheet: str = Field(
         default="",
         title="工作表",
@@ -117,6 +137,8 @@ class Input(_Model):
                     'members can be set only when the reader is "Text files in zip" (zip_lines)',
                 )
             )
+        if self.decode_errors == "replace" and self.reader not in ("text_lines", "zip_lines"):
+            raise ValueError(decode_errors_only_for_lines())
         return self
 
 

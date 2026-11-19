@@ -539,6 +539,78 @@ def _crlf(lines: list[str], encoding: str) -> bytes:
     return ("\r\n".join(lines) + "\r\n").encode(encoding)
 
 
+# ── 造字與壞掉的位元組（寬鬆解碼，docs/eudc-lenient-plan.md）───────────────
+
+EUDC_CODES = (b"\x8f\x46", b"\x8f\x7c", b"\xfa\x40")
+"""假資料用的 Big5 造字區碼（cp950 解不開）。``8F 7C`` 的第 2 個位元組是 ``|``：Python 內建的
+``errors="replace"`` 會把它漏出來，用分隔符號拆欄時欄位就錯位了。"""
+_EUDC_MARK = "鑫"
+"""佔位字：cp950 解得開、佔 2 格、其他假資料沒用到；寫檔時換成造字的 2 個位元組（寬度不變）。"""
+
+
+def eudc_report(
+    seed: int = 0, entries: int = 30, every: int = 4
+) -> tuple[bytes, list[str], list[int]]:
+    """有造字的分段報表（cp950、固定位置），回傳（檔案內容, 寬鬆解碼後的各行, 有造字的行號）。
+
+    每 ``every`` 筆明細，品名的第一個字換成造字（輪流用 ``EUDC_CODES``）。2 個位元組換 2 個位元組，
+    寬鬆解碼成兩個 ``�`` 也佔 2 格，「依固定位置拆欄」的欄位不會偏。
+    """
+    lines, _ = sectioned_report(seed, sections=2, entries=entries)
+    names = [name for _, name, _ in ITEMS]
+    marked: list[int] = []
+    detail = 0
+    for i, line in enumerate(lines):
+        name = next((n for n in names if n in line), None)
+        if name is None or "115/" not in line:  # 只改明細（有日期的那幾行）
+            continue
+        if detail % every == 0:
+            lines[i] = line.replace(name, _EUDC_MARK + name[1:], 1)
+            marked.append(i + 1)
+        detail += 1
+    parts = _crlf(lines, "cp950").split(_EUDC_MARK.encode("cp950"))
+    if len(parts) != len(marked) + 1:  # 佔位字的位元組剛好跨在兩個字之間：換一個 seed
+        raise ValueError(f"seed {seed} 產生的報表不能用來放造字")  # i18n-ignore：測試用
+    raw = parts[0] + b"".join(EUDC_CODES[k % len(EUDC_CODES)] + p for k, p in enumerate(parts[1:]))
+    decoded = [line.replace(_EUDC_MARK, "��") for line in lines]
+    return raw, decoded, marked
+
+
+def write_eudc_report(path: str | Path, seed: int = 0, entries: int = 30) -> Path:
+    """``eudc_report`` 的檔案（cp950，CRLF）。"""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(eudc_report(seed, entries)[0])
+    return target
+
+
+BROKEN_UTF8_LINE = 3
+"""``broken_utf8`` 在第幾行放了一個壞掉的位元組。"""
+
+
+def broken_utf8(n: int = 20, seed: int = 0) -> bytes:
+    """凌亂匯出檔（UTF-8），第 ``BROKEN_UTF8_LINE`` 行的開頭多了一個不合 UTF-8 的位元組 ``FF``。"""
+    lines, _ = messy_export(n, seed)
+    rows = [line.encode("utf-8") for line in lines]
+    rows[BROKEN_UTF8_LINE - 1] = b"\xff" + rows[BROKEN_UTF8_LINE - 1]
+    return b"\r\n".join(rows) + b"\r\n"
+
+
+EUDC_ZIP_MEMBERS = ("202601/HEADER_001.TXT", "202601/ITEM_001.TXT")
+"""``write_eudc_zip`` 裡的檔：有造字的 cp950 報表、壞了一個位元組的 UTF-8 匯出檔。"""
+
+
+def write_eudc_zip(path: str | Path, seed: int = 0, entries: int = 30) -> Path:
+    """一個 zip，裡面是 ``EUDC_ZIP_MEMBERS``（測試 zip 裡的檔的寬鬆解碼）。"""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    report, utf8 = eudc_report(seed, entries)[0], broken_utf8(seed=seed)
+    with zipfile.ZipFile(target, "w") as z:
+        for name, data in zip(EUDC_ZIP_MEMBERS, (report, utf8), strict=True):
+            z.writestr(_zip_entry(name), data)
+    return target
+
+
 def write_all(directory: str | Path, seed: int = 0) -> list[Path]:
     """產生所有範例假資料到指定資料夾。
 

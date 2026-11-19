@@ -12,7 +12,7 @@ from typing import Any
 from tablade.export.outputs import default_output_name, plan_outputs
 from tablade.i18n import plural, t
 from tablade.ingest.encoding import SUPPORTED, DecodeError
-from tablade.ingest.sources import InputError, peek_columns, release_workers
+from tablade.ingest.sources import InputError, decode_warning, peek_columns, release_workers
 from tablade.recipe.schema import Recipe, RecipeError, load_json, parse_recipe
 from tablade.recipe.spec import build_spec
 from tablade.recipe.validator import validate
@@ -200,6 +200,8 @@ def format_report(report: RunReport, max_warnings: int = 10) -> str:
                 f"{plural(f.rows, 'line', 'lines')})",
             )
         )
+        if warning := decode_warning(f):
+            lines.append(t(f"    警告：{warning}", f"    Warning: {warning}"))
     previous = report.input_rows
     if report.mode == "sample":
         previous = report.sample_rows or 0

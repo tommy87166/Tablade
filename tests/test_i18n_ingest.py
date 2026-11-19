@@ -35,10 +35,15 @@ def test_decode_errors_are_in_english():
 
 def test_scan_decode_errors_are_in_english(tmp_path):
     (tmp_path / "bad.txt").write_bytes("好".encode("cp950") + b"\n\xff\xff\n")
+    hint = r'\. You can set "Undecodable characters" to "Replace with �"$'
     with pytest.raises(
-        DecodeError, match=r"^utf-8 can't decode byte 0x\w\w at offset 0 \(line 1\)$"
+        DecodeError, match=r"^utf-8 can't decode byte 0x\w\w at offset 0 \(line 1\)" + hint
     ):
         sources.scan("bad.txt", "text_lines", "utf-8", tmp_path)
+    with pytest.raises(  # CSV 不能用寬鬆解碼，不提示
+        DecodeError, match=r"^utf-8 can't decode byte 0x\w\w at offset 0 \(line 1\)$"
+    ):
+        sources.scan("bad.txt", "csv", "utf-8", tmp_path)
     with pytest.raises(DecodeError, match=r"^Couldn't detect the encoding: utf-8 can't decode"):
         sources.scan("bad.txt", "text_lines", "auto", tmp_path)
     with pytest.raises(DecodeError, match=r"^Unsupported encoding: latin-1 "):

@@ -367,9 +367,16 @@ export default function App() {
         return
       }
       if (res && !res.cancelled) {
-        const warn = res.warnings
-          ? tr(`，警告 ${res.warnings.toLocaleString()} 則`, `, ${plural(res.warnings, 'warning', 'warnings')}`)
+        const decoded = res.input_warnings
+          ? tr(
+              `，${res.input_warnings.toLocaleString()} 個檔有解不開的字`,
+              `, ${plural(res.input_warnings, 'file', 'files')} with undecodable characters`,
+            )
           : ''
+        const warn =
+          (res.warnings
+            ? tr(`，警告 ${res.warnings.toLocaleString()} 則`, `, ${plural(res.warnings, 'warning', 'warnings')}`)
+            : '') + decoded
         const how = res.mode === 'stream' ? tr('（串流處理全部資料）', ' (all data streamed)') : ''
         const outs = res.outputs ?? []
         const record = outs.some((o) => o.manifest) ? tr('；處理紀錄寫在 log 資料夾', '; processing log written to the log folder') : ''

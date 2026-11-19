@@ -188,6 +188,7 @@ async function fakeExport() {
     rows: last?.rows,
     columns: 8,
     warnings: 0,
+    input_warnings: 0,
     mode: 'stream',
     manifest: null,
     outputs,

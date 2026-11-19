@@ -131,6 +131,17 @@ def build_manifest(
                     if f.archive
                     else {}
                 ),
+                # 寬鬆解碼：解不開、換成 � 的字數與前幾個的行號（只看處理紀錄就知道不是每個字都原樣讀進來）
+                **(
+                    {
+                        "decode": {
+                            "replaced": f.replaced,
+                            "replaced_lines": list(f.replaced_lines),
+                        }
+                    }
+                    if f.replaced
+                    else {}
+                ),
             }
             for f in report.inputs
             if f.stage in keep

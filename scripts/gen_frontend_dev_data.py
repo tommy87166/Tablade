@@ -10,6 +10,9 @@
 
 ``--recipe all_steps``：每一種步驟都用到一次的展示 Recipe（4 個階段），檢查每個步驟的名稱、說明與表單文字用。
 同時把 Recipe 和假資料寫到 tmp/all_steps/（不進版控），用 Tablade 開啟 tmp/all_steps/全部步驟.recipe.json 也看得到。
+
+``--recipe eudc_report``：範例 sales_report 改讀有造字的假報表、打開寬鬆解碼（「解不開的字」換成 �），
+看讀取資料面板的選項與黃色的警告。
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ import tempfile
 from pathlib import Path
 
 from tablade.api import Api
-from tablade.fixtures import write_all
+from tablade.fixtures import write_all, write_eudc_report
 from tablade.recipe.schema import RECIPE_VERSION
 from tablade.steps import all_steps
 
@@ -236,11 +239,12 @@ def main(argv: list[str] | None = None) -> int:
             "sales_combined",
             "sales_zip",
             "all_steps",
+            "eudc_report",
         ],
         help=(
             "用哪一個範例 Recipe（sales_report 是分段報表、sales_excel 讀 Excel、"
             "sales_combined 有 4 個階段：附加與結合、sales_zip 讀每個月的 zip 裡的文字檔、"
-            "all_steps 每一種步驟都用到一次）"
+            "all_steps 每一種步驟都用到一次、eudc_report 讀有造字的報表並打開寬鬆解碼）"
         ),
     )
     parser.add_argument(
@@ -269,6 +273,15 @@ def main(argv: list[str] | None = None) -> int:
             (work / name).write_text(text, encoding="utf-8")
             shutil.rmtree(SHOWCASE, ignore_errors=True)
             shutil.copytree(work, SHOWCASE)
+        elif args.recipe == "eudc_report":
+            write_eudc_report(work / "data" / "造字報表.txt")
+            recipe = json.loads(
+                (ROOT / "examples" / "sales_report.recipe.json").read_text(encoding="utf-8")
+            )
+            recipe["tablade_recipe"] = RECIPE_VERSION
+            recipe["stages"][0]["input"]["files"] = ["data/造字報表.txt"]
+            recipe["stages"][0]["input"]["decode_errors"] = "replace"
+            (work / name).write_text(json.dumps(recipe, ensure_ascii=False), encoding="utf-8")
         else:
             shutil.copy(ROOT / "examples" / name, work / name)
         api._session.load_recipe(work / name)
