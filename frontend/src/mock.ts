@@ -221,13 +221,13 @@ export const mockApi: TabladeApi = sample
             ok: true,
             update: location.search.includes('update')
               ? {
-                  current: '1.0.1',
-                  latest: '1.1.0',
+                  current: '1.1.0',
+                  latest: '1.2.0',
                   newer: true,
-                  url: 'https://github.com/（開發用假資料）/releases/tag/v1.1.0',
+                  url: 'https://github.com/（開發用假資料）/releases/tag/v1.2.0',
                   error: null,
                 }
-              : { current: '1.0.1', latest: '1.0.1', newer: false, url: 'https://github.com/（開發用假資料）/releases', error: null },
+              : { current: '1.1.0', latest: '1.1.0', newer: false, url: 'https://github.com/（開發用假資料）/releases', error: null },
           },
           600,
         ),

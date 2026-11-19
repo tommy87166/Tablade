@@ -8,7 +8,7 @@
 <p align="center">一步一步把凌亂的 CSV / TXT / Excel 清洗成乾淨的 Parquet —— 全程本機執行，不上傳任何檔案。</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.1-FD5108" alt="version" />
+  <img src="https://img.shields.io/badge/version-1.1.0-FD5108" alt="version" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
   <img src="https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/Polars-2.1-CD792C?logo=polars&logoColor=white" alt="Polars" />
@@ -340,5 +340,5 @@ tablade.spec          PyInstaller 設定（以 TABLADE_BUILD 切換 onefile / on
 ---
 
 <p align="center">
-  <sub>Tablade v1.0.1 · <a href="LICENSE">MIT License</a></sub>
+  <sub>Tablade v1.1.0 · <a href="LICENSE">MIT License</a></sub>
 </p>
