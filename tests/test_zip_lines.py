@@ -13,7 +13,13 @@ import pytest
 
 from tablade import i18n
 from tablade.engine.run import execute
-from tablade.fixtures import XLSX_TIME, report_lines, write_zip_months
+from tablade.fixtures import (
+    MANY_ZIPS_COLUMNS,
+    XLSX_TIME,
+    report_lines,
+    write_many_zips,
+    write_zip_months,
+)
 from tablade.ingest import sources, zip_lines
 from tablade.ingest.sources import InputError, scan_parts, scan_zips
 from tablade.recipe import validator
@@ -442,3 +448,25 @@ def test_deflate64_without_the_module_is_reported(tmp_path, monkeypatch):
     assert len(problems) == 1 and "沒有 Deflate64 的模組" in problems[0]
     with pytest.raises(InputError, match="沒有 Deflate64 的模組"):
         read(tmp_path, ["d64.zip"], "**/*.TXT")
+
+
+def test_many_zips_fixture(tmp_path):
+    """很多個 zip 的假資料：同一個 seed 每次一樣；每個 zip 一個檔、每行 13 欄，用 zip_lines 讀得進來。"""
+    first = write_many_zips(tmp_path / "a", files=3, rows=50, seed=1)
+    again = write_many_zips(tmp_path / "b", files=3, rows=50, seed=1)
+    other = write_many_zips(tmp_path / "c", files=3, rows=50, seed=2)
+    assert [p.name for p in first] == ["sales-0000.zip", "sales-0001.zip", "sales-0002.zip"]
+    assert [p.read_bytes() for p in first] == [p.read_bytes() for p in again]
+    assert [p.read_bytes() for p in first] != [p.read_bytes() for p in other]
+    with zipfile.ZipFile(first[1]) as z:
+        assert z.namelist() == ["SALES_0001.TXT"]
+        lines = z.read("SALES_0001.TXT").decode("cp950").splitlines()
+    assert len(lines) == 50
+    assert all(len(line.split("|")) == len(MANY_ZIPS_COLUMNS) for line in lines)
+    assert lines[0].split("|")[7] == "ORD-0001-0000001"
+    parts, files = scan_parts(["a/*.zip"], "zip_lines", "auto", tmp_path, members="*.TXT")
+    assert [f.rows for f in files] == [50, 50, 50]
+    assert {f.encoding for f in files} == {"cp950"}
+    frame = sources.concat(parts).collect()
+    assert frame.height == 150
+    assert frame["line"][50] == lines[0]  # 第 2 個檔的第 1 行

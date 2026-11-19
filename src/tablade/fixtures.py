@@ -539,6 +539,60 @@ def _crlf(lines: list[str], encoding: str) -> bytes:
     return ("\r\n".join(lines) + "\r\n").encode(encoding)
 
 
+MANY_ZIPS_COLUMNS = (
+    "日期",
+    "門市代號",
+    "門市",
+    "品號",
+    "品名",
+    "通路",
+    "付款方式",
+    "單號",
+    "數量",
+    "單價",
+    "金額",
+    "店員",
+    "備註",
+)
+"""``write_many_zips`` 每一行用「|」分開的 13 欄（檔裡沒有標題列）。"""
+
+
+def write_many_zips(
+    directory: str | Path, files: int = 3, rows: int = 1_000, seed: int = 0
+) -> list[Path]:
+    """很多個 zip（``sales-0000.zip``…），每個裡面一個 cp950 的「|」分隔文字檔（``SALES_0000.TXT``）。
+
+    給「檔很多」的測試與預覽記憶體的量測用（docs/memory-improve.md）：每檔 ``rows`` 行、沒有標題列，
+    欄位是 ``MANY_ZIPS_COLUMNS``，每行大約 100 bytes；約 1% 的列備註是「退貨」。
+    """
+    out = Path(directory)
+    out.mkdir(parents=True, exist_ok=True)
+    written = []
+    for k in range(files):
+        rng = random.Random(seed * 100_003 + k)
+        items = rng.choices(ITEMS, k=rows)
+        stores = rng.choices(range(len(STORES)), k=rows)
+        days = rng.choices(range(1, 29), k=rows)
+        quantities = rng.choices(range(1, 13), k=rows)
+        channels = rng.choices(CHANNELS, k=rows)
+        payments = rng.choices(PAYMENTS, k=rows)
+        clerks = rng.choices(range(1, 5), k=rows)
+        returned = rng.choices((False, True), weights=(99, 1), k=rows)
+        month = k % 12 + 1
+        lines = [
+            f"115/{month:02d}/{days[i]:02d}|S{stores[i] + 1:03d}|{STORES[stores[i]]}"
+            f"|{items[i][0]}|{items[i][1]}|{channels[i]}|{payments[i]}|ORD-{k:04d}-{i + 1:07d}"
+            f"|{quantities[i]}|{items[i][2]:,}|{items[i][2] * quantities[i]:,}|E{clerks[i]:03d}"
+            f"|{'退貨' if returned[i] else '一般銷售，無折扣'}"
+            for i in range(rows)
+        ]
+        target = out / f"sales-{k:04d}.zip"
+        with zipfile.ZipFile(target, "w") as z:
+            z.writestr(_zip_entry(f"SALES_{k:04d}.TXT"), _crlf(lines, "cp950"))
+        written.append(target)
+    return written
+
+
 # ── 造字與壞掉的位元組（寬鬆解碼，docs/eudc-lenient-plan.md）───────────────
 
 EUDC_CODES = (b"\x8f\x46", b"\x8f\x7c", b"\xfa\x40")
