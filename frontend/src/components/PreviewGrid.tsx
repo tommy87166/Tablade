@@ -8,6 +8,7 @@
  * - 列數太多時分段顯示（瀏覽器對單一元素的高度有上限）：一段最多 SEGMENT_ROWS 列，上面切換是哪一段。
  * - 點一格（滑鼠左鍵）就選到那一格、加外框，完整的內容交給下方面板的「檢視」分頁（onSelectCell）；
  *   儲存格沒有滑鼠停留的提示（docs/cell-view-plan.md）。換步驟、內容變了就清掉。
+ * - 點警告跳過來的那一列整列標成警告的顏色（scrollToRow），直到跳到別列、換步驟或內容變了。
  */
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
@@ -38,6 +39,7 @@ const SEGMENT_ROWS = 500_000
 const MEASURE_BASE = 'pointer-events-none invisible absolute top-0 left-0 whitespace-pre'
 
 export interface GridHandle {
+  /** 捲到那一列（整個結果的第幾列，從 0 起）並把整列標起來（點警告跳過來的） */
   scrollToRow: (index: number) => void
 }
 
@@ -136,6 +138,8 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
   const [target, setTarget] = useState<{ name: string; value: Cell } | null>(null)
   /** 選到的格子：整個結果的第幾列（從 0 起）與欄名 */
   const [selected, setSelected] = useState<{ row: number; name: string } | null>(null)
+  /** 點警告跳過來的列（整個結果的第幾列，從 0 起） */
+  const [marked, setMarked] = useState<number | null>(null)
   const selectCell = useRef(onSelectCell)
   useEffect(() => {
     selectCell.current = onSelectCell
@@ -178,6 +182,7 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
     pendingScroll.current = null
     scroller.current?.scrollTo({ top: 0 })
     setSelected(null)
+    setMarked(null)
     selectCell.current?.(null)
   }, [step, resetKey])
 
@@ -246,6 +251,7 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
 
   useImperativeHandle(ref, () => ({
     scrollToRow: (index: number) => {
+      setMarked(index)
       const to = Math.min(Math.floor(index / SEGMENT_ROWS), segments - 1)
       if (to === seg) {
         virtualizer.scrollToIndex(index - base, { align: 'center' })
@@ -426,10 +432,14 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
                 {items.map((item) => {
                   const index = base + item.index
                   const row = pages.get(Math.floor(index / PAGE))?.[index % PAGE]
+                  const warned = marked === index
                   return (
                     <div
                       key={item.key}
-                      className="absolute left-0 grid border-b even:bg-muted/40"
+                      data-marked={warned || undefined}
+                      className={`absolute left-0 grid border-b ${
+                        warned ? 'bg-amber-200/80 shadow-[inset_3px_0_0_var(--color-amber-500)] dark:bg-amber-500/30' : 'even:bg-muted/40'
+                      }`}
                       style={{ gridTemplateColumns: template, height: ROW_HEIGHT, transform: `translateY(${item.start}px)`, width: '100%' }}
                     >
                       <div className="truncate px-2 py-1 text-right text-xs text-muted-foreground">

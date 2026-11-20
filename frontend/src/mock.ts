@@ -242,7 +242,20 @@ export const mockApi: TabladeApi = sample
         const page = sample.rows[key(step)]
         return delay({ ...page, offset, rows: page.rows.slice(offset, offset + limit) as Cell[][] })
       },
-      find_row: () => delay({ ok: true, row: 0 }),
+      // 在存下來的前 200 列裡找來源檔與行號相同的列（找不到是 null，和 Python 一樣）
+      find_row: (step, source_file, line_no, sheet, stage) => {
+        const page = sample.rows[key(step)]
+        const at = (name: string) => page?.columns.indexOf(name) ?? -1
+        const [file, line, sheetAt, stageAt] = ['__source_file', '__line_no', '__sheet', '__stage'].map(at) // i18n-ignore：系統欄位名稱
+        const row = (page?.rows ?? []).findIndex(
+          (r) =>
+            r[file] === source_file &&
+            r[line] === line_no &&
+            (sheetAt < 0 || (r[sheetAt] ?? null) === (sheet ?? null)) &&
+            (stageAt < 0 || stage == null || r[stageAt] === stage),
+        )
+        return delay({ ok: true, row: row < 0 ? null : row })
+      },
       new_recipe: () => {
         open = true
         loaded = false

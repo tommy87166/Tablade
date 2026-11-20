@@ -69,6 +69,7 @@ import { StagesBar } from './components/StagesBar'
 import { StepsPanel } from './components/StepsPanel'
 import { TypesPane } from './components/TypesPane'
 import { CellPane } from './components/CellView'
+import { WarningItem } from './components/WarningItem'
 import { UpdateNotice } from './components/UpdateNotice'
 import { UsageStatus } from './components/UsageStatus'
 import { detectLang, lang, LANGS, plural, setLang, tr, type Lang } from './i18n'
@@ -167,6 +168,8 @@ export default function App() {
   const [bottomTab, setBottomTab] = useState<BottomTabName>('warnings')
   /** 「檢視」分頁顯示的那一格（點的當下存一份） */
   const [cell, setCell] = useState<CellView | null>(null)
+  /** 展開的那一則警告：at 是哪一步、哪一份預覽（換了就當成沒有展開），id 是哪一則 */
+  const [openWarning, setOpenWarning] = useState<{ at: string; id: string } | null>(null)
   const [report, setReport] = useState<{ open: boolean; issues: Issue[]; text: string }>({ open: false, issues: [], text: '' })
   const [selftest, setSelftest] = useState<SelftestResult | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
@@ -865,6 +868,15 @@ function sampleNote(inputRows: number | null | undefined, sample: ViewState['inp
     }
     return where
   }
+  /** 這一步、這一份預覽的警告：換步驟或內容變了，原本展開的那一則就不算 */
+  const warningsAt = `${state.preview.step}:${previewKey}`
+  const isOpenWarning = (id: string) => openWarning?.at === warningsAt && openWarning.id === id
+  /** 展開或收回一則警告（一次只展開一則）；回傳是不是展開了 */
+  const toggleWarning = (id: string) => {
+    const open = !isOpenWarning(id)
+    setOpenWarning(open ? { at: warningsAt, id } : null)
+    return open
+  }
 
   return (
     <TooltipProvider>
@@ -1255,42 +1267,34 @@ function sampleNote(inputRows: number | null | undefined, sample: ViewState['inp
                     </div>
                   ) : (
                     <ul className="flex-1 overflow-auto text-sm">
-                      {decodeWarnings.map((w, i) => (
-                        <li
-                          key={`decode:${w.file}:${i}` /* i18n-ignore：React 的 key，不是畫面文字 */}
-                          className="flex items-center gap-2 px-3 py-0.5 text-xs"
-                        >
-                          <TriangleAlert className="size-3.5 shrink-0 text-amber-600" />
-                          <span className="max-w-[50%] min-w-0 shrink-0 truncate font-mono text-muted-foreground" title={w.file}>
-                            {w.file}
-                          </span>
-                          <span className="min-w-0 flex-1 truncate" title={w.text}>
-                            {w.text}
-                          </span>
-                        </li>
-                      ))}
-                      {warnings.map((w, i) => (
-                        <li key={i}>
-                          <button
-                            type="button"
-                            className="flex w-full items-center gap-2 px-3 py-0.5 text-left text-xs hover:bg-muted"
-                            onClick={async () => {
-                              if (w.source_file === null || w.line_no === null) return
+                      {decodeWarnings.map((w, i) => {
+                        const id = `decode:${i}` // i18n-ignore：React 的 key，不是畫面文字
+                        return (
+                          <WarningItem
+                            key={id}
+                            place={w.file}
+                            message={w.text}
+                            open={isOpenWarning(id)}
+                            onToggle={() => toggleWarning(id)}
+                          />
+                        )
+                      })}
+                      {warnings.map((w, i) => {
+                        const id = `step:${i}` // i18n-ignore：React 的 key，不是畫面文字
+                        return (
+                          <WarningItem
+                            key={id}
+                            place={place(w)}
+                            message={w.message}
+                            open={isOpenWarning(id)}
+                            onToggle={async () => {
+                              if (!toggleWarning(id) || w.source_file === null || w.line_no === null) return
                               const res = await api.find_row(state.preview.step, w.source_file, w.line_no, w.sheet, w.stage)
                               if (res.ok && res.row !== null) grid.current?.scrollToRow(res.row)
                             }}
-                          >
-                            <TriangleAlert className="size-3.5 shrink-0 text-amber-600" />
-                            {/* 位置最多佔一半（太長就截斷，滑鼠移上去看全文），訊息至少有一半的寬度 */}
-                            <span className="max-w-[50%] min-w-0 shrink-0 truncate font-mono text-muted-foreground" title={place(w)}>
-                              {place(w)}
-                            </span>
-                            <span className="min-w-0 flex-1 truncate" title={w.message}>
-                              {w.message}
-                            </span>
-                          </button>
-                        </li>
-                      ))}
+                          />
+                        )
+                      })}
                       {warningCount > warnings.length ? (
                         <li className="px-3 py-1 text-xs text-muted-foreground">
                           {tr(
