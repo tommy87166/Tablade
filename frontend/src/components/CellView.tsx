@@ -5,13 +5,17 @@
 import { tr } from '@/i18n'
 import { sourceText, type CellView } from '@/lib/cell'
 
-/** 位置與資訊那一行：欄名（型別）、第幾列、來源檔［工作表］:行號、字數 */
+/** 位置與資訊那一行：欄名（型別）、第幾列、來自：來源檔［工作表］:行號、字數 */
 function info(cell: CellView, sheetText: (name: string) => string): string[] {
   const parts = [
     cell.dtype ? tr(`${cell.column}（${cell.dtype}）`, `${cell.column} (${cell.dtype})`) : cell.column,
     tr(`第 ${cell.row.toLocaleString()} 列`, `Row ${cell.row.toLocaleString()}`),
   ]
-  if (cell.source) parts.push(sourceText(cell.source.file, cell.source.sheet, cell.source.line, sheetText))
+  if (cell.source) {
+    // 「來自」：和「第幾列」分開（第幾列是這一步的結果，來源檔:行號是原本的檔）
+    const where = sourceText(cell.source.file, cell.source.sheet, cell.source.line, sheetText)
+    parts.push(tr(`來自：${where}`, `From: ${where}`))
+  }
   if (cell.chars !== null)
     parts.push(
       tr(`共 ${cell.chars.toLocaleString()} 個字`, cell.chars === 1 ? '1 character' : `${cell.chars.toLocaleString()} characters`),

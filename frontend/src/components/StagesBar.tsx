@@ -204,9 +204,6 @@ export function StagesBar({ state, busy, onSelect, onAdd, onRename, onMove, onDe
           )
         })}
       </ul>
-      <p className="border-t p-2 text-[11px] leading-snug text-muted-foreground">
-        {tr('階段依序執行，由最後一個階段輸出檔案。', 'Stages run in order; the last stage writes the output file.')}
-      </p>
 
       <Dialog open={naming !== null} onOpenChange={(v) => !v && setNaming(null)}>
         <DialogContent className="sm:max-w-sm">

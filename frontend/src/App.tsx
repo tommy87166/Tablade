@@ -170,6 +170,8 @@ export default function App() {
   const [cell, setCell] = useState<CellView | null>(null)
   /** 展開的那一則警告：at 是哪一步、哪一份預覽（換了就當成沒有展開），id 是哪一則 */
   const [openWarning, setOpenWarning] = useState<{ at: string; id: string } | null>(null)
+  /** 第幾次展開或收回警告：找列的回應回來時已經又點過（例如馬上收回）就不標 */
+  const warningClicks = useRef(0)
   const [report, setReport] = useState<{ open: boolean; issues: Issue[]; text: string }>({ open: false, issues: [], text: '' })
   const [selftest, setSelftest] = useState<SelftestResult | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
@@ -871,10 +873,12 @@ function sampleNote(inputRows: number | null | undefined, sample: ViewState['inp
   /** 這一步、這一份預覽的警告：換步驟或內容變了，原本展開的那一則就不算 */
   const warningsAt = `${state.preview.step}:${previewKey}`
   const isOpenWarning = (id: string) => openWarning?.at === warningsAt && openWarning.id === id
-  /** 展開或收回一則警告（一次只展開一則）；回傳是不是展開了 */
+  /** 展開或收回一則警告（一次只展開一則）；回傳是不是展開了。表格的整列標記先取消（展開的那則指到某一列時再標） */
   const toggleWarning = (id: string) => {
     const open = !isOpenWarning(id)
     setOpenWarning(open ? { at: warningsAt, id } : null)
+    grid.current?.clearMark()
+    warningClicks.current += 1
     return open
   }
 
@@ -1289,7 +1293,9 @@ function sampleNote(inputRows: number | null | undefined, sample: ViewState['inp
                             open={isOpenWarning(id)}
                             onToggle={async () => {
                               if (!toggleWarning(id) || w.source_file === null || w.line_no === null) return
+                              const click = warningClicks.current
                               const res = await api.find_row(state.preview.step, w.source_file, w.line_no, w.sheet, w.stage)
+                              if (click !== warningClicks.current) return // 回來之前又點過（收回或展開別則）
                               if (res.ok && res.row !== null) grid.current?.scrollToRow(res.row)
                             }}
                           />

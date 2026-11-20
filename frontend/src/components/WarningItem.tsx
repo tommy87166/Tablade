@@ -4,6 +4,9 @@
  */
 import { TriangleAlert } from 'lucide-react'
 
+/** 展開的警告與表格裡被標記的那一列用同一個顏色（PreviewGrid 也用這個） */
+export const MARKED = 'bg-amber-200/80 shadow-[inset_3px_0_0_var(--color-amber-500)] dark:bg-amber-500/30'
+
 export function WarningItem({
   place,
   message,
@@ -21,7 +24,7 @@ export function WarningItem({
       <button
         type="button"
         aria-expanded={open}
-        className={`flex w-full gap-2 px-3 py-0.5 text-left text-xs hover:bg-muted ${open ? 'items-start bg-muted/60 py-1' : 'items-center'}`}
+        className={`flex w-full gap-2 px-3 text-left text-xs ${open ? `items-start py-1 ${MARKED}` : 'items-center py-0.5 hover:bg-muted'}`}
         onClick={onToggle}
       >
         <TriangleAlert className={`size-3.5 shrink-0 text-amber-600 ${open ? 'mt-px' : ''}`} />

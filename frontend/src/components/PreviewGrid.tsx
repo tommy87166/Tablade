@@ -8,7 +8,7 @@
  * - 列數太多時分段顯示（瀏覽器對單一元素的高度有上限）：一段最多 SEGMENT_ROWS 列，上面切換是哪一段。
  * - 點一格（滑鼠左鍵）就選到那一格、加外框，完整的內容交給下方面板的「檢視」分頁（onSelectCell）；
  *   儲存格沒有滑鼠停留的提示（docs/cell-view-plan.md）。換步驟、內容變了就清掉。
- * - 點警告跳過來的那一列整列標成警告的顏色（scrollToRow），直到跳到別列、換步驟或內容變了。
+ * - 點警告跳過來的那一列整列標成警告的顏色（scrollToRow），直到收回那則警告（clearMark）、跳到別列、換步驟或內容變了。
  */
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
@@ -27,6 +27,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { plural, tr } from '@/i18n'
 import { cellView, type CellView } from '@/lib/cell'
 import type { Cell, TabladeApi, ViewState } from '../bridge'
+import { MARKED } from './WarningItem'
 
 const PAGE = 200
 const ROW_HEIGHT = 28
@@ -41,6 +42,8 @@ const MEASURE_BASE = 'pointer-events-none invisible absolute top-0 left-0 whites
 export interface GridHandle {
   /** 捲到那一列（整個結果的第幾列，從 0 起）並把整列標起來（點警告跳過來的） */
   scrollToRow: (index: number) => void
+  /** 取消整列的標記（收回警告時） */
+  clearMark: () => void
 }
 
 export interface AddStepRequest {
@@ -260,6 +263,7 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
         setSegment(to)
       }
     },
+    clearMark: () => setMarked(null),
   }))
 
   const visible = useMemo(() => {
@@ -438,7 +442,7 @@ export function PreviewGrid({ api, preview, resetKey, showSystem, maxLine, onAdd
                       key={item.key}
                       data-marked={warned || undefined}
                       className={`absolute left-0 grid border-b ${
-                        warned ? 'bg-amber-200/80 shadow-[inset_3px_0_0_var(--color-amber-500)] dark:bg-amber-500/30' : 'even:bg-muted/40'
+                        warned ? MARKED : 'even:bg-muted/40'
                       }`}
                       style={{ gridTemplateColumns: template, height: ROW_HEIGHT, transform: `translateY(${item.start}px)`, width: '100%' }}
                     >

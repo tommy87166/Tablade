@@ -35,7 +35,8 @@ function Count({ n, rows }: { n: number | null; rows: number }) {
   return (
     <span>
       {n.toLocaleString()}
-      <span className="ml-1 text-xs text-muted-foreground">{tr(`（${pct < 1 ? '<1' : pct}%）`, `(${pct < 1 ? '<1' : pct}%)`)}</span>
+      {/* 半形括號：全形的太寬，數字和百分比會離很遠 */}
+      <span className="ml-1 text-xs text-muted-foreground">({pct < 1 ? '<1' : pct}%)</span>
     </span>
   )
 }
@@ -73,35 +74,35 @@ export function TypesPane({ api, step, resetKey, showSystem }: Props) {
 
   return (
     <div className="flex h-full flex-col">
-      <table className="w-full text-sm">
+      <table className="w-full text-xs">
         <thead className="sticky top-0 bg-background text-xs text-muted-foreground">
           <tr className="border-b text-left">
             <th className="w-px px-3 py-1 text-right font-normal">#</th>
             <th className="w-px px-2 py-1 font-normal whitespace-nowrap">{tr('欄位', 'Column')}</th>
             <th className="w-px px-2 py-1 font-normal whitespace-nowrap">{tr('型別', 'Type')}</th>
-            <th className="w-px px-2 py-1 text-right font-normal whitespace-nowrap">{tr('空值', 'Nulls')}</th>
-            <th className="w-px px-2 py-1 text-right font-normal whitespace-nowrap">{tr('空白', 'Blanks')}</th>
+            <th className="w-px px-2 py-1 font-normal whitespace-nowrap">{tr('空值', 'Nulls')}</th>
+            <th className="w-px px-2 py-1 font-normal whitespace-nowrap">{tr('空白', 'Blanks')}</th>
             <th className="px-2 py-1 font-normal">{tr('範圍／範例值', 'Range / examples')}</th>
           </tr>
         </thead>
         <tbody>
           {columns.map((c) => (
             <tr key={c.name} className={`border-b border-border/50 ${c.system ? 'text-muted-foreground' : ''}`}>
-              <td className="px-3 py-1 text-right tabular-nums text-muted-foreground">{c.position ?? ''}</td>
-              <td className="max-w-48 truncate px-2 py-1 font-medium whitespace-nowrap" title={c.name}>
+              <td className="px-3 py-0.5 text-right tabular-nums text-muted-foreground">{c.position ?? ''}</td>
+              <td className="max-w-48 truncate px-2 py-0.5 font-medium whitespace-nowrap" title={c.name}>
                 {c.name}
               </td>
-              <td className="px-2 py-1 whitespace-nowrap">
+              <td className="px-2 py-0.5 whitespace-nowrap">
                 <span className={tone(c)}>{c.label}</span>
                 <span className="ml-1.5 font-mono text-xs text-muted-foreground">{c.dtype}</span>
               </td>
-              <td className="px-2 py-1 text-right whitespace-nowrap tabular-nums">
+              <td className="px-2 py-0.5 whitespace-nowrap tabular-nums">
                 <Count n={c.nulls} rows={info.rows} />
               </td>
-              <td className="px-2 py-1 text-right whitespace-nowrap tabular-nums">
+              <td className="px-2 py-0.5 whitespace-nowrap tabular-nums">
                 <Count n={c.blanks} rows={info.rows} />
               </td>
-              <td className="max-w-0 truncate px-2 py-1 text-muted-foreground">
+              <td className="max-w-0 truncate px-2 py-0.5 text-muted-foreground">
                 {c.min !== null || c.max !== null
                   ? tr(`${text(c.min)} ～ ${text(c.max)}`, `${text(c.min)} – ${text(c.max)}`)
                   : c.examples.map((v) => tr(`「${text(v)}」`, `"${text(v)}"`)).join(tr('、', ', '))}
