@@ -22,7 +22,11 @@ def main() -> int:
     new = lock_content()
     if LOCK_PATH.exists():
         old = read_lock()
-        if old["spec"] != new["spec"] and old["recipe_version"] == new["recipe_version"]:
+        # 舊的 lock 也照現在的規則去掉說明用的欄位再比（說明用的欄位之後多了一種時不會被當成結構有變）
+        if (
+            structural(old["spec"]) != new["spec"]
+            and old["recipe_version"] == new["recipe_version"]
+        ):
             print(
                 f"步驟定義有結構性變更，但 RECIPE_VERSION 仍是 {new['recipe_version']}。"
                 "請先升版本（相容的變更升 minor，不相容的升 major）。",

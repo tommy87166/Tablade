@@ -267,19 +267,17 @@ def build(tree: Any, lf: pl.LazyFrame) -> pl.Expr:
 
 
 EXPRESSION_HELP = (
-    '一條 Polars 寫法的運算式，例如 pl.col("金額") - pl.col("折扣")。只能用「插入語法」列出的寫法；'
-    '欄位寫成 pl.col("欄名")，文字在 then、otherwise 這些地方要寫成 pl.lit("…")。'
+    '例如 pl.col("金額") - pl.col("折扣")。欄位用「插入欄位」放進來，其他寫法在「插入語法…」裡。'
 )
 EXPRESSION_HELP_EN = (
-    'A Polars expression, like pl.col("amount") - pl.col("discount"). Only the syntax listed under '
-    '"Insert syntax" can be used; write columns as pl.col("name"), and text in then, otherwise and '
-    'similar places as pl.lit("…").'
+    'For example pl.col("amount") - pl.col("discount"). Use "Insert column" to add columns; '
+    'everything else is under "Insert syntax…".'
 )
 
 
 @register
 class CustomExpression(Step):
-    """用 Polars 的寫法算出新的一欄（一列一列計算）：兩欄相加減、乘上比例、依條件給值、把幾欄接起來。運算式只會被讀、不會被執行，只能用「插入語法」列出的寫法。"""
+    """用 Polars 的寫法算出新的一欄，例如兩欄相減、乘上比例、依條件給值、把幾欄接起來。可以用的寫法都在「插入語法…」裡。"""
 
     type: Literal["custom_expression"] = "custom_expression"
     name: NonEmpty = Field(title="新欄位名稱", json_schema_extra=en("New column name"))
@@ -303,9 +301,8 @@ class CustomExpression(Step):
     label = "自訂"
     label_en = "Custom"
     doc_en = (
-        "Compute a new column with a Polars expression, row by row: add or subtract columns, "
-        "multiply by a ratio, pick a value by condition, join columns together. The expression is "
-        'only read, never run, and only the syntax listed under "Insert syntax" can be used.'
+        "Compute a new column with a Polars expression, such as subtracting two columns, multiplying by a ratio, "
+        'choosing a value by condition or joining columns. Everything you can use is under "Insert syntax…".'
     )
     category = "欄"
     effect = {"kind": "add", "names": "$name"}

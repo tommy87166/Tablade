@@ -22,6 +22,8 @@ _HUMAN_KEYS = {
     "category",
     "examples",
     "ai_notes",
+    "doc",  # 自訂的語法表（ui_syntax）每一項的說明與例子
+    "example",
 }
 """純說明用的欄位：schema lock 不記（只改這些文字不用升 RECIPE_VERSION）。"""
 

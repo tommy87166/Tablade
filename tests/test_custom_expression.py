@@ -63,6 +63,7 @@ CASES = [
     # 運算子
     (["+"], 'pl.col("單價") + pl.col("折扣")', [D("12.50"), D("130.05"), D("20.54"), N], DEC(2)),
     (["+", "lit.str"], 'pl.col("代號") + "-x"', ["a1-x", "B22-x", "c-x", N], STR),
+    (["+", "lit.int"], 'pl.col("單價") + 5', [D("17.50"), D("125.00"), D("24.99"), N], DEC(2)),
     (["-"], 'pl.col("單價") - pl.col("折扣")', [D("12.50"), D("109.95"), D("19.44"), N], DEC(2)),
     (["*"], 'pl.col("單價") * pl.col("數量")', [D("37.50"), D("1200.00"), D("0.00"), N], DEC(2)),
     (
@@ -100,7 +101,16 @@ CASES = [
     (["pl.lit", "lit.decimal"], "pl.lit(1.5)", [D("1.5")] * 4, DEC(1)),
     (["lit.int"], 'pl.col("數量") + 1', [4, 11, 1, N], INT),
     (["False"], 'pl.col("門市").is_null() == False', [True, True, True, False], BOOL),
+    (["False"], "pl.lit(False)", [False] * 4, BOOL),
     (["True"], "pl.lit(True)", [True] * 4, BOOL),
+    (
+        ["True", "False", "pl.when"],
+        'pl.when(pl.col("數量") > 3).then(True).otherwise(False)',
+        [False, True, False, False],
+        BOOL,
+    ),
+    (["None"], 'pl.when(pl.col("數量") > 3).then(1).otherwise(None)', [N, 1, N, N], INT),
+    (["pl.lit", "True"], "pl.lit(True).cast(pl.String, strict=False)", ["true"] * 4, STR),
     (["None"], "pl.lit(None)", [N] * 4, NULL),
     (["pl.date"], 'pl.col("日期") >= pl.date(2026, 2, 1)', [False, True, True, N], BOOL),
     # pl. 的函式
@@ -153,6 +163,7 @@ CASES = [
         [D("12.50"), D("130.05"), D("20.54"), D("0.00")],
         DEC(2),
     ),
+    (["pl.sum_horizontal"], 'pl.sum_horizontal(pl.col("數量"), 1)', [4, 11, 1, 1], INT),
     # 一般的方法
     (["fill_null"], 'pl.col("數量").fill_null(0)', [3, 10, 0, 0], INT),
     (["is_null"], 'pl.col("門市").is_null()', [False, False, False, True], BOOL),
