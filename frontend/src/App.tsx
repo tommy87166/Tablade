@@ -1266,7 +1266,8 @@ function sampleNote(inputRows: number | null | undefined, sample: ViewState['inp
                       <TypesPane api={api} step={state.preview.step} resetKey={previewKey} showSystem={showSystem} />
                     </div>
                   ) : bottomTab === 'view' ? (
-                    <div className="min-h-0 flex-1 overflow-auto">
+                    <div className="min-h-0 flex-1 overflow-hidden">
+                      {/* 值自己捲動，下面的小表貼齊底部（CellPane） */}
                       <CellPane cell={cell} sheetText={sheetText} />
                     </div>
                   ) : (
