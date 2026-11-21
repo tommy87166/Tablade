@@ -2,7 +2,7 @@
  * 起始頁的版本資訊：啟動時查到 GitHub 上有新版就提示。
  * 能自動更新時（發布的 App）顯示「更新並重新啟動」：按了才下載、驗章、換檔（selfupdate.py），
  * 成功後 Python 關掉視窗並啟動新版。只在起始頁出現，那時沒有開著的 Recipe，不會有未存的修改。
- * 不能自動更新時（例如從原始碼執行）寫原因，並給下載頁的網址。
+ * 不能自動更新時（例如從原始碼執行）寫原因，並給下載頁的網址；能自動更新時只有更新失敗才給網址。
  */
 import { Check, Copy, Download, LoaderCircle } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
@@ -114,12 +114,6 @@ export function UpdateNotice({ api, current, update }: Props) {
       </p>
       {update.install?.ok ? (
         <>
-          <p className="text-xs text-muted-foreground">
-            {tr(
-              '按下去才會下載（約 70 MB），驗證簽章後換成新版並重新啟動；舊版會留到新版開啟後才刪掉。',
-              'Nothing is downloaded until you click (about 70 MB). The signature is verified, then Tablade is replaced and restarts; the old version is removed after the new one opens.',
-            )}
-          </p>
           <div className="flex items-center gap-2">
             <Button size="sm" disabled={running} onClick={() => void install()}>
               {running ? <LoaderCircle className="animate-spin" /> : <Download />}
@@ -129,7 +123,10 @@ export function UpdateNotice({ api, current, update }: Props) {
           </div>
           {error ? (
             <p role="alert" className="text-xs break-words text-destructive">
-              {tr(`更新失敗，目前的版本沒有變動：${error}`, `Update failed; this version is unchanged: ${error}`)}
+              {tr(
+                `更新失敗，目前的版本沒有變動：${error}。可以到下面的網址手動下載新版。`,
+                `Update failed; this version is unchanged: ${error}. You can download the new version from the URL below.`,
+              )}
             </p>
           ) : null}
         </>
@@ -140,19 +137,22 @@ export function UpdateNotice({ api, current, update }: Props) {
             : tr('請到下面的網址下載新版。', 'Download the new version from the URL below.')}
         </p>
       )}
-      <div className="flex gap-1.5">
-        <input
-          ref={field}
-          readOnly
-          value={update.url}
-          aria-label={tr('新版下載網址', 'Download URL for the new version')}
-          onFocus={(e) => e.currentTarget.select()}
-          className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 font-mono text-xs"
-        />
-        <Button size="sm" variant="outline" onClick={() => void copy()}>
-          {copied ? <Check /> : <Copy />} {copied ? tr('已複製', 'Copied') : tr('複製網址', 'Copy URL')}
-        </Button>
-      </div>
+      {/* 能自動更新時不用網址；更新失敗了才給網址，改成手動下載 */}
+      {!update.install?.ok || error ? (
+        <div className="flex gap-1.5">
+          <input
+            ref={field}
+            readOnly
+            value={update.url}
+            aria-label={tr('新版下載網址', 'Download URL for the new version')}
+            onFocus={(e) => e.currentTarget.select()}
+            className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 font-mono text-xs"
+          />
+          <Button size="sm" variant="outline" onClick={() => void copy()}>
+            {copied ? <Check /> : <Copy />} {copied ? tr('已複製', 'Copied') : tr('複製網址', 'Copy URL')}
+          </Button>
+        </div>
+      ) : null}
     </div>
   )
 }

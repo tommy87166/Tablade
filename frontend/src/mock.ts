@@ -235,7 +235,12 @@ export const mockApi: TabladeApi = sample
         delay(
           {
             ok: true,
-            update: location.search.includes('update')
+            // ?offline、?tls 看連不上 GitHub、憑證驗不過時的樣子
+            update: location.search.includes('offline')
+              ? { current: '1.3.0', latest: null, newer: false, url: 'https://github.com/（開發用假資料）/releases', error: null, error_code: 'offline' }
+              : location.search.includes('tls')
+              ? { current: '1.3.0', latest: null, newer: false, url: 'https://github.com/（開發用假資料）/releases', error: null, error_code: 'tls' }
+              : location.search.includes('update')
               ? {
                   current: '1.3.0',
                   latest: '1.4.0',
