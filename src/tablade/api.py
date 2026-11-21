@@ -111,6 +111,8 @@ class Api:
         self._progress_stage: str | None = None
         self._session.progress = self._push_progress
         self._closed = threading.Event()
+        self._relaunch: Path | None = None
+        """自動更新換好檔之後要啟動的新版：視窗關掉後由 app.run 啟動（desktop.relaunch）。"""
 
     def _attach(self, window: Any) -> None:
         self._window = window
@@ -208,12 +210,33 @@ class Api:
 
     @_wrap
     def check_update(self) -> dict[str, Any]:
-        """啟動時查 GitHub 上的最新版號（只讀版號，不下載）；打包時的 smoke test 不連線。"""
+        """啟動時查 GitHub 上的最新版號（不下載）；打包時的 smoke test 不連線。"""
         if self._smoke:
             return {"update": None}
         from .update import check_latest
 
         return {"update": check_latest()}
+
+    @_wrap
+    def install_update(self, version: str) -> dict[str, Any]:
+        """下載、驗章、換成 GitHub 上的新版，成功後關掉視窗、啟動新版（selfupdate.py）。
+
+        進度推到 ``window.state.updating``。未存的 Recipe 由前端先問過；失敗時舊版原封不動。
+        """
+        if self._smoke:
+            raise RuntimeError(t("smoke test 不更新", "No updates during the smoke test"))
+        from .selfupdate import update_to
+
+        def push(progress: dict[str, Any]) -> None:
+            with contextlib.suppress(Exception):
+                self._window.state.updating = progress
+
+        try:
+            self._relaunch = update_to(str(version), push)
+        finally:
+            push(None)  # type: ignore[arg-type]
+        threading.Timer(0.3, self._window.destroy).start()
+        return {"version": str(version)}
 
     @_wrap
     def smoke_done(self, passed: bool) -> dict[str, Any]:

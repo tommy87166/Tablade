@@ -15,6 +15,7 @@ API_METHODS = {
     "ready",
     "selftest",
     "staging_info",
+    "install_update",
     "open_staging",
     "smoke_done",
     "check_update",

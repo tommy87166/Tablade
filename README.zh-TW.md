@@ -34,7 +34,7 @@
 預覽結果，最後輸出乾淨的 **Parquet** 或 **CSV**（每個階段各自選；CSV 是 UTF-8 加 BOM，Excel 可以直接打開），寫到 Recipe 旁邊的 output 資料夾。每一列都帶著它來自哪個檔案的哪一行，log 資料夾再附一份處理紀錄（manifest），
 記錄用了哪份 Recipe、每個原始檔與輸出檔的 SHA-256、每一步的列數與警告。
 步驟存成 **recipe JSON**，下個月拿到新檔案時可以原封不動重跑一次。
-**所有檔案都留在你的電腦上**：沒有伺服器、不上傳。唯一的網路連線是啟動時向 GitHub 查最新版號（不送出資料、不下載）。
+**所有檔案都留在你的電腦上**：沒有伺服器、不上傳。唯一的網路連線是向 GitHub 查最新版號，以及你按下「更新並重新啟動」時下載新版（都不送出資料）。
 
 > [!IMPORTANT]
 > **本 repo 不含、也不得含任何真實資料。**
@@ -121,13 +121,18 @@ cli.py — `tablade run recipe.json` 不開 UI，跑同一套引擎
 
 ### 🔒 安全性：不對外連線
 
-- **只有一個網路連線，只查版號。** 啟動時 `src/tablade/update.py` 對 GitHub API 發一個 GET，
-  讀最新 release 的版號；有新版時起始頁會顯示下載網址。不送出任何你或資料的資訊、不下載、
-  不自動更新。設定 `TABLADE_NO_UPDATE_CHECK=1` 就完全不連線。
+- **對外連線只有 GitHub，只在 `update.py`。** 啟動時 `src/tablade/update.py` 對 GitHub API 發一個 GET，
+  讀最新 release 的版號。有新版時起始頁顯示「更新並重新啟動」，**按了才下載**：這個平台的 Release 檔
+  與它的 minisign 簽章，網址寫死成這個 repo 的 `releases/download/v<版號>/<固定檔名>`。不送出任何你或資料的資訊。
+  設定 `TABLADE_NO_UPDATE_CHECK=1` 就完全不連線。
+- **更新檔一定要驗過簽章。** 發版時 CI 用只存在 GitHub Actions secret 裡的私鑰簽章，簽章裡寫著版號與檔名；
+  App 用寫死在程式裡的公鑰、以 Rust 模組（[`minisign-verify`](https://crates.io/crates/minisign-verify)）驗章，
+  版號或檔名對不上（例如拿舊版冒充新版）就不安裝。換檔是把執行中的程式改名讓開、放上新版、重新啟動
+  （`selfupdate.py`），舊版留到新版開啟後才刪；失敗時舊版原封不動。從原始碼執行時不會自動更新。
 - **沒有其他網路程式碼。** `scripts/check_code_policy.py` 會解析 `src/` 底下每個檔案，禁止 import
   `socket`、`http`、`urllib`、`requests`、`httpx`、`aiohttp`、`ssl` 等模組（只有 `update.py`
   可以用 `urllib.request`），也禁止 `eval` / `exec` / `compile` / `__import__` / `importlib.import_module`。
-  呼叫外部程式（`subprocess`、`os.system` 等）只有 `desktop.py` 可以（用系統的程式開啟本機資料夾），
+  呼叫外部程式（`subprocess`、`os.system` 等）只有 `desktop.py` 可以（用系統的程式開啟本機資料夾、更新後啟動新版的 Tablade），
   Polars 的 `read_*` / `scan_*` 也不能讀網址或雲端（`storage_options`）。pre-commit 與 CI 都會跑。
 - **「自訂」的運算式只讀、不執行。** 運算式用標準函式庫的 `ast` 讀成語法樹，只接受白名單（語法表，69 種寫法）裡的寫法，
   一個節點一個節點轉成 Polars 的運算式；沒有任何一段文字會被 Python 執行，打開別人給的 Recipe 也不會在你的電腦上跑對方寫的程式。
@@ -154,6 +159,7 @@ cli.py — `tablade run recipe.json` 不開 UI，跑同一套引擎
 | Windows | `tablade-windows-x64-onefile.zip` | 單一 `tablade.exe` |
 | macOS | `tablade-macos-arm64-app.zip` | `Tablade.app`（onedir 包成 App；PyInstaller 不支援 onefile 的 `.app`）；第一次開啟請按右鍵 →「打開」 |
 | AI skill | `tablade-recipe-skill-v<recipe 版本>.zip` | 給 Microsoft 365 Copilot 等 AI 助理用 |
+| 簽章 | `tablade-*.zip.minisig` | 自動更新時 App 驗證用（minisign） |
 
 - `scripts/build.py` 打包這個平台要發布的版本（Windows：onefile；macOS：`Tablade.app`），跑一次內建的
   自我檢測，再壓成 zip。`scripts/build.py onedir` 仍然可以另外打包 Windows 的 onedir 資料夾，
@@ -162,6 +168,9 @@ cli.py — `tablade run recipe.json` 不開 UI，跑同一套引擎
   和 `src/tablade/__init__.py` 的 `__version__` 一致（`scripts/check_release.py`），不一致就停止發版；
   再把 zip 和 AI skill 附到 Release。
 - 發版：改 `__version__`（例如 `0.2.0`）、commit 並 push，再 `git tag v0.2.0 && git push origin v0.2.0`。
+- 自動更新的簽章：CI 用 GitHub Actions 的 secret `TABLADE_UPDATE_SIGNING_KEY`（`minisign -G -W` 產生、沒有密碼的私鑰檔全文）
+  替兩個平台的 zip 簽章（`scripts/sign_release.py`），並用 `src/tablade/selfupdate.py` 的 `PUBLIC_KEY` 驗一次；
+  沒有設定 secret 或公鑰對不上就停止發版。打包一定用 uv 管理的 Python（`build.py` 會檢查）。
 - 執行檔**未簽章**。macOS 也可以執行 `xattr -dr com.apple.quarantine Tablade.app`。
 - Windows 版是視窗程式，命令列輸出不會顯示；請用 `tablade.exe selftest --out result.json`，
   再看 JSON 的內容。
@@ -277,7 +286,7 @@ src/tablade/
 ├─ selftest.py        用假資料檢測打包後的環境
 ├─ fixtures.py        決定性的假資料（測試、自我檢測、範例共用）
 ├─ i18n.py            畫面的語言（中文／英文）
-├─ update.py          啟動時查最新版號（唯一的對外連線）
+├─ update.py          查最新版號、下載新版（唯一的對外連線）；selfupdate.py 驗章與換檔
 ├─ usage.py           記憶體與暫存資料夾用量；desktop.py 開啟本機資料夾
 ├─ recipe/            pydantic model、版本號、只用標準函式庫的驗證器、spec 與 schema lock
 ├─ steps/             每類步驟一個模組，登錄到 registry.py

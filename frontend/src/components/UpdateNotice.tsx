@@ -1,10 +1,15 @@
-/** 起始頁的版本資訊：啟動時查到 GitHub 上有新版就提示下載網址（不自動更新）。 */
-import { Check, Copy } from 'lucide-react'
-import { useRef, useState } from 'react'
+/**
+ * 起始頁的版本資訊：啟動時查到 GitHub 上有新版就提示。
+ * 能自動更新時（發布的 App）顯示「更新並重新啟動」：按了才下載、驗章、換檔（selfupdate.py），
+ * 成功後 Python 關掉視窗並啟動新版。只在起始頁出現，那時沒有開著的 Recipe，不會有未存的修改。
+ * 不能自動更新時（例如從原始碼執行）寫原因，並給下載頁的網址。
+ */
+import { Check, Copy, Download, LoaderCircle } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { tr } from '@/i18n'
-import type { UpdateInfo } from '../bridge'
+import { onUpdating, type TabladeApi, type UpdateInfo, type UpdateProgress } from '../bridge'
 
 /**
  * 沒查到最新版的原因。Python 給了代碼時用畫面目前的語言寫（切換語言會跟著換）；
@@ -20,6 +25,8 @@ function reason(update: UpdateInfo): string | null {
       return tr(`無法檢查更新（HTTP ${update.http_status ?? '?'}）`, `Couldn't check for updates (HTTP ${update.http_status ?? '?'})`)
     case 'offline':
       return tr('無法連線到 GitHub，略過檢查更新', "Couldn't connect to GitHub; skipped the update check")
+    case 'tls':
+      return tr('無法驗證 GitHub 的憑證，略過檢查更新', "Couldn't verify GitHub's certificate; skipped the update check")
     case 'bad_version':
       return tr('無法判讀最新版號', "Couldn't read the latest version number")
     default:
@@ -27,15 +34,42 @@ function reason(update: UpdateInfo): string | null {
   }
 }
 
+const MB = 1024 * 1024
+
+/** 進度的文字：下載到多少、驗章、解壓、換檔、重新啟動 */
+function stepText(p: UpdateProgress): string {
+  switch (p.phase) {
+    case 'download': {
+      const done = (p.done / MB).toFixed(0)
+      return p.total
+        ? tr(`正在下載 v${p.version}…（${done} / ${(p.total / MB).toFixed(0)} MB）`, `Downloading v${p.version}… (${done} / ${(p.total / MB).toFixed(0)} MB)`)
+        : tr(`正在下載 v${p.version}…（${done} MB）`, `Downloading v${p.version}… (${done} MB)`)
+    }
+    case 'verify':
+      return tr('正在驗證簽章…', 'Verifying the signature…')
+    case 'extract':
+      return tr('正在解壓…', 'Unpacking…')
+    case 'install':
+      return tr('正在換成新版…', 'Replacing the app…')
+    case 'restart':
+      return tr('即將重新啟動…', 'Restarting…')
+  }
+}
+
 interface Props {
+  api: TabladeApi
   current: string
   /** undefined：還在查；null：不檢查（smoke test） */
   update: UpdateInfo | null | undefined
 }
 
-export function UpdateNotice({ current, update }: Props) {
+export function UpdateNotice({ api, current, update }: Props) {
   const field = useRef<HTMLInputElement>(null)
   const [copied, setCopied] = useState(false)
+  const [running, setRunning] = useState(false)
+  const [step, setStep] = useState<UpdateProgress | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => onUpdating(setStep), [])
   if (update === null) return null
   if (update === undefined)
     return (
@@ -59,6 +93,17 @@ export function UpdateNotice({ current, update }: Props) {
       field.current?.select() // WebView 不一定能用剪貼簿，改成選取讓使用者自己複製
     }
   }
+  const install = async () => {
+    if (!update.latest) return
+    setRunning(true)
+    setError(null)
+    const res = await api.install_update(update.latest)
+    if (!res.ok) {
+      setRunning(false)
+      setError(res.error.replace(/^UpdateError: /, ''))
+    }
+    // 成功時 Python 會關掉視窗並啟動新版，按鈕維持「進行中」
+  }
   return (
     <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-left text-sm">
       <p className="font-medium text-amber-800 dark:text-amber-300">
@@ -67,12 +112,34 @@ export function UpdateNotice({ current, update }: Props) {
           `New version v${update.latest} available (current v${update.current})`,
         )}
       </p>
-      <p className="text-xs text-muted-foreground">
-        {tr(
-          '請到下面的網址下載新版，Tablade 不會自動更新。',
-          'Download the new version from the URL below. Tablade does not update itself.',
-        )}
-      </p>
+      {update.install?.ok ? (
+        <>
+          <p className="text-xs text-muted-foreground">
+            {tr(
+              '按下去才會下載（約 70 MB），驗證簽章後換成新版並重新啟動；舊版會留到新版開啟後才刪掉。',
+              'Nothing is downloaded until you click (about 70 MB). The signature is verified, then Tablade is replaced and restarts; the old version is removed after the new one opens.',
+            )}
+          </p>
+          <div className="flex items-center gap-2">
+            <Button size="sm" disabled={running} onClick={() => void install()}>
+              {running ? <LoaderCircle className="animate-spin" /> : <Download />}
+              {tr('更新並重新啟動', 'Update and restart')}
+            </Button>
+            {running && step ? <span className="text-xs text-muted-foreground">{stepText(step)}</span> : null}
+          </div>
+          {error ? (
+            <p role="alert" className="text-xs break-words text-destructive">
+              {tr(`更新失敗，目前的版本沒有變動：${error}`, `Update failed; this version is unchanged: ${error}`)}
+            </p>
+          ) : null}
+        </>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          {update.install?.reason
+            ? tr(`${update.install.reason}。請到下面的網址下載新版。`, `${update.install.reason}. Download the new version from the URL below.`)
+            : tr('請到下面的網址下載新版。', 'Download the new version from the URL below.')}
+        </p>
+      )}
       <div className="flex gap-1.5">
         <input
           ref={field}

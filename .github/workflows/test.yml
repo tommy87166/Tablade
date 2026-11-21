@@ -21,6 +21,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       PYTHONUTF8: "1"
+      # 只用 uv 管理的 Python（和開發時一樣）：機器上另外裝的 Python 的 OpenSSL 找不到別台電腦的憑證
+      UV_PYTHON_PREFERENCE: only-managed
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.3

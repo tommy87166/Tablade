@@ -22,6 +22,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       PYTHONUTF8: "1"
+      # 只用 uv 管理的 Python（和開發時一樣）：機器上另外裝的 Python 的 OpenSSL 找不到別台電腦的憑證
+      UV_PYTHON_PREFERENCE: only-managed
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.3
@@ -74,7 +76,16 @@ jobs:
       - name: 產生 AI skill（tablade-recipe-skill-v<recipe 版本>.zip）
         working-directory: release
         run: uv run --project .. tablade skill
+      # 自動更新：替 Windows、macOS 的 zip 簽章（.minisig），簽完用程式裡的公鑰驗一次
+      - name: 安裝 minisign
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+      - name: 簽章（scripts/sign_release.py）
+        env:
+          TABLADE_UPDATE_SIGNING_KEY: ${{ secrets.TABLADE_UPDATE_SIGNING_KEY }}
+        run: uv run python scripts/sign_release.py "${{ github.ref_name }}" release
       - uses: softprops/action-gh-release@v3
         with:
-          files: release/*.zip
+          files: |
+            release/*.zip
+            release/*.minisig
           generate_release_notes: true

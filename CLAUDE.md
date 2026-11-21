@@ -32,9 +32,10 @@ Tablade：本機執行、Power Query 式的資料清洗工具（Python + Polars 
   - 不用 window 函式（`.over()`）、`replace_strict`、`map_batches` 呼叫 Python：串流引擎不支援，會把整份資料放進記憶體。
   - 改了步驟後，用 `tests/test_large.py` 的 stream ＝ eager 測試確認結果一致；大改時用幾 GB 的假資料量一次記憶體。
 - 不使用 `eval` / `exec`；不加入任何網路連線程式碼；不呼叫外部程式；Polars 的 `read_*` / `scan_*` 不讀網址或雲端（`storage_options`）。`scripts/check_code_policy.py` 會檢查 `src/`；它是把關的工具、不是沙箱，刻意繞過擋不住，所以不要找繞過的寫法。
-  - 網路的唯一例外是 `src/tablade/update.py`：啟動時向 GitHub 查最新版號，只讀版號，不送出資料、不下載、不自動更新（`TABLADE_NO_UPDATE_CHECK=1` 可關閉）。
-  - 外部程式的唯一例外是 `src/tablade/desktop.py`：用系統的程式（檔案總管／Finder）開啟本機資料夾。
-- 依賴版本固定在 `pyproject.toml` 與 `uv.lock`，不要擅自升級。Rust 模組（`native/`，解 zip 裡的 Deflate64）的依賴固定在 `native/Cargo.toml`（`=x.y.z`）與 `native/Cargo.lock`，同樣不要擅自升級；它只做解壓，不讀寫檔、不連網路、不呼叫外部程式（`check_code_policy.py` 會檢查，見 native/README.md）。
+  - 網路的唯一例外是 `src/tablade/update.py`：啟動時向 GitHub 查最新版號；使用者按「更新並重新啟動」時才下載這個平台的 Release 檔與 `.minisig`（網址寫死，只能指定版號）。不送出資料（`TABLADE_NO_UPDATE_CHECK=1` 可關閉）。驗章、解壓、換檔在 `selfupdate.py`（不連網），沒驗過章的檔不能安裝。
+  - 外部程式的唯一例外是 `src/tablade/desktop.py`：用系統的程式（檔案總管／Finder）開啟本機資料夾、自動更新後啟動新版的 Tablade（只能啟動 Tablade 自己）。
+  - 打包一定用 uv 管理的 Python（CI 設 `UV_PYTHON_PREFERENCE=only-managed`，`build.py` 會檢查）：別的 Python 打包出來的 App 可能驗不過 HTTPS 的憑證。
+- 依賴版本固定在 `pyproject.toml` 與 `uv.lock`，不要擅自升級。Rust 模組（`native/`，解 zip 裡的 Deflate64、驗更新檔的 minisign 簽章）的依賴固定在 `native/Cargo.toml`（`=x.y.z`）與 `native/Cargo.lock`，同樣不要擅自升級；它只做解壓與驗章，不讀寫檔、不連網路、不呼叫外部程式（`check_code_policy.py` 會檢查，見 native/README.md）。
 - `api.py`（JS bridge）只做參數轉換與錯誤包裝，邏輯放在引擎。
 - pywebview 視窗不開 HTTP server：前端 build 成單一 HTML（`frontend/dist/index.html`），以字串載入（見 `app.py`）。不要改成用網址或相對路徑載入；整份 HTML 必須小於 2 MB。
 

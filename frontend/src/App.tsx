@@ -705,7 +705,7 @@ export default function App() {
                   <FolderOpen /> {tr('開啟 Recipe', 'Open Recipe')}
                 </Button>
               </div>
-              <UpdateNotice current={info.version} update={update} />
+              <UpdateNotice api={api} current={info.version} update={update} />
             </div>
           </main>
           {footer}

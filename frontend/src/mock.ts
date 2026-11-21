@@ -6,7 +6,7 @@
  * 用假資料跑過範例 recipe 的真實畫面狀態，鍵是「階段:步驟」。切換階段、選取步驟會切換畫面；其他修改只回傳目前的狀態。
  * 看多個階段：`uv run python scripts/gen_frontend_dev_data.py --recipe sales_combined`。
  */
-import type { Cell, ColumnsInfo, Progress, ReadyInfo, RowsPage, RunState, SelftestResult, TabladeApi, Usage, ViewState } from './bridge'
+import type { Cell, ColumnsInfo, Progress, ReadyInfo, RowsPage, RunState, SelftestResult, TabladeApi, UpdateProgress, Usage, ViewState } from './bridge'
 import { tr, type Lang } from './i18n'
 
 interface Sample {
@@ -88,6 +88,8 @@ const fail = () => delay({ ok: false as const, error: missing })
 const progressState = new EventTarget()
 const pushProgress = (value: Progress | null) =>
   progressState.dispatchEvent(new CustomEvent('change', { detail: { key: 'progress', value } }))
+const pushUpdating = (value: UpdateProgress | null) =>
+  progressState.dispatchEvent(new CustomEvent('change', { detail: { key: 'updating', value } }))
 const pushRun = (value: RunState | null) => progressState.dispatchEvent(new CustomEvent('change', { detail: { key: 'run', value } }))
 
 /** 假的用量（跟 Python 一樣每 2 秒推一次）：處理中主程序變大、轉碼的工作程序開著；處理完工作程序關掉，最高值留著。 */
@@ -214,6 +216,20 @@ export const mockApi: TabladeApi = sample
       // 自我檢測：產生器實際跑過一次（中文、英文各一份）；舊的假資料沒有時顯示失敗並提示重新產生
       selftest: () => (sample.selftest ? delay(sample.selftest) : fail()),
       smoke_done: () => delay({ ok: true }),
+      // 假的自動更新：推一次下載進度，最後回報失敗（開發畫面不能真的換檔）
+      install_update: async (version: string) => {
+        const total = 70_000_000
+        for (const done of [0, 20_000_000, 45_000_000, total]) {
+          pushUpdating({ phase: 'download', done, total, version })
+          await new Promise((r) => setTimeout(r, 400))
+        }
+        for (const phase of ['verify', 'extract', 'install'] as const) {
+          pushUpdating({ phase, done: total, total, version })
+          await new Promise((r) => setTimeout(r, 400))
+        }
+        pushUpdating(null)
+        return { ok: false, error: 'UpdateError: 開發畫面不能真的更新' }
+      },
       // 網址加 ?update 看有新版時的提示
       check_update: () =>
         delay(
@@ -226,6 +242,10 @@ export const mockApi: TabladeApi = sample
                   newer: true,
                   url: 'https://github.com/（開發用假資料）/releases/tag/v1.3.0',
                   error: null,
+                  // ?update=manual 看不能自動更新時的樣子
+                  install: location.search.includes('manual')
+                    ? { ok: false, reason: '從原始碼執行時不能自動更新（用 git pull）' }
+                    : { ok: true, reason: null },
                 }
               : { current: '1.2.0', latest: '1.2.0', newer: false, url: 'https://github.com/（開發用假資料）/releases', error: null },
           },

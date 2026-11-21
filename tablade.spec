@@ -16,6 +16,8 @@ MODE = os.environ.get("TABLADE_BUILD", "onefile")
 if MODE not in ("onefile", "onedir"):
     raise SystemExit(f"TABLADE_BUILD 必須是 onefile 或 onedir，收到 {MODE!r}")
 IS_MAC = sys.platform == "darwin"
+sys.path.insert(0, os.path.join(SPECPATH, "src"))
+from tablade import __version__  # noqa: E402  App 的版號（macOS 的 Info.plist）
 ICON = "assets/icon.icns" if IS_MAC else "assets/icon.ico"
 # 範例 recipe 全部打包（AI skill 的 references/examples/ 要和 Release 附的一樣；scripts/build.py 會檢查）
 EXAMPLES = sorted(glob.glob(os.path.join(SPECPATH, "examples", "*.recipe.json")))
@@ -74,6 +76,8 @@ else:
             info_plist={
                 "CFBundleName": "Tablade",
                 "CFBundleDisplayName": "Tablade",
+                "CFBundleShortVersionString": __version__,
+                "CFBundleVersion": __version__,
                 "NSHighResolutionCapable": True,
             },
         )

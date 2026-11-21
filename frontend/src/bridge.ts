@@ -381,9 +381,19 @@ export interface UpdateInfo {
   url: string
   /** 沒查到最新版的原因（Python 啟動當下的語言；有 error_code 時前端改用自己的文字，切換語言才會跟著換） */
   error: string | null
-  /** 沒查到的原因代碼：關閉檢查、還沒發布、HTTP 錯誤（http_status）、連不上、讀不出版號 */
-  error_code?: 'disabled' | 'no_release' | 'http' | 'offline' | 'bad_version' | null
+  /** 沒查到的原因代碼：關閉檢查、還沒發布、HTTP 錯誤（http_status）、連不上、憑證驗不過、讀不出版號 */
+  error_code?: 'disabled' | 'no_release' | 'http' | 'offline' | 'tls' | 'bad_version' | null
   http_status?: number | null
+  /** 有新版時：能不能在程式裡直接更新（不能時 reason 說明原因，例如從原始碼執行） */
+  install?: { ok: boolean; reason: string | null } | null
+}
+
+/** 自動更新的進度（Python 推到 window.pywebview.state.updating）：下載、驗章、解壓、換檔、重新啟動 */
+export interface UpdateProgress {
+  phase: 'download' | 'verify' | 'extract' | 'install' | 'restart'
+  done: number
+  total: number | null
+  version: string
 }
 
 export type Cell = string | number | boolean | null
@@ -477,6 +487,8 @@ export interface TabladeApi {
   open_staging(): Promise<Result<{ path: string; bytes: number }>>
   smoke_done(passed: boolean): Promise<Result<object>>
   check_update(): Promise<Result<{ update: UpdateInfo | null }>>
+  /** 下載、驗章、換成新版；成功後 Python 關掉視窗並啟動新版 */
+  install_update(version: string): Promise<Result<{ version: string }>>
   smoke_example(): Promise<WithState<{ issues: Issue[] }>>
   state(): Promise<WithState>
   /** 切換畫面的語言（不記住，下次開啟又跟作業系統的語言） */
@@ -544,7 +556,12 @@ export interface TabladeApi {
 
 declare global {
   interface Window {
-    pywebview?: { api: TabladeApi; state?: EventTarget & { progress?: Progress | null; run?: RunState | null; usage?: Usage | null } }
+    pywebview?: { api: TabladeApi; state?: EventTarget & {
+      progress?: Progress | null
+      run?: RunState | null
+      usage?: Usage | null
+      updating?: UpdateProgress | null
+    } }
   }
 }
 
@@ -577,6 +594,18 @@ export function onUsage(listener: (usage: Usage | null) => void): () => void {
   const handler = (event: Event) => {
     const detail = (event as CustomEvent<{ key: string; value: unknown }>).detail
     if (detail?.key === 'usage') listener((detail.value as Usage | null) ?? null)
+  }
+  state.addEventListener('change', handler)
+  return () => state.removeEventListener('change', handler)
+}
+
+/** 訂閱 Python 推送的自動更新進度；回傳取消訂閱的函式。 */
+export function onUpdating(listener: (progress: UpdateProgress | null) => void): () => void {
+  const state = window.pywebview?.state
+  if (!state) return () => {}
+  const handler = (event: Event) => {
+    const detail = (event as CustomEvent<{ key: string; value: unknown }>).detail
+    if (detail?.key === 'updating') listener((detail.value as UpdateProgress | null) ?? null)
   }
   state.addEventListener('change', handler)
   return () => state.removeEventListener('change', handler)

@@ -4,8 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "tablade-native"
-version = "0.1.0"
-description = "Tablade 的 Rust 模組：解 zip 裡的 Deflate64"
+version = "0.2.0"
+description = "Tablade 的 Rust 模組：解 zip 裡的 Deflate64、驗證更新檔的 minisign 簽章"
 license = "MIT"
 requires-python = ">=3.12"
 

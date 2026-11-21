@@ -141,15 +141,25 @@ cli.py — `tablade run recipe.json` runs the same engine without the UI
 
 ### 🔒 Security — no egress
 
-- **One network call, for the version only.** At start-up `src/tablade/update.py` sends one GET
-  to the GitHub API to read the latest release's version number. If there is a newer version,
-  the start page shows the download link. Nothing about you or your data is sent, nothing is
-  downloaded, and nothing updates itself. Set `TABLADE_NO_UPDATE_CHECK=1` to turn it off.
+- **Network access goes only to GitHub, only from `update.py`.** At start-up `src/tablade/update.py`
+  sends one GET to the GitHub API to read the latest release's version number. If there is a newer
+  version, the start page shows **Update and restart**; **nothing is downloaded until you click it**.
+  It then downloads this platform's release file and its minisign signature from this repository's
+  fixed `releases/download/v<version>/<file name>` URL. Nothing about you or your data is sent.
+  Set `TABLADE_NO_UPDATE_CHECK=1` to turn it off.
+- **Updates must pass a signature check.** CI signs each release with a private key that only exists
+  as a GitHub Actions secret, and the signature includes the version and file name. The app checks it
+  with the public key built into the program, using the Rust module
+  ([`minisign-verify`](https://crates.io/crates/minisign-verify)), and refuses anything whose version or
+  file name doesn't match (for example an old release passed off as a new one). To install, it renames
+  the running program out of the way, puts the new one in place and restarts (`selfupdate.py`); the old
+  copy is removed after the new version opens, and a failure leaves the old version untouched.
+  Running from source never updates itself.
 - **No other network code.** `scripts/check_code_policy.py` parses every file in `src/` and rejects
   imports of `socket`, `http`, `urllib`, `requests`, `httpx`, `aiohttp`, `ssl` and friends (only
   `update.py` may use `urllib.request`), plus `eval` / `exec` / `compile` / `__import__` /
   `importlib.import_module`. Only `desktop.py` may start other programs (`subprocess`, `os.system`…;
-  it opens a local folder with the system's file browser), and Polars `read_*` / `scan_*` calls may not
+  it opens a local folder with the system's file browser and starts the new Tablade after an update), and Polars `read_*` / `scan_*` calls may not
   read URLs or cloud storage (`storage_options`). It runs in pre-commit and CI.
 - **Custom expressions are read, never run.** An expression is parsed into a syntax tree with the standard
   library's `ast`, checked against an allow list (the syntax table, 69 forms) and converted node by node into a
@@ -184,6 +194,7 @@ cli.py — `tablade run recipe.json` runs the same engine without the UI
 | Windows | `tablade-windows-x64-onefile.zip` | One `tablade.exe` |
 | macOS | `tablade-macos-arm64-app.zip` | `Tablade.app` (an onedir build wrapped as an app; PyInstaller has no onefile `.app`); first launch: right-click → **Open** |
 | AI skill | `tablade-recipe-skill-v<recipe version>.zip` | For Microsoft 365 Copilot and other AI assistants |
+| Signatures | `tablade-*.zip.minisig` | Checked by the app when it updates itself (minisign) |
 
 - `scripts/build.py` builds what is released on the current platform (Windows: onefile; macOS:
   `Tablade.app`), runs the built-in self-test, and zips it. `scripts/build.py onedir` still builds a
@@ -193,6 +204,10 @@ cli.py — `tablade run recipe.json` runs the same engine without the UI
   (`scripts/check_release.py`) and stops the release if it doesn't, then attaches the zips and the AI
   skill to a Release.
 - To release: set `__version__` (e.g. `0.2.0`), commit and push, then `git tag v0.2.0 && git push origin v0.2.0`.
+- Update signatures: CI signs both platform zips (`scripts/sign_release.py`) with the GitHub Actions secret
+  `TABLADE_UPDATE_SIGNING_KEY` (the full text of a password-less key from `minisign -G -W`) and checks them
+  against `PUBLIC_KEY` in `src/tablade/selfupdate.py`; a missing secret or a mismatched key stops the release.
+  Builds always use a uv-managed Python (`build.py` checks).
 - Binaries are **unsigned**. On macOS you can also run `xattr -dr com.apple.quarantine Tablade.app`.
 - The Windows build is a windowed app, so command-line output is not shown; use
   `tablade.exe selftest --out result.json` and read the JSON.
@@ -311,7 +326,7 @@ src/tablade/
 ├─ selftest.py        packaged-environment self-test on generated data
 ├─ fixtures.py        deterministic fake data (tests, self-test, examples)
 ├─ i18n.py            UI language (Chinese / English)
-├─ update.py          version check at start-up (the only network call)
+├─ update.py          version check and update download (the only network code); selfupdate.py verifies and swaps
 ├─ usage.py           memory and temp-folder usage; desktop.py opens a local folder
 ├─ recipe/            pydantic models, version, stdlib-only validator, spec + schema lock
 ├─ steps/             one module per step family, registered in registry.py

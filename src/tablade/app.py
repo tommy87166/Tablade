@@ -16,6 +16,7 @@ import threading
 from pathlib import Path
 
 from .api import Api
+from .desktop import relaunch
 from .ingest.sources import clear_staging, sweep_stale_staging
 
 SMOKE_TIMEOUT_SECONDS = 60
@@ -82,6 +83,10 @@ def run(smoke: bool = False) -> int:
     # 上次當掉或被強制結束時留下的，現在先清掉
     window.events.closed += clear_staging
     sweep_stale_staging()
+    if not smoke:
+        from .selfupdate import cleanup_previous
+
+        cleanup_previous()  # 上次自動更新換下來的舊版（只有發布的 App 才有）
 
     if smoke:
 
@@ -93,4 +98,6 @@ def run(smoke: bool = False) -> int:
 
     webview.start(private_mode=True)
     clear_staging()
+    if api._relaunch is not None:  # 自動更新換好檔了：舊版的視窗關掉、暫存清掉之後才啟動新版
+        relaunch(api._relaunch)
     return api._exit_code

@@ -22,6 +22,7 @@ def test_versions_match_the_lock_files():
     lock = tomllib.loads((ROOT / "native" / "Cargo.lock").read_text(encoding="utf-8"))
     locked = {p["name"]: p["version"] for p in lock["package"]}
     assert locked["deflate64"] == native.DEFLATE64_VERSION
+    assert locked["minisign-verify"] == native.MINISIGN_VERIFY_VERSION
     cargo = tomllib.loads((ROOT / "native" / "Cargo.toml").read_text(encoding="utf-8"))
     assert native.__version__ == cargo["package"]["version"]
 

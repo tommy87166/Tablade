@@ -67,6 +67,30 @@ def executable(mode: str) -> Path:
     return DIST / "onedir" / "tablade" / exe
 
 
+def check_python() -> None:
+    """打包用的 Python 一定要是 uv 管理的（python-build-standalone），和開發時同一種。
+
+    CI 的機器上另外裝了 python.org 的 Python，uv 預設會拿來用；它的 OpenSSL 寫死在
+    /Library/Frameworks/… 找憑證，只有那台機器有，打包出來的 App 在別台 Mac 上連不上 HTTPS。
+    uv 管理的 Python 在 macOS 用系統的 /etc/ssl/cert.pem，Windows 用系統的憑證庫。
+    """
+    import ssl
+
+    out = subprocess.run(["uv", "python", "dir"], capture_output=True, text=True, check=True)
+    managed = Path(out.stdout.strip()).resolve()
+    base = Path(sys.base_prefix).resolve()
+    if managed not in base.parents:
+        raise SystemExit(
+            f"打包用的 Python 不是 uv 管理的（{base}）：設定 UV_PYTHON_PREFERENCE=only-managed 再 uv sync"
+        )
+    cafile = ssl.get_default_verify_paths().openssl_cafile
+    if IS_MAC and cafile not in ("/private/etc/ssl/cert.pem", "/etc/ssl/cert.pem"):
+        raise SystemExit(
+            f"這個 Python 的 OpenSSL 不是用系統的憑證（{cafile}），打包出來的 App 連不上 HTTPS"
+        )
+    print(f"== Python {platform.python_version()}（uv 管理，{base.name}）", flush=True)
+
+
 def check_native() -> None:
     """發布的 App 一定要有 Rust 模組（解 zip 裡的 Deflate64）。"""
     try:
@@ -223,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"不認得的 mode：{', '.join(sorted(unknown))}")
 
     if not args.skip_build:
+        check_python()
         check_native()
     if not (args.skip_build or args.skip_frontend):
         build_frontend()

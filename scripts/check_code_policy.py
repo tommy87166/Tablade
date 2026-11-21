@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """檢查 src/ 是否違反程式規則（DESIGN.md §4、§11）。
 
-- 禁止任何網路相關模組（不做遙測、不自動更新、不下載擴充）。
-  唯一例外：``src/tablade/update.py`` 可以用 ``urllib.request`` 向 GitHub 查最新版號（不下載）
+- 禁止任何網路相關模組（不做遙測、不下載擴充）。
+  唯一例外：``src/tablade/update.py`` 可以用 ``urllib.request`` 向 GitHub 查最新版號、在使用者按下
+  更新時下載新版與簽章（``ssl`` 只用來分辨憑證錯誤）
 - 禁止 eval / exec / compile / __import__ / importlib.import_module：呼叫、取別名
   （``e = eval``、``from importlib import import_module``）、從模組取（``builtins.eval``、
   ``getattr(builtins, "eval")``）都算
 - 呼叫外部程式（subprocess、os.system、os.popen、os.exec*、os.spawn*、os.startfile）只有
-  ``src/tablade/desktop.py`` 可以（用系統的程式開啟資料夾）
+  ``src/tablade/desktop.py`` 可以（用系統的程式開啟資料夾、更新後啟動新版的 Tablade）
 - Polars 的 ``read_*`` / ``scan_*`` 不能讀網址（字串裡有 ``://``）或雲端（``storage_options``）
 - Rust 模組（``native/``）：依賴只能是 ``NATIVE_DEPENDENCIES`` 列的、版本固定（``=x.y.z``），不能有
   ``build-dependencies``、``dev-dependencies`` 與 ``build.rs``（建置時會執行任意程式）；``.rs`` 不能用
@@ -51,7 +52,7 @@ FORBIDDEN_MODULES = (
     "webbrowser",
     "bottle",
 )
-ALLOWED_NETWORK = {"src/tablade/update.py": {"urllib.request", "urllib.error"}}
+ALLOWED_NETWORK = {"src/tablade/update.py": {"urllib.request", "urllib.error", "ssl"}}
 """只有這些檔案（相對於 repo 根目錄）可以 import 這幾個網路模組。"""
 
 FORBIDDEN_NAMES = {"eval", "exec", "compile", "__import__", "import_module"}
@@ -168,7 +169,7 @@ def _call_problems(path: str, node: ast.Call) -> list[str]:
     return []
 
 
-NATIVE_DEPENDENCIES = {"pyo3", "deflate64"}
+NATIVE_DEPENDENCIES = {"pyo3", "deflate64", "minisign-verify"}
 """Rust 模組可以用的 crate（native/Cargo.toml 的 [dependencies]）。"""
 NATIVE_FORBIDDEN = re.compile(r"std::net|std::process|\bunsafe\b")
 

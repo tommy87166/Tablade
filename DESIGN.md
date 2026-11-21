@@ -544,12 +544,19 @@ CSV 不改成 Parquet：Polars 讀 CSV 一定要一整份檔，不管轉碼怎�
    - 疑似身分證字號（`[A-Z][12]\d{8}` 且通過檢查碼驗證）、疑似統一編號（8 碼數字並出現在「統編」附近）的內容
    - 本機私有封鎖清單 `.tablade-denylist`（不進版控）裡列出的字詞，例如人名、公司名稱、專案代號
 3. **測試資料一律由程式產生**：`scripts/gen_fixtures.py` 在測試時產生假資料，產生出來的檔案不 commit。
-4. **程式不得有其他對外連線**（不做遙測、不自動更新、不下載擴充）。唯一例外是 `src/tablade/update.py`：啟動時對 GitHub API 發一個 GET，只讀最新 release 的版號；有新版時在起始頁顯示下載網址，不下載、不自動更新，不送出任何使用者資料；設定 `TABLADE_NO_UPDATE_CHECK=1` 就完全不連線。CI 加一道檢查（`scripts/check_code_policy.py`，用 AST 分析 `src/`）：
+4. **程式不得有其他對外連線**（不做遙測、不下載擴充）。唯一例外是 `src/tablade/update.py`，對象只有 GitHub，不送出任何使用者資料；設定 `TABLADE_NO_UPDATE_CHECK=1` 就完全不連線：
+   - 啟動時對 GitHub API 發一個 GET，只讀最新 release 的版號。
+   - 有新版時起始頁顯示「更新並重新啟動」（不能自動更新時寫原因並給下載網址）。**按了才下載**這個平台的 Release 檔與 `.minisig` 簽章，網址寫死成 `github.com/<repo>/releases/download/v<版號>/<固定檔名>`，畫面只能指定版號，而且要比目前的版本新。
+   - **自動更新（`selfupdate.py`）**：用寫死在程式裡的公鑰、以 Rust 模組的 `verify_minisign`（minisign-verify crate）驗章，簽章受保護的註解必須是 `tablade <版號> <檔名>`，對不上就不安裝。解壓到程式旁邊的暫存資料夾（擋掉跑出資料夾的路徑與連結、還原 macOS 的符號連結與執行權限），檢查內容（Windows 的 `MZ`、macOS 的 Info.plist 版號），再把**執行中**的程式改名讓開（`tablade.exe` → `tablade.exe.old`、`Tablade.app` → `.Tablade.app.old`）、放上新版，失敗就換回來。視窗關掉、暫存清掉之後由 `desktop.relaunch` 啟動新版（帶 `PYINSTALLER_RESET_ENVIRONMENT=1`），新版啟動時刪掉舊版。只有發布的 App 能更新（Windows onefile、macOS 不在 App Translocation 暫時位置的 `Tablade.app`、資料夾可以寫入）；從原始碼執行不會更新。
+   - **簽章**：私鑰只存在 GitHub Actions 的 secret `TABLADE_UPDATE_SIGNING_KEY`；發版時 `scripts/sign_release.py` 用 minisign 簽章，簽完立刻用程式裡的公鑰驗一次才發布。
+   - **HTTPS 的憑證**：打包一定用 uv 管理的 Python（CI 設 `UV_PYTHON_PREFERENCE=only-managed`，`scripts/build.py` 會檢查）。CI 機器上另外裝的 python.org Python，它的 OpenSSL 寫死在那台機器的資料夾找憑證，打包出來的 App 在別台 Mac 上驗不過 GitHub 的憑證。憑證驗不過時畫面另外寫「無法驗證 GitHub 的憑證」（`error_code` 是 `tls`），不和「連不上」混在一起。
+
+   CI 加一道檢查（`scripts/check_code_policy.py`，用 AST 分析 `src/`）：
    - 除了這個檔案以外禁止 import `socket`、`http`、`urllib`、`requests`、`httpx` 等網路模組。
    - 禁止 `eval` / `exec` / `compile` / `__import__` / `importlib.import_module`（呼叫、取別名、從 `builtins` 取都算）。
-   - 呼叫外部程式（`subprocess`、`os.system`、`os.startfile` 等）只有 `src/tablade/desktop.py` 可以（用系統的程式開啟本機資料夾）。
+   - 呼叫外部程式（`subprocess`、`os.system`、`os.startfile` 等）只有 `src/tablade/desktop.py` 可以（用系統的程式開啟本機資料夾、更新後啟動新版的 Tablade）。
    - Polars 的 `read_*` / `scan_*` 不能讀網址（字串裡有 `://`）或雲端（`storage_options`）。
-   - Rust 模組（`native/`）：依賴只能是 `pyo3`、`deflate64`，版本固定（`=x.y.z`），不能從 git 或本機路徑來；不能有 `build.rs`、`build-dependencies`、`dev-dependencies`；`.rs` 不能用 `std::net`、`std::process`、`unsafe`，`lib.rs` 要有 `#![forbid(unsafe_code)]`；`Cargo.lock` 要進版控。
+   - Rust 模組（`native/`）：依賴只能是 `pyo3`、`deflate64`、`minisign-verify`，版本固定（`=x.y.z`），不能從 git 或本機路徑來；不能有 `build.rs`、`build-dependencies`、`dev-dependencies`；`.rs` 不能用 `std::net`、`std::process`、`unsafe`，`lib.rs` 要有 `#![forbid(unsafe_code)]`；`Cargo.lock` 要進版控。
    - 這是把關的工具、不是沙箱：刻意繞過（例如拼字串再 `getattr`）擋不住，也不檢查第三方套件。
 5. README 明確寫出：「本 repo 不含、也不得含任何真實資料」。
 6. issue、PR、commit 訊息同樣不得貼上真實資料或真實檔名；回報問題時用 `gen_fixtures.py` 產生的假資料重現。
@@ -580,7 +587,7 @@ tablade/
 │   ├── i18n.py / dtypes.py       # 畫面的語言（t()、en()）；型別的中英文名稱
 │   ├── selftest.py / fixtures.py # 自我檢測；假資料產生器（測試、自我檢測、範例共用）
 │   ├── usage.py / desktop.py     # 記憶體與暫存資料夾用量；開啟本機資料夾
-│   ├── update.py                 # 啟動時查最新版號（唯一的對外連線，§11）
+│   ├── update.py / selfupdate.py # 查最新版號、下載新版（唯一的對外連線）；驗章、換檔（§11）
 │   ├── recipe/                   # schema.py（pydantic、RECIPE_VERSION）、validator.py（只用標準函式庫）、spec.py、recipe-schema.lock.json
 │   ├── ingest/                   # encoding、text_lines、csv_reader、excel、sources（glob、轉碼、讀取、對齊欄位）、transcode（平行轉碼）
 │   ├── engine/                   # run.py（依序套用步驟、警告、寫出 Parquet / CSV）、progress.py（串流的進度）、check.py（驗證＋試跑）
