@@ -235,8 +235,9 @@ def test_swap_uses_another_name_when_the_old_copy_is_locked(tmp_path, monkeypatc
 
 
 def test_source_checkout_cannot_update():
-    with pytest.raises(UpdateError, match="原始碼"):
+    with pytest.raises(UpdateError, match="原始碼") as err:
         selfupdate.install_target(frozen=False)
+    assert err.value.code == "source"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS 的 App 路徑")
@@ -256,7 +257,18 @@ def test_mac_app_location_checks(tmp_path, monkeypatch):
 
 def test_install_status_without_key(monkeypatch):
     monkeypatch.setattr(selfupdate, "PUBLIC_KEY", "")
-    assert selfupdate.install_status() == {"ok": False, "reason": "這個版本不能自動更新"}
+    assert selfupdate.install_status() == {
+        "ok": False,
+        "code": "no_key",
+        "folder": None,
+        "reason": "這個版本不能自動更新",
+    }
+
+
+def test_install_status_gives_a_code_for_each_reason(monkeypatch):
+    monkeypatch.setattr(selfupdate, "PUBLIC_KEY", "key")
+    status = selfupdate.install_status()  # 測試是從原始碼執行
+    assert status["ok"] is False and status["code"] == "source" and "git pull" in status["reason"]
 
 
 # ── 整個流程（下載換成假的） ───────────────────────────────────

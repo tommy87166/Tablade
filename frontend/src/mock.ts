@@ -88,6 +88,11 @@ const fail = () => delay({ ok: false as const, error: missing })
 const progressState = new EventTarget()
 const pushProgress = (value: Progress | null) =>
   progressState.dispatchEvent(new CustomEvent('change', { detail: { key: 'progress', value } }))
+const MANUAL_CODES = ['source', 'platform', 'onedir', 'not_app', 'translocated', 'no_write', 'no_key'] as const
+const manualCode = () => {
+  const value = new URLSearchParams(location.search).get('update')
+  return MANUAL_CODES.find((code) => code === value) ?? null
+}
 const pushUpdating = (value: UpdateProgress | null) =>
   progressState.dispatchEvent(new CustomEvent('change', { detail: { key: 'updating', value } }))
 const pushRun = (value: RunState | null) => progressState.dispatchEvent(new CustomEvent('change', { detail: { key: 'run', value } }))
@@ -237,22 +242,21 @@ export const mockApi: TabladeApi = sample
             ok: true,
             // ?offline、?tls 看連不上 GitHub、憑證驗不過時的樣子
             update: location.search.includes('offline')
-              ? { current: '1.3.0', latest: null, newer: false, url: 'https://github.com/（開發用假資料）/releases', error: null, error_code: 'offline' }
+              ? { current: '1.3.1', latest: null, newer: false, url: 'https://github.com/（開發用假資料）/releases', error: null, error_code: 'offline' }
               : location.search.includes('tls')
-              ? { current: '1.3.0', latest: null, newer: false, url: 'https://github.com/（開發用假資料）/releases', error: null, error_code: 'tls' }
+              ? { current: '1.3.1', latest: null, newer: false, url: 'https://github.com/（開發用假資料）/releases', error: null, error_code: 'tls' }
               : location.search.includes('update')
               ? {
-                  current: '1.3.0',
+                  current: '1.3.1',
                   latest: '1.4.0',
                   newer: true,
                   url: 'https://github.com/（開發用假資料）/releases/tag/v1.4.0',
                   error: null,
                   // ?update=manual 看不能自動更新時的樣子
-                  install: location.search.includes('manual')
-                    ? { ok: false, reason: '從原始碼執行時不能自動更新（用 git pull）' }
-                    : { ok: true, reason: null },
+                  // ?update=source、platform、onedir、not_app、translocated、no_write、no_key 看不能自動更新的各種原因
+                  install: manualCode() ? { ok: false, code: manualCode(), folder: '/Applications', reason: null } : { ok: true, reason: null },
                 }
-              : { current: '1.3.0', latest: '1.3.0', newer: false, url: 'https://github.com/（開發用假資料）/releases', error: null },
+              : { current: '1.3.1', latest: '1.3.1', newer: false, url: 'https://github.com/（開發用假資料）/releases', error: null },
           },
           600,
         ),

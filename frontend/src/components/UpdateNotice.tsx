@@ -9,7 +9,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { tr } from '@/i18n'
-import { onUpdating, type TabladeApi, type UpdateInfo, type UpdateProgress } from '../bridge'
+import { onUpdating, type InstallStatus, type TabladeApi, type UpdateInfo, type UpdateProgress } from '../bridge'
 
 /**
  * 沒查到最新版的原因。Python 給了代碼時用畫面目前的語言寫（切換語言會跟著換）；
@@ -31,6 +31,53 @@ function reason(update: UpdateInfo): string | null {
       return tr('無法判讀最新版號', "Couldn't read the latest version number")
     default:
       return update.error
+  }
+}
+
+/** 不能自動更新時的說明：為什麼不能，以及該怎麼做；showUrl 是要不要給下載網址 */
+function manual(install: InstallStatus | null | undefined): { text: string; showUrl: boolean } {
+  const download = tr('請到下面的網址下載新版。', 'Download the new version from the URL below.')
+  switch (install?.code) {
+    case 'source':
+      return {
+        text: tr('從原始碼執行，不會自動更新。用 git pull 取得新版。', "Running from source, so Tablade doesn't update itself. Use git pull to get the new version."),
+        showUrl: false,
+      }
+    case 'platform':
+      return {
+        text: tr(
+          '這個平台沒有發布的版本，不能自動更新。可以到下面的網址看新版的內容。',
+          "There is no release for this platform, so Tablade can't update itself. See what's new at the URL below.",
+        ),
+        showUrl: true,
+      }
+    case 'onedir':
+      return { text: tr(`資料夾版（onedir）不能自動更新。${download}`, `The folder (onedir) build can't update itself. ${download}`), showUrl: true }
+    case 'not_app':
+      return {
+        text: tr(`不是從 Tablade.app 開啟的，不能自動更新。${download}`, `Tablade wasn't opened from Tablade.app, so it can't update itself. ${download}`),
+        showUrl: true,
+      }
+    case 'translocated':
+      return {
+        text: tr(
+          'macOS 從暫時的位置開啟了 Tablade，不能自動更新。把 Tablade.app 移到「應用程式」再開一次，就能自動更新。',
+          'macOS opened Tablade from a temporary location, so it can’t update itself. Move Tablade.app to Applications and open it again to update automatically.',
+        ),
+        showUrl: true,
+      }
+    case 'no_write':
+      return {
+        text: tr(
+          `沒有權限寫入 ${install.folder ?? ''}，不能自動更新。${download}`,
+          `No permission to write to ${install.folder ?? ''}, so Tablade can't update itself. ${download}`,
+        ),
+        showUrl: true,
+      }
+    case 'no_key':
+      return { text: tr(`這個版本不能自動更新。${download}`, `This version can't update itself. ${download}`), showUrl: true }
+    default:
+      return { text: install?.reason ? tr(`${install.reason}。${download}`, `${install.reason}. ${download}`) : download, showUrl: true }
   }
 }
 
@@ -131,14 +178,10 @@ export function UpdateNotice({ api, current, update }: Props) {
           ) : null}
         </>
       ) : (
-        <p className="text-xs text-muted-foreground">
-          {update.install?.reason
-            ? tr(`${update.install.reason}。請到下面的網址下載新版。`, `${update.install.reason}. Download the new version from the URL below.`)
-            : tr('請到下面的網址下載新版。', 'Download the new version from the URL below.')}
-        </p>
+        <p className="text-xs text-muted-foreground">{manual(update.install).text}</p>
       )}
-      {/* 能自動更新時不用網址；更新失敗了才給網址，改成手動下載 */}
-      {!update.install?.ok || error ? (
+      {/* 能自動更新時不用網址，更新失敗了才給；不能自動更新時依原因（從原始碼執行不給） */}
+      {(update.install?.ok ? error : manual(update.install).showUrl) ? (
         <div className="flex gap-1.5">
           <input
             ref={field}

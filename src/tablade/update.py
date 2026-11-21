@@ -37,7 +37,15 @@ VERSION_RE = re.compile(r"\d{1,4}\.\d{1,4}\.\d{1,4}")
 
 
 class UpdateError(Exception):
-    """下載或安裝更新失敗：訊息直接顯示在畫面上。"""
+    """下載或安裝更新失敗：訊息直接顯示在畫面上。
+
+    不能自動更新的原因另外有代碼 ``code``（前端依代碼寫文字，切換語言會跟著換）與 ``folder``。
+    """
+
+    def __init__(self, message: str, code: str | None = None, folder: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.folder = folder
 
 
 def parse_version(text: str) -> tuple[int, ...]:

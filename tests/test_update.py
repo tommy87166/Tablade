@@ -55,7 +55,7 @@ def test_newer_release(monkeypatch):
         "http_status": None,
         "install": result["install"],
     }
-    assert set(result["install"]) == {"ok", "reason"}
+    assert set(result["install"]) == {"ok", "code", "folder", "reason"}
 
 
 def test_same_version(monkeypatch):

@@ -56,63 +56,89 @@ def trusted_comment(version: str, asset: str) -> str:
 
 
 def install_target(executable: str | None = None, frozen: bool | None = None) -> Path:
-    """要換掉的東西（Windows：tablade.exe；macOS：Tablade.app）；不能自動更新時丟 UpdateError。"""
+    """要換掉的東西（Windows：tablade.exe；macOS：Tablade.app）；不能自動更新時丟 UpdateError。
+
+    UpdateError 的 ``code``：source、platform、onedir、not_app、translocated、no_write
+    （前端 UpdateNotice 依代碼寫原因與該怎麼做）。
+    """
     frozen = getattr(sys, "frozen", False) if frozen is None else frozen
     if not frozen:
         raise UpdateError(
             t(
-                "從原始碼執行時不能自動更新（用 git pull）",
-                "Running from source: update with git pull",
-            )
+                "從原始碼執行，不會自動更新。用 git pull 取得新版",
+                "Running from source, so Tablade doesn't update itself. Use git pull to get the new version",
+            ),
+            "source",
         )
     if platform_asset() is None:
-        raise UpdateError(t("這個平台沒有發布的版本", "No release for this platform"))
+        raise UpdateError(
+            t(
+                "這個平台沒有發布的版本，不能自動更新",
+                "There is no release for this platform, so Tablade can't update itself",
+            ),
+            "platform",
+        )
     exe = Path(executable or sys.executable).resolve()
     if sys.platform == "win32":
         bundle = getattr(sys, "_MEIPASS", None)
         if bundle and Path(bundle).resolve().parent == exe.parent:
             raise UpdateError(
                 t(
-                    "資料夾版（onedir）不能自動更新，請到下載頁下載",
-                    "The folder (onedir) build can't update itself; download it from the release page",
-                )
+                    "資料夾版（onedir）不能自動更新",
+                    "The folder (onedir) build can't update itself",
+                ),
+                "onedir",
             )
         target = exe
     else:
         target = exe.parents[2]
         if target.suffix != ".app" or exe.parent != target / "Contents" / "MacOS":
             raise UpdateError(
-                t("只有 Tablade.app 能自動更新", "Only Tablade.app can update itself")
+                t(
+                    "不是從 Tablade.app 開啟的，不能自動更新",
+                    "Tablade wasn't opened from Tablade.app, so it can't update itself",
+                ),
+                "not_app",
             )
         if "/AppTranslocation/" in str(target):
             raise UpdateError(
                 t(
-                    "macOS 從暫時的位置開啟了 Tablade：請先把 Tablade.app 移到「應用程式」再開一次",
-                    "macOS opened Tablade from a temporary location: move Tablade.app to Applications and open it again",
-                )
+                    "macOS 從暫時的位置開啟了 Tablade，不能自動更新。把 Tablade.app 移到「應用程式」再開一次，就能自動更新",
+                    "macOS opened Tablade from a temporary location, so it can't update itself. "
+                    "Move Tablade.app to Applications and open it again to update automatically",
+                ),
+                "translocated",
             )
     if not os.access(target.parent, os.W_OK):
         raise UpdateError(
             t(
-                f"沒有權限寫入 {target.parent}，請到下載頁手動更新",
-                f"No permission to write to {target.parent}; update manually from the release page",
-            )
+                f"沒有權限寫入 {target.parent}，不能自動更新",
+                f"No permission to write to {target.parent}, so Tablade can't update itself",
+            ),
+            "no_write",
+            str(target.parent),
         )
     return target
 
 
 def install_status() -> dict[str, Any]:
-    """能不能在程式裡直接更新：``{"ok": True}`` 或 ``{"ok": False, "reason": "…"}``。"""
+    """能不能在程式裡直接更新：``{"ok": True, …}`` 或 ``{"ok": False, "code": "…", "reason": "…"}``。
+
+    ``code`` 是 install_target 的代碼，或沒有公鑰時的 ``no_key``；``folder`` 是沒有權限寫入的資料夾。
+    ``reason`` 是查的當下的語言（前端有代碼時改用自己的文字）。
+    """
     if not PUBLIC_KEY:
         return {
             "ok": False,
+            "code": "no_key",
+            "folder": None,
             "reason": t("這個版本不能自動更新", "This version can't update itself"),
         }
     try:
         install_target()
     except UpdateError as err:
-        return {"ok": False, "reason": str(err)}
-    return {"ok": True, "reason": None}
+        return {"ok": False, "code": err.code, "folder": err.folder, "reason": str(err)}
+    return {"ok": True, "code": None, "folder": None, "reason": None}
 
 
 def verify(

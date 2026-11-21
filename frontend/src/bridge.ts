@@ -385,7 +385,16 @@ export interface UpdateInfo {
   error_code?: 'disabled' | 'no_release' | 'http' | 'offline' | 'tls' | 'bad_version' | null
   http_status?: number | null
   /** 有新版時：能不能在程式裡直接更新（不能時 reason 說明原因，例如從原始碼執行） */
-  install?: { ok: boolean; reason: string | null } | null
+  install?: InstallStatus | null
+}
+
+/** 能不能自動更新：不能時 code 是原因（前端依代碼寫文字），folder 是沒有權限寫入的資料夾 */
+export interface InstallStatus {
+  ok: boolean
+  code?: 'source' | 'platform' | 'onedir' | 'not_app' | 'translocated' | 'no_write' | 'no_key' | null
+  folder?: string | null
+  /** Python 查的當下的語言寫好的原因（沒有代碼時才用） */
+  reason: string | null
 }
 
 /** 自動更新的進度（Python 推到 window.pywebview.state.updating）：下載、驗章、解壓、換檔、重新啟動 */
