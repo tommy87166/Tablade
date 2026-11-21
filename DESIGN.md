@@ -439,7 +439,7 @@ CSV 不改成 Parquet：Polars 讀 CSV 一定要一整份檔，不管轉碼怎�
 ```json
 {
   "tablade_manifest": "1.0",
-  "tool": { "name": "tablade", "version": "1.2.0", "polars": "2.1.0" },
+  "tool": { "name": "tablade", "version": "1.3.0", "polars": "2.1.0" },
   "run_at": "2026-11-17T10:00:00+08:00",
   "mode": "eager",
   "recipe": { "name": "門市銷售明細整理", "sha256": "…", "content": { "…完整的 Recipe…": "" } },
@@ -889,7 +889,7 @@ tablade-recipe-skill-v1.0.zip       # 版本號＝recipe 版本（目前 1.0）
 - recipe：`"tablade_recipe": "MAJOR.MINOR"`。
   - minor：相容的變更（新增步驟、新增選用參數）
   - major：不相容的變更。升級舊 recipe 的程式等之後真的有 major 變更時再做；目前不同 major 的 recipe 直接報「不相容的 Recipe 版本」
-- **skill 版本 = recipe 版本**（zip 檔名、SKILL.md、驗證器常數都標示）。App 版本另外計算（例如 Tablade 0.3.0 可以支援 recipe 1.4；目前是 Tablade 1.2.0、recipe 1.3）。
+- **skill 版本 = recipe 版本**（zip 檔名、SKILL.md、驗證器常數都標示）。App 版本另外計算（例如 Tablade 0.3.0 可以支援 recipe 1.4；目前是 Tablade 1.3.0、recipe 1.3）。
 - **由 CI 把關**：repo 存一份 `recipe-schema.lock.json`（schema 結構的快照，不含標題、說明、選項文字），測試重新產生後比對；步驟定義變了但版本沒升，CI 就失敗並提示該升 minor 還是 major。只改說明文字不用升。
 - Tablade 開啟 recipe：版本比 App 新 → 提示更新 Tablade；同一個 major、比較舊的 minor → 照常開啟（minor 都相容）；不同 major → 報不相容。
 - 驗證器遇到不同 major 或比自己新的 minor → 提示改用對應版本的 skill。

@@ -8,7 +8,7 @@
 <p align="center">A step-by-step data cleaning tool that turns messy CSV / TXT / Excel files into tidy Parquet — 100% local, nothing uploaded.</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.2.0-FD5108" alt="version" />
+  <img src="https://img.shields.io/badge/version-1.3.0-FD5108" alt="version" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
   <img src="https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/Polars-2.1-CD792C?logo=polars&logoColor=white" alt="Polars" />
@@ -430,5 +430,5 @@ You are solely responsible for verifying results (data accuracy, exports, compat
 ---
 
 <p align="center">
-  <sub>Tablade v1.2.0 · <a href="LICENSE">MIT License</a></sub>
+  <sub>Tablade v1.3.0 · <a href="LICENSE">MIT License</a></sub>
 </p>
